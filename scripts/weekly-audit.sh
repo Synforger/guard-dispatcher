@@ -46,9 +46,19 @@ if [ -z "${REPOS_GLOB:-}" ]; then
     exit 2
 fi
 
-mkdir -p "${STATE_DIR}"
+mkdir -p "${STATE_DIR}/audit-state"
 stamp="$(date +%Y-%m-%d)"
 log="${STATE_DIR}/weekly-audit-${stamp}.log"
+
+# Incremental GitHub scanning: per-repo state files remember the last
+# successful sweep; GitHub-side sources then only walk records created or
+# updated since. The first Sunday of each month runs a full walk anyway,
+# as a belt-and-suspenders against anything the incremental filter missed.
+run_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+full_sweep=0
+if [ "$(date +%d)" -le 7 ]; then
+    full_sweep=1
+fi
 
 findings=0
 summary=""
@@ -60,10 +70,17 @@ summary=""
         [ -d "${repo}" ] || continue
         git -C "${repo}" rev-parse --git-dir >/dev/null 2>&1 || continue
 
+        state_file="${STATE_DIR}/audit-state/$(basename "${repo}").last"
+        since_args=()
+        if [ "${full_sweep}" -eq 0 ] && [ -f "${state_file}" ]; then
+            since_args=(--github-since "$(cat "${state_file}")")
+        fi
+
         echo ""
-        echo "--- ${repo} ---"
-        if (cd "${repo}" && bash "${SCANNER}") 2>&1; then
+        echo "--- ${repo} (${since_args[1]:-full}) ---"
+        if (cd "${repo}" && bash "${SCANNER}" ${since_args[@]+"${since_args[@]}"}) 2>&1; then
             echo "--- ${repo}: clean ---"
+            printf '%s' "${run_started}" > "${state_file}"
         else
             echo "--- ${repo}: FINDINGS ---"
             findings=$((findings + 1))
