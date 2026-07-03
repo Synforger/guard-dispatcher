@@ -20,8 +20,10 @@ identity permanently into public history.
 | boundary | hook | check |
 |---|---|---|
 | commit (content) | `pre-commit` | staged files scanned against your word list |
+| commit (identity) | `pre-commit` | `user.email` must be one of the allowed identities |
 | commit (message) | `commit-msg` | commit subject/body scanned |
-| push | `pre-push` | outgoing commit range deep-scanned (blobs, messages, authors) |
+| push | `pre-push` | outgoing commit range deep-scanned (blobs, messages, authors); every author/committer must be an allowed identity |
+| push (refs) | `pre-push` | branch/tag names scanned; direct pushes to main/develop refused (initial branch-creating push exempt; `GUARD_ALLOW_PROTECTED_PUSH=1` overrides once) |
 | PR | `scripts/pr-create.sh` | PR title/body scanned before `gh pr create` |
 | repair | `scanners/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
 | health | `git-hooks/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
