@@ -41,18 +41,23 @@ dispatcher::detect_repo_kind() {
     echo "other"
 }
 
-# Delegate to a repo-local hook if it exists.
+# Run the repo-local hook if it exists, then RETURN (AND-composition).
 #
-# Usage:  dispatcher::delegate_if_present <hook-name> "$@"
+# Usage:  dispatcher::run_local_hook <hook-name> "$@"
 #
-# Looks for `<repo-root>/.githooks/<hook-name>` and, when it is present and
-# executable, execs it with the original arguments. stdin is inherited so
-# hooks that consume ref ranges (pre-push, pre-receive) keep working.
+# Looks for `<repo-root>/.githooks/<hook-name>` and, when present and
+# executable, runs it with the original arguments and propagates its exit
+# code. Unlike an exec-style delegation, control returns to the caller so
+# the dispatcher's own baseline checks still run afterwards — a repo-local
+# hook adds rules on top of the baseline, it can never replace it.
+#
+# stdin is inherited; hooks that consume ref lines (pre-push) must capture
+# stdin themselves before calling this and re-feed it (see pre-push).
 #
 # Returns:
-#   0    — nothing delegated, caller should continue with its fallback logic
-#   (exec) — control transferred to the local hook; this function never returns
-dispatcher::delegate_if_present() {
+#   0 — no local hook, or the local hook passed
+#   N — the local hook's non-zero exit code
+dispatcher::run_local_hook() {
     local hook_name="$1"
     shift
 
@@ -62,7 +67,8 @@ dispatcher::delegate_if_present() {
 
     local local_hook="${repo_root}/.githooks/${hook_name}"
     if [ -x "${local_hook}" ]; then
-        exec "${local_hook}" "$@"
+        "${local_hook}" "$@"
+        return $?
     fi
 
     return 0

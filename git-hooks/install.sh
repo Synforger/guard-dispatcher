@@ -52,6 +52,18 @@ done
 # lost the +x bit if the user re-created files via editor.
 chmod +x "${SCRIPT_DIR}/pre-commit" "${SCRIPT_DIR}/commit-msg" "${SCRIPT_DIR}/pre-push" "${SCRIPT_DIR}/doctor.sh"
 
+# Expose the scanners and helper scripts alongside the hooks so Taskfiles
+# and shells can invoke them via a stable path (git only executes known
+# hook names, so extra entries here are inert to git itself).
+GUARD_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+for entry in scanners scripts; do
+    dst="${TARGET_DIR}/${entry}"
+    if [ -e "${dst}" ] || [ -L "${dst}" ]; then
+        rm -rf "${dst}"
+    fi
+    ln -s "${GUARD_ROOT}/${entry}" "${dst}"
+done
+
 git config --global core.hooksPath "${TARGET_DIR}"
 
 cat <<MSG

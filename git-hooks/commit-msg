@@ -3,8 +3,9 @@
 # Global commit-msg dispatcher
 # =============================================================================
 # Behaviour:
-#   1. If the repo ships `.githooks/commit-msg`, delegate to it (exec) and stop.
-#   2. Otherwise on Synforger (and no-remote fail-safe) repos, run
+#   1. If the repo ships `.githooks/commit-msg`, run it first (AND — a pass
+#      does not skip the baseline below).
+#   2. On enforced (and no-remote fail-safe) repos, run
 #      `.tooling/local-ci/anon-scan.sh` against the commit message file so
 #      personal identifiers cannot leak via commit subject / body — the gap
 #      that turned `gh run` records into a public leak surface earlier this
@@ -20,17 +21,18 @@ set -eu
 # shellcheck source=lib/dispatcher-common.sh
 . "$(dirname "$0")/lib/dispatcher-common.sh"
 
-dispatcher::delegate_if_present "commit-msg" "$@"
+local_status=0
+dispatcher::run_local_hook "commit-msg" "$@" || local_status=$?
 
 kind="$(dispatcher::detect_repo_kind)"
 if [ "${kind}" = "other" ]; then
-    exit 0
+    exit "${local_status}"
 fi
 
 msg_file="${1:-}"
 if [ -z "${msg_file}" ] || [ ! -f "${msg_file}" ]; then
     # No message file to inspect — nothing to enforce.
-    exit 0
+    exit "${local_status}"
 fi
 
 scanner="$(dispatcher::locate_anon_scanner || true)"
@@ -47,4 +49,7 @@ fi
 # ANON_SCAN_PATHS mode scans only the paths it's given, so the walk stays
 # fast and no other files are re-scanned here (pre-commit already covered
 # staged content).
-ANON_SCAN_PATHS="${msg_file}" bash "${scanner}"
+if ! ANON_SCAN_PATHS="${msg_file}" bash "${scanner}"; then
+    exit 1
+fi
+exit "${local_status}"
