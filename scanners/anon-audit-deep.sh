@@ -43,6 +43,7 @@
 set -uo pipefail
 
 RANGE=""
+GITHUB_SINCE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --range)
@@ -55,6 +56,13 @@ while [ $# -gt 0 ]; do
             ;;
         --range=*)
             RANGE="${1#--range=}"
+            ;;
+        --github-since)
+            shift
+            GITHUB_SINCE="${1:-}"
+            ;;
+        --github-since=*)
+            GITHUB_SINCE="${1#--github-since=}"
             ;;
         -h|--help)
             sed -n '1,50p' "$0"
@@ -230,17 +238,23 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
         if [ -z "${repo}" ]; then
             log_warn "remote origin が GitHub URL でない、 GitHub 側 source 7-11 を skip"
         else
-            # --- source 7: PR title/body ---
-            printf '\n=== source 7/11: GitHub PR title/body ===\n' >&2
-            hits=$(gh api --paginate "repos/${repo}/pulls?state=all&per_page=100" --jq '.[] | .title, .body' 2>/dev/null | scan_perl)
-            n=$(count_hits "GitHub PRs" "${hits}")
-            total=$((total + n))
-
-            # --- source 8: Issue title/body ---
-            printf '\n=== source 8/11: GitHub Issues title/body ===\n' >&2
-            hits=$(gh api --paginate "repos/${repo}/issues?state=all&per_page=100" --jq '.[] | .title, .body' 2>/dev/null | scan_perl)
-            n=$(count_hits "GitHub Issues" "${hits}")
-            total=$((total + n))
+            # --- source 7+8: PR + Issue title/body ---
+            # The issues endpoint returns PRs too, so one paginated walk
+            # covers both. With --github-since, only records updated after
+            # that instant are fetched (body edits bump updated_at, so
+            # after-the-fact edits are still caught) — keeps the weekly
+            # cost proportional to the week's activity, not repo age.
+            if [ -n "${GITHUB_SINCE}" ]; then
+                printf '\n=== source 7-8/11: GitHub PR+Issue title/body (updated since %s) ===\n' "${GITHUB_SINCE}" >&2
+                hits=$(gh api --paginate "repos/${repo}/issues?state=all&per_page=100&since=${GITHUB_SINCE}" --jq '.[] | .title, .body' 2>/dev/null | scan_perl)
+                n=$(count_hits "GitHub PRs+Issues" "${hits}")
+                total=$((total + n))
+            else
+                printf '\n=== source 7-8/11: GitHub PR+Issue title/body (full) ===\n' >&2
+                hits=$(gh api --paginate "repos/${repo}/issues?state=all&per_page=100" --jq '.[] | .title, .body' 2>/dev/null | scan_perl)
+                n=$(count_hits "GitHub PRs+Issues" "${hits}")
+                total=$((total + n))
+            fi
 
             # --- source 9: repo description + topics + homepage ---
             printf '\n=== source 9/11: GitHub repo description / topics / homepage ===\n' >&2
@@ -260,7 +274,14 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
             # scrub で history + PR title を rename しても、 ここに残ると
             # 公開状態で参照可能 (= 実 事故を起こしたのでこの source が追加された)。
             printf '\n=== source 11/11: GitHub Actions run records (= displayTitle) ===\n' >&2
-            hits=$(gh api --paginate "repos/${repo}/actions/runs?per_page=100" --jq '.workflow_runs[].display_title' 2>/dev/null | scan_perl)
+            if [ -n "${GITHUB_SINCE}" ]; then
+                # Run titles are immutable, so a created-date filter loses
+                # nothing. The API accepts date-only bounds.
+                since_date="${GITHUB_SINCE%%T*}"
+                hits=$(gh api --paginate "repos/${repo}/actions/runs?per_page=100&created=%3E%3D${since_date}" --jq '.workflow_runs[].display_title' 2>/dev/null | scan_perl)
+            else
+                hits=$(gh api --paginate "repos/${repo}/actions/runs?per_page=100" --jq '.workflow_runs[].display_title' 2>/dev/null | scan_perl)
+            fi
             n=$(count_hits "GitHub runs" "${hits}")
             total=$((total + n))
         fi
