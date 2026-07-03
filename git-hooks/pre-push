@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Global pre-push dispatcher
+# =============================================================================
+# Behaviour:
+#   1. If the repo ships `.githooks/pre-push`, delegate to it (exec) and stop.
+#   2. Otherwise, for Synforger (and no-remote fail-safe) repos, parse stdin
+#      ref ranges and run `.tooling/local-ci/anon-audit-deep.sh --range` on
+#      each outgoing commit range. Missing scanner = hard fail.
+#   3. Other repos are a no-op after the delegation check.
+#
+# stdin format (per git hooks docs):
+#   <local-ref> SP <local-sha> SP <remote-ref> SP <remote-sha> LF
+# A remote-sha of all zeros = new branch on the remote.
+# A local-sha  of all zeros = branch delete (skipped, no diff to scan).
+#
+# Range calculation:
+#   normal push  — <remote-sha>..<local-sha>
+#   new branch   — origin/<default>..<local-sha>
+#                  (approximation: scans the delta from the repo's default
+#                   branch, since the remote has no ref yet. Covers the
+#                   common feature-branch push. Truly disjoint histories
+#                   fall back to full mode via task audit:deep.)
+# =============================================================================
+set -eu
+
+# shellcheck source=lib/dispatcher-common.sh
+. "$(dirname "$0")/lib/dispatcher-common.sh"
+
+dispatcher::delegate_if_present "pre-push" "$@"
+
+kind="$(dispatcher::detect_repo_kind)"
+if [ "${kind}" = "other" ]; then
+    exit 0
+fi
+
+scanner="$(dispatcher::locate_deep_scanner || true)"
+if [ -z "${scanner}" ]; then
+    cat >&2 <<'MSG'
+[pre-push] anon-audit-deep.sh could not be resolved (repo-local or guard
+           bundled). The guard checkout is likely missing or moved —
+           re-run its install.sh from a healthy checkout.
+MSG
+    exit 1
+fi
+
+zero='0000000000000000000000000000000000000000'
+default_branch="$(dispatcher::default_branch)"
+any_leak=0
+
+# git feeds pre-push lines through stdin. Read until EOF so an empty push
+# (no matching refspec) just falls through and exits 0.
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -z "${local_ref}" ] && continue
+
+    # delete push — nothing outgoing to scan
+    if [ "${local_sha}" = "${zero}" ]; then
+        continue
+    fi
+
+    if [ "${remote_sha}" = "${zero}" ]; then
+        # new remote branch — scan the delta from origin/<default>
+        revspec="origin/${default_branch}..${local_sha}"
+        if ! git rev-parse "origin/${default_branch}" >/dev/null 2>&1; then
+            # No local ref for the default branch (fresh clone edge case) —
+            # fall back to scanning the single tip commit.
+            revspec="${local_sha}"
+        fi
+    else
+        revspec="${remote_sha}..${local_sha}"
+    fi
+
+    printf '[pre-push] anon-audit-deep --range %s (ref %s)\n' "${revspec}" "${local_ref}" >&2
+    if ! bash "${scanner}" --range "${revspec}"; then
+        # Try to self-heal only when the operator opted in — a silent
+        # filter-repo pass on every push would be too surprising, and it
+        # can't undo a mis-scoped rewrite.
+        fixer="$(dispatcher::locate_scanner "anon-fix.sh" || true)"
+        if [ "${ANON_FIX_AUTO:-0}" = "1" ] && [ -n "${fixer}" ]; then
+            echo "[pre-push] ANON_FIX_AUTO=1 — running anon-fix.sh --auto..." >&2
+            if bash "${fixer}" --range "${revspec}" --auto; then
+                echo "[pre-push] anon-fix succeeded; push proceeds." >&2
+                continue
+            fi
+            echo "[pre-push] anon-fix failed — refusing push." >&2
+            any_leak=1
+        else
+            cat >&2 <<HINT
+
+To scrub the leak in place before push (rewrites the outgoing range
+so the public record shows neither the leak nor a repair scar):
+
+    bash ${fixer:-<guard>/scanners/anon-fix.sh} --range ${revspec}
+
+Or export ANON_FIX_AUTO=1 to have this hook do it for you automatically.
+HINT
+            any_leak=1
+        fi
+    fi
+done
+
+exit "${any_leak}"

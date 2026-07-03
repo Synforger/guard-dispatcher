@@ -1,0 +1,14 @@
+# anon-words(検出禁止語リスト)の例
+#
+# このファイルは派生プロジェクトでの参考用。
+# 実際の運用時は .tooling/local-ci/anon-words.txt を手元で作成し、
+# 自分の本名・個人メアド・特定情報を入れる(.gitignore で除外される)。
+#
+# 1行1語、コメント行は # で始める。
+# anon-scan は全 staged file 内に対してこのリストの語を検索する。
+
+# === 例(自分の情報に置き換える) ===
+# YourFamilyName
+# YourGivenName
+# your.email@example.com
+# your-employer-name

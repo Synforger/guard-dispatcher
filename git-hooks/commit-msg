@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Global commit-msg dispatcher
+# =============================================================================
+# Behaviour:
+#   1. If the repo ships `.githooks/commit-msg`, delegate to it (exec) and stop.
+#   2. Otherwise on Synforger (and no-remote fail-safe) repos, run
+#      `.tooling/local-ci/anon-scan.sh` against the commit message file so
+#      personal identifiers cannot leak via commit subject / body — the gap
+#      that turned `gh run` records into a public leak surface earlier this
+#      week. Missing scanner = hard fail.
+#   3. Other repos remain a no-op after delegation.
+#
+# Git invokes this hook as `commit-msg <message-file>`, where <message-file>
+# is the path to a temporary file (typically .git/COMMIT_EDITMSG) whose
+# contents are the pending commit message.
+# =============================================================================
+set -eu
+
+# shellcheck source=lib/dispatcher-common.sh
+. "$(dirname "$0")/lib/dispatcher-common.sh"
+
+dispatcher::delegate_if_present "commit-msg" "$@"
+
+kind="$(dispatcher::detect_repo_kind)"
+if [ "${kind}" = "other" ]; then
+    exit 0
+fi
+
+msg_file="${1:-}"
+if [ -z "${msg_file}" ] || [ ! -f "${msg_file}" ]; then
+    # No message file to inspect — nothing to enforce.
+    exit 0
+fi
+
+scanner="$(dispatcher::locate_anon_scanner || true)"
+if [ -z "${scanner}" ]; then
+    cat >&2 <<'MSG'
+[commit-msg] anon-scan.sh could not be resolved (repo-local or guard bundled).
+             The guard checkout is likely missing or moved — re-run its
+             install.sh from a healthy checkout.
+MSG
+    exit 1
+fi
+
+# Feed just the commit message file to the scanner. anon-scan.sh in
+# ANON_SCAN_PATHS mode scans only the paths it's given, so the walk stays
+# fast and no other files are re-scanned here (pre-commit already covered
+# staged content).
+ANON_SCAN_PATHS="${msg_file}" bash "${scanner}"

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Global pre-commit dispatcher
+# =============================================================================
+# Behaviour:
+#   1. If the repo ships `.githooks/pre-commit`, delegate to it (exec) and stop.
+#   2. Otherwise, if the repo is a Synforger repo, run the repo's local
+#      anon-scanner against staged files. Missing scanner = hard fail (the
+#      whole point of this dispatcher is to make missing scanners impossible
+#      to overlook).
+#   3. Otherwise (personal / third-party / work / no-remote), no-op.
+#
+# The dispatcher never invents anon policy of its own — the source of truth
+# lives in each repo's `.tooling/local-ci/anon-scan.sh` + `anon-words.txt`.
+# =============================================================================
+set -eu
+
+# shellcheck source=lib/dispatcher-common.sh
+. "$(dirname "$0")/lib/dispatcher-common.sh"
+
+dispatcher::delegate_if_present "pre-commit" "$@"
+
+kind="$(dispatcher::detect_repo_kind)"
+case "${kind}" in
+    other)
+        exit 0
+        ;;
+    synforger|no-remote)
+        # Fresh repos with no remote are treated as if they might become
+        # Synforger repos — fail safe rather than skip the scan.
+        ;;
+esac
+
+scanner="$(dispatcher::locate_anon_scanner || true)"
+if [ -z "${scanner}" ]; then
+    cat >&2 <<'MSG'
+[pre-commit] anon-scan.sh could not be resolved.
+             Lookup order: <repo>/.tooling/local-ci/anon-scan.sh, then the
+             guard-dispatcher checkout's scanners/ directory. Neither was
+             found — the guard checkout is likely missing or moved. Re-run
+             guard-dispatcher's install.sh from a healthy checkout.
+MSG
+    exit 1
+fi
+
+staged="$(git diff --cached --name-only --diff-filter=ACMRT)"
+if [ -z "${staged}" ]; then
+    exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+abs_paths=""
+while IFS= read -r rel; do
+    [ -z "${rel}" ] && continue
+    abs_paths="${abs_paths}${repo_root}/${rel}
+"
+done <<EOF
+${staged}
+EOF
+
+ANON_SCAN_PATHS="${abs_paths}" bash "${scanner}"
