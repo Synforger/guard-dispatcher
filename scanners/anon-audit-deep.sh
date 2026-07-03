@@ -232,13 +232,13 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
         else
             # --- source 7: PR title/body ---
             printf '\n=== source 7/11: GitHub PR title/body ===\n' >&2
-            hits=$(gh pr list --repo "${repo}" --state all --limit 200 --json title,body 2>/dev/null | scan_perl)
+            hits=$(gh api --paginate "repos/${repo}/pulls?state=all&per_page=100" --jq '.[] | .title, .body' 2>/dev/null | scan_perl)
             n=$(count_hits "GitHub PRs" "${hits}")
             total=$((total + n))
 
             # --- source 8: Issue title/body ---
             printf '\n=== source 8/11: GitHub Issues title/body ===\n' >&2
-            hits=$(gh issue list --repo "${repo}" --state all --limit 200 --json title,body 2>/dev/null | scan_perl)
+            hits=$(gh api --paginate "repos/${repo}/issues?state=all&per_page=100" --jq '.[] | .title, .body' 2>/dev/null | scan_perl)
             n=$(count_hits "GitHub Issues" "${hits}")
             total=$((total + n))
 
@@ -250,7 +250,7 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
 
             # --- source 10: releases ---
             printf '\n=== source 10/11: GitHub releases ===\n' >&2
-            hits=$(gh release list --repo "${repo}" --limit 100 --json name,body,tagName 2>/dev/null | scan_perl)
+            hits=$(gh api --paginate "repos/${repo}/releases?per_page=100" --jq '.[] | .name, .body, .tag_name' 2>/dev/null | scan_perl)
             n=$(count_hits "GitHub releases" "${hits}")
             total=$((total + n))
 
@@ -260,7 +260,7 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
             # scrub で history + PR title を rename しても、 ここに残ると
             # 公開状態で参照可能 (= 実 事故を起こしたのでこの source が追加された)。
             printf '\n=== source 11/11: GitHub Actions run records (= displayTitle) ===\n' >&2
-            hits=$(gh run list --repo "${repo}" --limit 500 --json displayTitle 2>/dev/null | scan_perl)
+            hits=$(gh api --paginate "repos/${repo}/actions/runs?per_page=100" --jq '.workflow_runs[].display_title' 2>/dev/null | scan_perl)
             n=$(count_hits "GitHub runs" "${hits}")
             total=$((total + n))
         fi
