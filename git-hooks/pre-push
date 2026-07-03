@@ -103,7 +103,15 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             revspec="${local_sha}"
         fi
     else
-        revspec="${remote_sha}..${local_sha}"
+        if git rev-parse --verify "${remote_sha}^{commit}" >/dev/null 2>&1; then
+            revspec="${remote_sha}..${local_sha}"
+        else
+            # Force-push after a history rewrite: the old remote tip no
+            # longer exists locally, so a two-dot range cannot be built.
+            # Scan the entire new history instead (safe side — this is
+            # exactly the moment a scrub is being published).
+            revspec="${local_sha}"
+        fi
     fi
 
     # Identity check over the outgoing commits: every author and committer
