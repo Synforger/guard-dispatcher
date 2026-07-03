@@ -57,6 +57,7 @@ fi
 
 zero='0000000000000000000000000000000000000000'
 default_branch="$(dispatcher::default_branch)"
+allowed_emails="$(dispatcher::allowed_emails)"
 any_leak=0
 
 # Iterate the captured ref lines. An empty push (no matching refspec)
@@ -69,6 +70,30 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         continue
     fi
 
+    # Protected-branch guard: PR merges happen server-side, so a direct
+    # local push to main/develop is a process violation. The initial push
+    # that creates the branch on the remote is the one legitimate case.
+    # GUARD_ALLOW_PROTECTED_PUSH=1 is the audited escape hatch.
+    if dispatcher::protected_branch "${remote_ref}" \
+        && [ "${remote_sha}" != "${zero}" ] \
+        && [ "${GUARD_ALLOW_PROTECTED_PUSH:-0}" != "1" ]; then
+        printf '[pre-push] direct push to %s refused (use a PR; set GUARD_ALLOW_PROTECTED_PUSH=1 to override once)\n' "${remote_ref}" >&2
+        any_leak=1
+        continue
+    fi
+
+    # Ref-name scan: a branch or tag name is published as-is on the remote,
+    # so it crosses the same boundary as file content.
+    ref_tmp="$(mktemp)"
+    printf '%s\n' "${local_ref}" > "${ref_tmp}"
+    if ! ANON_SCAN_PATHS="${ref_tmp}" bash "$(dispatcher::locate_anon_scanner)" >/dev/null 2>&1; then
+        printf '[pre-push] ref name %s matches the word list — rename the branch/tag before pushing\n' "${local_ref}" >&2
+        rm -f "${ref_tmp}"
+        any_leak=1
+        continue
+    fi
+    rm -f "${ref_tmp}"
+
     if [ "${remote_sha}" = "${zero}" ]; then
         # new remote branch — scan the delta from origin/<default>
         revspec="origin/${default_branch}..${local_sha}"
@@ -79,6 +104,18 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         fi
     else
         revspec="${remote_sha}..${local_sha}"
+    fi
+
+    # Identity check over the outgoing commits: every author and committer
+    # must be the expected public identity for this machine's enforced org.
+    bad_ids="$(git log "${revspec}" --pretty='format:%ae%n%ce' 2>/dev/null | sort -u | grep -Fxvf <(printf '%s\n' "${allowed_emails}") || true)"
+    if [ -n "${bad_ids}" ]; then
+        printf '[pre-push] unexpected author/committer in outgoing range %s:\n' "${revspec}" >&2
+        printf '%s\n' "${bad_ids}" | sed 's/^/    /' >&2
+        printf '           allowed identities:\n' >&2
+        printf '%s\n' "${allowed_emails}" | sed 's/^/    /' >&2
+        any_leak=1
+        continue
     fi
 
     printf '[pre-push] anon-audit-deep --range %s (ref %s)\n' "${revspec}" "${local_ref}" >&2

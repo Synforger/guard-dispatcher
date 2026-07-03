@@ -113,6 +113,31 @@ dispatcher::locate_scanner() {
 dispatcher::locate_anon_scanner() { dispatcher::locate_scanner "anon-scan.sh"; }
 dispatcher::locate_deep_scanner() { dispatcher::locate_scanner "anon-audit-deep.sh"; }
 
+# The committer identities enforced repos may use (one per line). Edit
+# alongside dispatcher::detect_repo_kind when adapting the guard to your
+# own org — these are the public identities that already appear on every
+# published commit, not secrets.
+dispatcher::allowed_emails() {
+    printf '%s\n' \
+        'synforge.dev@gmail.com' \
+        'synforger@users.noreply.github.com' \
+        'noreply@github.com'
+    # The last entry is GitHub itself — it is the committer on every
+    # server-side squash merge, so ranges that include merged history
+    # would otherwise always fail.
+}
+
+# Branches that must never receive a direct push from this machine.
+# PR merges happen server-side, so a local push to these refs is always a
+# process violation, except the very first push that creates the branch
+# on the remote (remote sha = zeros).
+dispatcher::protected_branch() {
+    case "$1" in
+        refs/heads/main|refs/heads/develop) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # Return the name of the default branch (best effort, no origin fetch).
 # Emits the branch name on stdout; falls back to whichever of main/master
 # actually exists on origin, then plain "main" as a last resort.

@@ -33,6 +33,21 @@ case "${kind}" in
         ;;
 esac
 
+# Identity check: an enforced repo committing under any other email is an
+# identity mix-up (usually a forgotten per-repo git config after a fresh
+# clone) — block it before the commit exists.
+actual_email="$(git config user.email 2>/dev/null || true)"
+if ! dispatcher::allowed_emails | grep -Fxq "${actual_email}"; then
+    {
+        echo "[pre-commit] identity mismatch on an enforced repo."
+        echo "             user.email = ${actual_email:-<unset>}"
+        echo "             allowed:"
+        dispatcher::allowed_emails | sed 's/^/               /'
+        echo "             Fix: git config user.email <one of the above>"
+    } >&2
+    exit 1
+fi
+
 scanner="$(dispatcher::locate_anon_scanner || true)"
 if [ -z "${scanner}" ]; then
     cat >&2 <<'MSG'
