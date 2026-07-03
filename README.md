@@ -37,7 +37,9 @@ cd guard-dispatcher
 bash scripts/bootstrap-machine.sh
 ```
 
-`bootstrap-machine.sh` symlinks the hooks into `~/.git-hooks/`, points
+`bootstrap-machine.sh` symlinks the hooks (and the `scanners/` and
+`scripts/` directories, for stable Taskfile paths) into `~/.git-hooks/`,
+points
 git's global `core.hooksPath` there, verifies your word list and
 external tools, and finishes with a doctor pass. It is idempotent.
 
@@ -54,15 +56,17 @@ anywhere. See `scanners/anon-words.example.txt` for the format.
 
 ## Scope
 
-Every hook follows the same three-step logic:
+Every hook follows the same AND-composition:
 
-1. If the repository ships its own `.githooks/<hook>`, delegate to it.
-   Repo-local hooks always win.
-2. Otherwise, classify by `origin` URL: repositories in the enforced
-   organisation (edit `dispatcher::detect_repo_kind` in
+1. If the repository ships its own `.githooks/<hook>`, run it first. A
+   failing repo hook fails the operation — but a passing one does not
+   skip the baseline. Repo hooks add rules; they never replace the
+   guard.
+2. Classify by `origin` URL: repositories in the enforced organisation
+   (edit `dispatcher::detect_repo_kind` in
    `git-hooks/lib/dispatcher-common.sh` to set yours) and repositories
-   with no remote (fail-safe) get the baseline scans.
-3. Everything else is a no-op.
+   with no remote (fail-safe) also get the baseline scans.
+3. Everything else runs only its own repo-local hooks.
 
 Scanners resolve repo-local first (`.tooling/local-ci/`), then fall
 back to this checkout's `scanners/` — so individual repositories need

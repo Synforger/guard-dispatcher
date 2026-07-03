@@ -3,11 +3,13 @@
 # Global pre-push dispatcher
 # =============================================================================
 # Behaviour:
-#   1. If the repo ships `.githooks/pre-push`, delegate to it (exec) and stop.
-#   2. Otherwise, for Synforger (and no-remote fail-safe) repos, parse stdin
+#   1. If the repo ships `.githooks/pre-push`, run it first (AND — a pass
+#      does not skip the baseline below). stdin ref lines are captured
+#      once and re-fed to both consumers.
+#   2. For enforced (and no-remote fail-safe) repos, parse the captured
 #      ref ranges and run `.tooling/local-ci/anon-audit-deep.sh --range` on
 #      each outgoing commit range. Missing scanner = hard fail.
-#   3. Other repos are a no-op after the delegation check.
+#   3. Other repos: only the repo-local hook result applies.
 #
 # stdin format (per git hooks docs):
 #   <local-ref> SP <local-sha> SP <remote-ref> SP <remote-sha> LF
@@ -27,11 +29,20 @@ set -eu
 # shellcheck source=lib/dispatcher-common.sh
 . "$(dirname "$0")/lib/dispatcher-common.sh"
 
-dispatcher::delegate_if_present "pre-push" "$@"
+# Capture the ref lines before anything else consumes stdin — both the
+# repo-local hook and the baseline loop below need them.
+ref_lines="$(cat)"
+
+local_status=0
+if [ -n "${ref_lines}" ]; then
+    printf '%s\n' "${ref_lines}" | dispatcher::run_local_hook "pre-push" "$@" || local_status=$?
+else
+    dispatcher::run_local_hook "pre-push" "$@" </dev/null || local_status=$?
+fi
 
 kind="$(dispatcher::detect_repo_kind)"
 if [ "${kind}" = "other" ]; then
-    exit 0
+    exit "${local_status}"
 fi
 
 scanner="$(dispatcher::locate_deep_scanner || true)"
@@ -48,8 +59,8 @@ zero='0000000000000000000000000000000000000000'
 default_branch="$(dispatcher::default_branch)"
 any_leak=0
 
-# git feeds pre-push lines through stdin. Read until EOF so an empty push
-# (no matching refspec) just falls through and exits 0.
+# Iterate the captured ref lines. An empty push (no matching refspec)
+# just falls through.
 while read -r local_ref local_sha remote_ref remote_sha; do
     [ -z "${local_ref}" ] && continue
 
@@ -97,6 +108,11 @@ HINT
             any_leak=1
         fi
     fi
-done
+done <<EOF_REFS
+${ref_lines}
+EOF_REFS
 
-exit "${any_leak}"
+if [ "${any_leak}" -ne 0 ]; then
+    exit 1
+fi
+exit "${local_status}"

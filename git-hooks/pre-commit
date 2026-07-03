@@ -2,13 +2,14 @@
 # =============================================================================
 # Global pre-commit dispatcher
 # =============================================================================
-# Behaviour:
-#   1. If the repo ships `.githooks/pre-commit`, delegate to it (exec) and stop.
-#   2. Otherwise, if the repo is a Synforger repo, run the repo's local
-#      anon-scanner against staged files. Missing scanner = hard fail (the
-#      whole point of this dispatcher is to make missing scanners impossible
-#      to overlook).
-#   3. Otherwise (personal / third-party / work / no-remote), no-op.
+# Behaviour (AND-composition):
+#   1. If the repo ships `.githooks/pre-commit`, run it first — a failing
+#      local hook fails the commit, but a passing one does NOT skip the
+#      baseline below. Repo hooks add rules; they never replace the guard.
+#   2. On enforced repos (org-matched or no-remote fail-safe), scan staged
+#      files with the anon scanner (repo-local override or the bundled
+#      copy). Unresolvable scanner = hard fail.
+#   3. On all other repos, only the repo-local hook result applies.
 #
 # The dispatcher never invents anon policy of its own — the source of truth
 # lives in each repo's `.tooling/local-ci/anon-scan.sh` + `anon-words.txt`.
@@ -18,12 +19,13 @@ set -eu
 # shellcheck source=lib/dispatcher-common.sh
 . "$(dirname "$0")/lib/dispatcher-common.sh"
 
-dispatcher::delegate_if_present "pre-commit" "$@"
+local_status=0
+dispatcher::run_local_hook "pre-commit" "$@" || local_status=$?
 
 kind="$(dispatcher::detect_repo_kind)"
 case "${kind}" in
     other)
-        exit 0
+        exit "${local_status}"
         ;;
     synforger|no-remote)
         # Fresh repos with no remote are treated as if they might become
@@ -45,7 +47,7 @@ fi
 
 staged="$(git diff --cached --name-only --diff-filter=ACMRT)"
 if [ -z "${staged}" ]; then
-    exit 0
+    exit "${local_status}"
 fi
 
 repo_root="$(git rev-parse --show-toplevel)"
@@ -58,4 +60,7 @@ done <<EOF
 ${staged}
 EOF
 
-ANON_SCAN_PATHS="${abs_paths}" bash "${scanner}"
+if ! ANON_SCAN_PATHS="${abs_paths}" bash "${scanner}"; then
+    exit 1
+fi
+exit "${local_status}"
