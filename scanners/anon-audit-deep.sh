@@ -136,7 +136,7 @@ if [ -n "${RANGE}" ]; then
         printf '(deep audit: push range %s has no commits, skipping)\n' "${RANGE}" >&2
         exit 0
     fi
-    printf '\n=== deep audit: push range mode (%s、 %s commits) ===\n' "${RANGE}" "${n_commits}" >&2
+    printf '\n=== deep audit: push range mode (%s, %s commits) ===\n' "${RANGE}" "${n_commits}" >&2
 fi
 
 # 共通 perl scanner (= 全 source で再利用)
