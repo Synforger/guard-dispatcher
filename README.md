@@ -64,11 +64,37 @@ Every hook follows the same AND-composition:
    failing repo hook fails the operation — but a passing one does not
    skip the baseline. Repo hooks add rules; they never replace the
    guard.
-2. Classify by `origin` URL: repositories in the enforced organisation
-   (edit `dispatcher::detect_repo_kind` in
-   `git-hooks/lib/dispatcher-common.sh` to set yours) and repositories
-   with no remote (fail-safe) also get the baseline scans.
+2. Classify the repository. Baseline scans run for:
+   - repositories in the enforced organisation (edit
+     `dispatcher::detect_repo_kind` in
+     `git-hooks/lib/dispatcher-common.sh` to set yours),
+   - repositories with no remote (fail-safe),
+   - repositories opted in locally via `git config guard.scope enforced`.
 3. Everything else runs only its own repo-local hooks.
+
+### Local scope opt-in (no repo changes)
+
+Blanket-enforce every repository under a directory — with its own word
+list and identities — using git's conditional include. Nothing is
+written into any repository:
+
+```ini
+# ~/.gitconfig
+[includeIf "gitdir:~/path/to/corp-org/"]
+    path = ~/.gitconfig-corp
+
+# ~/.gitconfig-corp
+[guard]
+    scope = enforced
+    wordlist = $HOME/.config/anon-words/corp.txt
+    allowedEmails = you@users.noreply.github.com,noreply@github.com
+```
+
+`guard.wordlist` feeds the scanners a scope-specific list (resolution:
+`$ANON_WORDS_FILE` → `guard.wordlist` → operator master → repo-local).
+`guard.allowedEmails` (comma-separated) replaces the built-in identity
+list for that scope. Existing repo-local `.githooks/` keep running
+first (AND-composition), so per-repo rules still apply on top.
 
 Scanners resolve repo-local first (`.tooling/local-ci/`), then fall
 back to this checkout's `scanners/` — so individual repositories need

@@ -37,9 +37,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Word list resolution (operator master first — the guard checkout itself
 # never carries the real list):
 #   1. $ANON_WORDS_FILE            explicit override
-#   2. $HOME/.config/anon-words/master.txt   operator master (bootstrap-machine standard)
-#   3. $SCRIPT_DIR/anon-words.txt  repo-local synced copy (legacy / repo override)
+#   2. `git config guard.wordlist` scope-specific list (conditional include)
+#   3. $HOME/.config/anon-words/master.txt   operator master (bootstrap-machine standard)
+#   4. $SCRIPT_DIR/anon-words.txt  repo-local synced copy (legacy / repo override)
 WORDS_FILE="${ANON_WORDS_FILE:-}"
+if [ -z "${WORDS_FILE}" ]; then
+    # Scope-specific list via `git config guard.wordlist` (set through a
+    # conditional include alongside guard.scope; `~` is expanded here).
+    WORDS_FILE="$(git config --get guard.wordlist 2>/dev/null || true)"
+    WORDS_FILE="${WORDS_FILE/#\~/${HOME}}"
+    WORDS_FILE="${WORDS_FILE/#\$HOME/${HOME}}"
+fi
 if [ -z "${WORDS_FILE}" ]; then
     if [ -f "${HOME}/.config/anon-words/master.txt" ]; then
         WORDS_FILE="${HOME}/.config/anon-words/master.txt"

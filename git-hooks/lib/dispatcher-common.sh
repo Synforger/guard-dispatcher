@@ -14,14 +14,34 @@
 # Repo classification.
 #
 # Emits one of:
+#   enforced   — local opt-in via `git config guard.scope enforced`
 #   synforger  — remote URL points at the Synforger GitHub organisation
 #   other      — remote URL points elsewhere (personal / third-party / work)
 #   no-remote  — no `origin` remote configured (fresh repo / detached working tree)
 #
-# The `synforger` result is what the dispatcher uses to decide whether to
-# enforce baseline scans on a repo that does not carry its own hooks. Every
-# other repo is treated as opt-in: it only gets whatever hooks it ships itself.
+# The `synforger` / `enforced` results are what the dispatcher uses to decide
+# whether to enforce baseline scans on a repo that does not carry its own
+# hooks. Everything else is opt-in: it only gets whatever hooks it ships.
+#
+# `guard.scope` enables machine-side blanket opt-ins through git's own
+# conditional include — nothing is written into any repository:
+#
+#   # ~/.gitconfig
+#   [includeIf "gitdir:~/path/to/corp-org/"]
+#       path = ~/.gitconfig-corp
+#   # ~/.gitconfig-corp
+#   [guard]
+#       scope = enforced
+#       wordlist = $HOME/.config/anon-words/corp.txt
+#       allowedEmails = you@users.noreply.github.com,noreply@github.com
 dispatcher::detect_repo_kind() {
+    local scope
+    scope="$(git config --get guard.scope 2>/dev/null || true)"
+    if [ "${scope}" = "enforced" ]; then
+        echo "enforced"
+        return 0
+    fi
+
     local url
     url="$(git config --get remote.origin.url 2>/dev/null || true)"
 
@@ -113,11 +133,19 @@ dispatcher::locate_scanner() {
 dispatcher::locate_anon_scanner() { dispatcher::locate_scanner "anon-scan.sh"; }
 dispatcher::locate_deep_scanner() { dispatcher::locate_scanner "anon-audit-deep.sh"; }
 
-# The committer identities enforced repos may use (one per line). Edit
-# alongside dispatcher::detect_repo_kind when adapting the guard to your
-# own org — these are the public identities that already appear on every
-# published commit, not secrets.
+# The committer identities enforced repos may use (one per line).
+#
+# `git config guard.allowedEmails` (comma-separated) overrides the built-in
+# list — set it in the same conditional-include file as `guard.scope` so a
+# work scope can carry its own identities. Without the override, the
+# built-in Synforger identities apply.
 dispatcher::allowed_emails() {
+    local configured
+    configured="$(git config --get guard.allowedEmails 2>/dev/null || true)"
+    if [ -n "${configured}" ]; then
+        printf '%s' "${configured}" | tr ',' '\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^$'
+        return 0
+    fi
     printf '%s\n' \
         'synforge.dev@gmail.com' \
         'synforger@users.noreply.github.com' \

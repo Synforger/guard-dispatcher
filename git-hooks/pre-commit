@@ -27,9 +27,10 @@ case "${kind}" in
     other)
         exit "${local_status}"
         ;;
-    synforger|no-remote)
+    synforger|no-remote|enforced)
         # Fresh repos with no remote are treated as if they might become
-        # Synforger repos — fail safe rather than skip the scan.
+        # Synforger repos — fail safe rather than skip the scan. `enforced`
+        # is the machine-side opt-in (guard.scope, see dispatcher-common.sh).
         ;;
 esac
 
