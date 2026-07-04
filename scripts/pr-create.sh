@@ -74,4 +74,11 @@ if ! ANON_SCAN_PATHS="${tmp}" bash "${SCANNER}"; then
     exit 1
 fi
 
+# credential 解決: repo 階層の .envrc (= direnv) が per-directory の GH_TOKEN
+# を持つ設計なので、 direnv があれば必ず repo の env で gh を呼ぶ。 直接 gh を
+# 呼ぶと呼び出し shell が持ち込んだ別 account の GH_TOKEN が勝ってしまう
+# (= 非対話 shell では direnv の prompt hook が発火しない)。
+if command -v direnv >/dev/null 2>&1; then
+    exec direnv exec "${REPO_ROOT}" gh pr create --base "${BASE}" --title "${TITLE}" --body-file "${BODY_FILE}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+fi
 exec gh pr create --base "${BASE}" --title "${TITLE}" --body-file "${BODY_FILE}" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
