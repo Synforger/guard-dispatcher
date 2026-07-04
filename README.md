@@ -90,8 +90,21 @@ git-hooks/          pre-commit / commit-msg / pre-push dispatchers,
 scanners/           anon-scan, anon-audit-deep (11-source audit),
                     anon-fix (history scrub), anon-sync-truth,
                     setup-lib, anon-words.example.txt
-scripts/            bootstrap-machine.sh, pr-create.sh
+scripts/            bootstrap-machine.sh, pr-create.sh,
+                    weekly-audit.sh, install-weekly-audit.sh
+tests/              bats suite (dispatcher helpers + all three hooks)
 ```
+
+## Tests
+
+```sh
+brew install bats-core   # once
+bats tests/
+```
+
+Every test builds a throwaway git repo and a sentinel-only word list
+under the test tmpdir — no operator data is read and nothing outside
+the tmpdir is touched.
 
 ## License
 
