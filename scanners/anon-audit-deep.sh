@@ -112,14 +112,14 @@ if [ -z "${WORDS_FILE}" ]; then
     fi
 fi
 if [ ! -f "${WORDS_FILE}" ]; then
-    log_fail "anon-words.txt が見つからない (${WORDS_FILE}): operator masterから sync してください (bash ${SCRIPT_DIR}/anon-sync-truth.sh)"
+    log_fail "anon-words.txt not found (${WORDS_FILE}): sync from the operator master (bash ${SCRIPT_DIR}/anon-sync-truth.sh)"
     exit 2
 fi
 
 # 真値を 1 行 1 pattern として読み、 | で連結して PCRE 化
 ANON_PATTERN="$(grep -v '^#' "${WORDS_FILE}" | grep -v '^$' | sed -E 's/[[:space:]]+#.*$//' | tr '\n' '|' | sed 's/|$//')"
 if [ -z "${ANON_PATTERN}" ]; then
-    log_fail "anon-words.txt に有効な pattern なし"
+    log_fail "anon-words.txt contains no active patterns"
     exit 2
 fi
 export ANON_PATTERN
@@ -133,7 +133,7 @@ if [ -n "${RANGE}" ]; then
     fi
     n_commits="$(git rev-list --count "${RANGE}" 2>/dev/null || echo 0)"
     if [ "${n_commits}" -eq 0 ]; then
-        printf '(deep audit: push range %s は commit 0 件、 skip)\n' "${RANGE}" >&2
+        printf '(deep audit: push range %s has no commits, skipping)\n' "${RANGE}" >&2
         exit 0
     fi
     printf '\n=== deep audit: push range mode (%s、 %s commits) ===\n' "${RANGE}" "${n_commits}" >&2
@@ -151,7 +151,7 @@ count_hits() {
     if [ "${n}" -eq 0 ]; then
         log_ok "${label}: clean"
     else
-        log_fail "${label}: ${n} 件 = $(printf "%s" "${hits}" | tr '\n' ' ')"
+        log_fail "${label}: ${n} hit(s) = $(printf "%s" "${hits}" | tr '\n' ' ')"
     fi
     echo "${n}"
 }
@@ -165,7 +165,7 @@ if [ -z "${RANGE}" ]; then
     if bash "${SCRIPT_DIR}/anon-scan.sh" >/dev/null 2>&1; then
         log_ok "tracked files: clean"
     else
-        log_fail "tracked files: leak あり (= bash anon-scan.sh で詳細確認)"
+        log_fail "tracked files: leak found (run bash anon-scan.sh for details)"
         total=$((total + 1))
     fi
 fi
@@ -177,7 +177,7 @@ fi
 #   自分の削除 diff で検出され、 修正 PR が構造的に push 不能になるため除外。
 #   range 内で追加→削除されたものは追加時の + 行で検出されるので漏れない。
 printf '
-=== source 2/11: git history blob (= 全 commit の全 diff) ===
+=== source 2/11: git history blob (all diffs of all commits) ===
 ' >&2
 if [ -n "${RANGE}" ]; then
     hits=$(git log "${RANGE}" -p 2>/dev/null | grep -E '^\+' | scan_perl)
@@ -230,9 +230,9 @@ total=$((total + n))
 # range mode では skip (= 全部 push 境界と直交)
 if [ -z "${RANGE}" ]; then
     if ! command -v gh >/dev/null 2>&1; then
-        log_warn "gh CLI 未 install、 GitHub 側 source 7-11 を skip"
+        log_warn "gh CLI not installed, skipping GitHub-side sources 7-11"
     elif ! gh auth status >/dev/null 2>&1; then
-        log_warn "gh CLI 未認証、 GitHub 側 source 7-11 を skip"
+        log_warn "gh CLI not authenticated, skipping GitHub-side sources 7-11"
     else
         # repo 名を git remote から推定。 github.com / github-* SSH alias 両対応。
         # BSD sed の ERE が alternation + quantifier で詰むので python に逃す。
@@ -244,7 +244,7 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
 ")
 
         if [ -z "${repo}" ]; then
-            log_warn "remote origin が GitHub URL でない、 GitHub 側 source 7-11 を skip"
+            log_warn "remote origin is not a GitHub URL, skipping GitHub-side sources 7-11"
         else
             # --- source 7+8: PR + Issue title/body ---
             # The issues endpoint returns PRs too, so one paginated walk
@@ -299,11 +299,11 @@ fi
 printf '\n' >&2
 if [ "${total}" -eq 0 ]; then
     if [ -n "${RANGE}" ]; then
-        log_ok "deep audit (push range): clean (= 0 件)"
+        log_ok "deep audit (push range): clean (0 hits)"
     else
-        log_ok "deep audit: 全 source clean (= 0 件)"
+        log_ok "deep audit: all sources clean (0 hits)"
     fi
     exit 0
 fi
-log_fail "deep audit: 合計 ${total} 件 leak"
+log_fail "deep audit: ${total} leak(s) in total"
 exit 1
