@@ -75,3 +75,31 @@ setup() {
     git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/gone-branch
     [ "$(dispatcher::default_branch)" = "main" ]
 }
+
+@test "detect_repo_kind: guard.scope=enforced wins over URL classification" {
+    mk_repo other
+    git config guard.scope enforced
+    [ "$(dispatcher::detect_repo_kind)" = "enforced" ]
+}
+
+@test "detect_repo_kind: unrelated guard.scope value falls through" {
+    mk_repo other
+    git config guard.scope observer
+    [ "$(dispatcher::detect_repo_kind)" = "other" ]
+}
+
+@test "allowed_emails: guard.allowedEmails overrides the built-in list" {
+    mk_repo no-remote
+    git config guard.allowedEmails "a@users.noreply.github.com, noreply@github.com"
+    run dispatcher::allowed_emails
+    [ "${lines[0]}" = "a@users.noreply.github.com" ]
+    [ "${lines[1]}" = "noreply@github.com" ]
+    [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "allowed_emails: built-in list without the override" {
+    mk_repo no-remote
+    run dispatcher::allowed_emails
+    [ "${lines[0]}" = "synforge.dev@gmail.com" ]
+    [ "${#lines[@]}" -eq 3 ]
+}
