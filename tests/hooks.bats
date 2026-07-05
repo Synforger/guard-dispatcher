@@ -17,6 +17,15 @@ setup() {
     [ "$status" -eq 0 ]
 }
 
+@test "pre-commit: exempt repo is a no-op even with a flagged file" {
+    mk_repo synforger
+    git config guard.scope exempt
+    echo "${SENTINEL}" > leak.txt
+    git add leak.txt
+    run_pre_commit
+    [ "$status" -eq 0 ]
+}
+
 @test "pre-commit: clean staged file passes on enforced repo" {
     mk_repo synforger
     echo "harmless" > ok.txt

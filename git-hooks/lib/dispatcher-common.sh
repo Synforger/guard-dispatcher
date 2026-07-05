@@ -15,6 +15,10 @@
 #
 # Emits one of:
 #   enforced   — local opt-in via `git config guard.scope enforced`
+#   exempt     — opt-out via `guard.scope=exempt`, or the repo working tree
+#                sits under a prefix configured via `guard.exemptPrefix`
+#                (blanket opt-out for a private state tree whose contents
+#                would structurally trip the baseline word list)
 #   synforger  — remote URL points at the Synforger GitHub organisation
 #   other      — remote URL points elsewhere (personal / third-party / work)
 #   no-remote  — no `origin` remote configured (fresh repo / detached working tree)
@@ -22,6 +26,8 @@
 # The `synforger` / `enforced` results are what the dispatcher uses to decide
 # whether to enforce baseline scans on a repo that does not carry its own
 # hooks. Everything else is opt-in: it only gets whatever hooks it ships.
+# `exempt` is a hard skip — dispatcher does nothing at all, and doctor stops
+# flagging local hook overrides as gaps.
 #
 # `guard.scope` enables machine-side blanket opt-ins through git's own
 # conditional include — nothing is written into any repository:
@@ -34,12 +40,39 @@
 #       scope = enforced
 #       wordlist = $HOME/.config/anon-words/corp.txt
 #       allowedEmails = you@users.noreply.github.com,noreply@github.com
+#
+# `guard.exemptPrefix` gives every repo whose physical working-tree root
+# starts with the configured absolute path the `exempt` classification —
+# useful for a private state directory whose contents include the very
+# words the master list flags. Set once on the machine and every clone/init
+# under that tree inherits the opt-out.
 dispatcher::detect_repo_kind() {
     local scope
     scope="$(git config --get guard.scope 2>/dev/null || true)"
     if [ "${scope}" = "enforced" ]; then
         echo "enforced"
         return 0
+    fi
+    if [ "${scope}" = "exempt" ]; then
+        echo "exempt"
+        return 0
+    fi
+
+    # Path-prefix opt-out. Reads the working tree root and matches it
+    # against `guard.exemptPrefix`; a leading `~` is expanded to $HOME so
+    # the config value can stay portable across machines.
+    local exempt_prefix
+    exempt_prefix="$(git config --get guard.exemptPrefix 2>/dev/null || true)"
+    if [ -n "${exempt_prefix}" ]; then
+        exempt_prefix="${exempt_prefix/#\~/${HOME}}"
+        local top
+        top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+        case "${top}" in
+            "${exempt_prefix}"|"${exempt_prefix}"/*)
+                echo "exempt"
+                return 0
+                ;;
+        esac
     fi
 
     local url

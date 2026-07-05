@@ -86,7 +86,7 @@ check_repo() {
         printf ' %slocal-hooksPath=%s%s' "${YEL}" "${local_hp}" "${NC}"
     fi
 
-    if [ "${kind}" = "other" ]; then
+    if [ "${kind}" = "other" ] || [ "${kind}" = "exempt" ]; then
         printf ' %s(no enforcement expected)%s\n' "${DIM}" "${NC}"
         return
     fi
