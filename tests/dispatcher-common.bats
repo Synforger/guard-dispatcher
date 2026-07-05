@@ -88,6 +88,51 @@ setup() {
     [ "$(dispatcher::detect_repo_kind)" = "other" ]
 }
 
+@test "detect_repo_kind: guard.scope=exempt overrides no-remote fail-safe" {
+    mk_repo no-remote
+    git config guard.scope exempt
+    [ "$(dispatcher::detect_repo_kind)" = "exempt" ]
+}
+
+@test "detect_repo_kind: guard.scope=exempt overrides synforger URL" {
+    mk_repo synforger
+    git config guard.scope exempt
+    [ "$(dispatcher::detect_repo_kind)" = "exempt" ]
+}
+
+@test "detect_repo_kind: guard.exemptPrefix opts a repo out by working-tree path" {
+    # Resolve the tmpdir to its physical path — on macOS /tmp is a symlink
+    # to /private/tmp and git rev-parse --show-toplevel emits the resolved
+    # form, so the exemptPrefix must match that form.
+    local root="$(cd "${BATS_TEST_TMPDIR}" && pwd -P)"
+    local sandbox="${root}/private-state"
+    mkdir -p "${sandbox}"
+    git init -q "${sandbox}/inner"
+    cd "${sandbox}/inner"
+    git remote add origin "https://github.com/someone-else/x.git"
+    git config --local guard.exemptPrefix "${sandbox}"
+    [ "$(dispatcher::detect_repo_kind)" = "exempt" ]
+}
+
+@test "detect_repo_kind: guard.exemptPrefix does not match a sibling path" {
+    local root="$(cd "${BATS_TEST_TMPDIR}" && pwd -P)"
+    mk_repo other
+    # Point the prefix at a directory the repo does NOT sit under.
+    git config --local guard.exemptPrefix "${root}/somewhere-else"
+    [ "$(dispatcher::detect_repo_kind)" = "other" ]
+}
+
+@test "detect_repo_kind: guard.exemptPrefix expands a leading tilde" {
+    export HOME="$(cd "${BATS_TEST_TMPDIR}" && pwd -P)"
+    local sandbox="${HOME}/private-state"
+    mkdir -p "${sandbox}"
+    git init -q "${sandbox}/inner"
+    cd "${sandbox}/inner"
+    git remote add origin "https://github.com/someone-else/x.git"
+    git config --local guard.exemptPrefix "~/private-state"
+    [ "$(dispatcher::detect_repo_kind)" = "exempt" ]
+}
+
 @test "allowed_emails: guard.allowedEmails overrides the built-in list" {
     mk_repo no-remote
     git config guard.allowedEmails "a@users.noreply.github.com, noreply@github.com"

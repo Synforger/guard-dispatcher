@@ -25,7 +25,7 @@ local_status=0
 dispatcher::run_local_hook "commit-msg" "$@" || local_status=$?
 
 kind="$(dispatcher::detect_repo_kind)"
-if [ "${kind}" = "other" ]; then
+if [ "${kind}" = "other" ] || [ "${kind}" = "exempt" ]; then
     exit "${local_status}"
 fi
 

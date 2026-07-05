@@ -41,7 +41,7 @@ else
 fi
 
 kind="$(dispatcher::detect_repo_kind)"
-if [ "${kind}" = "other" ]; then
+if [ "${kind}" = "other" ] || [ "${kind}" = "exempt" ]; then
     exit "${local_status}"
 fi
 
