@@ -6,10 +6,13 @@
 #   1. If the repo ships `.githooks/pre-push`, run it first (AND — a pass
 #      does not skip the baseline below). stdin ref lines are captured
 #      once and re-fed to both consumers.
-#   2. For enforced (and no-remote fail-safe) repos, parse the captured
-#      ref ranges and run `.tooling/local-ci/anon-audit-deep.sh --range` on
-#      each outgoing commit range. Missing scanner = hard fail.
-#   3. Other repos: only the repo-local hook result applies.
+#   2. On every repo except an explicit `exempt`, parse the captured ref
+#      ranges and run `.tooling/local-ci/anon-audit-deep.sh --range` on each
+#      outgoing commit range + scan the ref name. Default-on. Missing
+#      scanner = hard fail.
+#   3. Protected-branch and author-identity enforcement stay scoped to
+#      synforger / enforced / no-remote — `other` repos are scanned but keep
+#      their own push flow and committer identities.
 #
 # stdin format (per git hooks docs):
 #   <local-ref> SP <local-sha> SP <remote-ref> SP <remote-sha> LF
@@ -43,9 +46,18 @@ else
 fi
 
 kind="$(dispatcher::detect_repo_kind)"
-if [ "${kind}" = "other" ] || [ "${kind}" = "exempt" ]; then
+if [ "${kind}" = "exempt" ]; then
     exit "${local_status}"
 fi
+
+# Content + ref-name scans run for every non-exempt repo (default-on). The
+# protected-branch guard and author-identity enforcement are push-flow rules
+# that only make sense where a specific identity is required — `other` repos
+# (arbitrary remotes) are still scanned but keep their own flow and authors.
+enforce_identity=0
+case "${kind}" in
+    synforger|no-remote|enforced) enforce_identity=1 ;;
+esac
 
 scanner="$(dispatcher::locate_deep_scanner || true)"
 if [ -z "${scanner}" ]; then
@@ -77,7 +89,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # local push to main/develop is a process violation. The initial push
     # that creates the branch on the remote is the one legitimate case.
     # GUARD_ALLOW_PROTECTED_PUSH=1 is the audited escape hatch.
-    if dispatcher::protected_branch "${remote_ref}" \
+    if [ "${enforce_identity}" = "1" ] \
+        && dispatcher::protected_branch "${remote_ref}" \
         && [ "${remote_sha}" != "${zero}" ] \
         && [ "${GUARD_ALLOW_PROTECTED_PUSH:-0}" != "1" ]; then
         printf '[pre-push] direct push to %s refused (use a PR; set GUARD_ALLOW_PROTECTED_PUSH=1 to override once)\n' "${remote_ref}" >&2
@@ -144,14 +157,17 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
     # Identity check over the outgoing commits: every author and committer
     # must be the expected public identity for this machine's enforced org.
-    bad_ids="$(git log "${revspec}" --pretty='format:%ae%n%ce' 2>/dev/null | sort -u | grep -Fxvf <(printf '%s\n' "${allowed_emails}") || true)"
-    if [ -n "${bad_ids}" ]; then
-        printf '[pre-push] unexpected author/committer in outgoing range %s:\n' "${revspec}" >&2
-        printf '%s\n' "${bad_ids}" | sed 's/^/    /' >&2
-        printf '           allowed identities:\n' >&2
-        printf '%s\n' "${allowed_emails}" | sed 's/^/    /' >&2
-        any_leak=1
-        continue
+    # Only enforced-identity scopes — `other` repos keep their own authors.
+    if [ "${enforce_identity}" = "1" ]; then
+        bad_ids="$(git log "${revspec}" --pretty='format:%ae%n%ce' 2>/dev/null | sort -u | grep -Fxvf <(printf '%s\n' "${allowed_emails}") || true)"
+        if [ -n "${bad_ids}" ]; then
+            printf '[pre-push] unexpected author/committer in outgoing range %s:\n' "${revspec}" >&2
+            printf '%s\n' "${bad_ids}" | sed 's/^/    /' >&2
+            printf '           allowed identities:\n' >&2
+            printf '%s\n' "${allowed_emails}" | sed 's/^/    /' >&2
+            any_leak=1
+            continue
+        fi
     fi
 
     printf '[pre-push] anon-audit-deep --range %s (ref %s)\n' "${revspec}" "${local_ref}" >&2
