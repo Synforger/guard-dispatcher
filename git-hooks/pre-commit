@@ -6,10 +6,11 @@
 #   1. If the repo ships `.githooks/pre-commit`, run it first — a failing
 #      local hook fails the commit, but a passing one does NOT skip the
 #      baseline below. Repo hooks add rules; they never replace the guard.
-#   2. On enforced repos (org-matched or no-remote fail-safe), scan staged
-#      files with the anon scanner (repo-local override or the bundled
-#      copy). Unresolvable scanner = hard fail.
-#   3. On all other repos, only the repo-local hook result applies.
+#   2. On every repo except an explicit `exempt`, scan staged files with the
+#      anon scanner (repo-local override or the bundled copy). Default-on;
+#      opt-out is explicit only. Unresolvable scanner = hard fail.
+#   3. Identity enforcement stays scoped to synforger / enforced / no-remote —
+#      `other` repos are scanned but keep their own committer identity.
 #
 # The dispatcher never invents anon policy of its own — the source of truth
 # lives in each repo's `.tooling/local-ci/anon-scan.sh` + `anon-words.txt`.
@@ -23,31 +24,33 @@ local_status=0
 dispatcher::run_local_hook "pre-commit" "$@" || local_status=$?
 
 kind="$(dispatcher::detect_repo_kind)"
+
+# `exempt` is the only hard skip (= explicit opt-out, e.g. a private state
+# tree). Every other repo — including `other` (arbitrary remote) — gets the
+# anon scan by default: a personal identifier leaking is a fail-safe concern
+# regardless of where the repo points. Opt-out is explicit, never implicit.
+if [ "${kind}" = "exempt" ]; then
+    exit "${local_status}"
+fi
+
+# Identity check only where a specific committer identity is required
+# (synforger / enforced / fresh no-remote). Third-party `other` repos keep
+# their own author identity — never force ours onto them.
 case "${kind}" in
-    other|exempt)
-        exit "${local_status}"
-        ;;
     synforger|no-remote|enforced)
-        # Fresh repos with no remote are treated as if they might become
-        # Synforger repos — fail safe rather than skip the scan. `enforced`
-        # is the machine-side opt-in (guard.scope, see dispatcher-common.sh).
+        actual_email="$(git config user.email 2>/dev/null || true)"
+        if ! dispatcher::allowed_emails | grep -Fxq "${actual_email}"; then
+            {
+                echo "[pre-commit] identity mismatch on an enforced repo."
+                echo "             user.email = ${actual_email:-<unset>}"
+                echo "             allowed:"
+                dispatcher::allowed_emails | sed 's/^/               /'
+                echo "             Fix: git config user.email <one of the above>"
+            } >&2
+            exit 1
+        fi
         ;;
 esac
-
-# Identity check: an enforced repo committing under any other email is an
-# identity mix-up (usually a forgotten per-repo git config after a fresh
-# clone) — block it before the commit exists.
-actual_email="$(git config user.email 2>/dev/null || true)"
-if ! dispatcher::allowed_emails | grep -Fxq "${actual_email}"; then
-    {
-        echo "[pre-commit] identity mismatch on an enforced repo."
-        echo "             user.email = ${actual_email:-<unset>}"
-        echo "             allowed:"
-        dispatcher::allowed_emails | sed 's/^/               /'
-        echo "             Fix: git config user.email <one of the above>"
-    } >&2
-    exit 1
-fi
 
 scanner="$(dispatcher::locate_anon_scanner || true)"
 if [ -z "${scanner}" ]; then
