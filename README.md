@@ -142,8 +142,9 @@ except an explicit `exempt`:
   scanned before `gh pr create` runs.
 - After the fact, `anon-audit-deep` sweeps 11 sources — tracked files,
   every history blob, commit messages, branch names, tag names +
-  annotations, author/committer fields, GitHub PR + Issue title/body,
-  repo description/topics/homepage, releases, and Actions run titles.
+  annotations, author/committer fields, GitHub PR + Issue title/body +
+  comment threads, repo description/topics/homepage, releases, and
+  Actions run titles.
   The weekly audit runs it scoped to the week's activity.
 
 ### Not covered — know your gaps

@@ -16,6 +16,7 @@
 #   8. GitHub Issue title / body + comment threads
 #   9. GitHub repo description / topics / homepage
 #  10. GitHub releases (= title + body + tag)
+#  11. GitHub Actions run records (= displayTitle、 force-push で不変)
 #
 # gh CLI 未 install / 未認証なら 7-11 を skip 警告。 git 履歴系 1-6 は git
 # だけで実行可能。
