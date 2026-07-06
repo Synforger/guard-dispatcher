@@ -112,8 +112,14 @@ EXCLUDE_GLOBS=(
 
 scan_with_perl() {
     local file="$1"
-    perl -ne 'BEGIN { $re = qr/(?i)$ENV{ANON_PATTERN}/ }
-              if (/$re/) { print "$ARGV:$.:$_"; $found = 1 }
+    # NFKC folds full-width / compatibility characters to their canonical
+    # form before matching, so a full-width rendering of a listed name
+    # (`Ｎａｍｅ` -> `Name`) and half-width katakana can no longer slip past a
+    # half-width word list. `(?i)` still folds case. Match on the normalized
+    # form, print the original line.
+    perl -CSD -MUnicode::Normalize -MEncode -ne '
+              BEGIN { my $pat = NFKC(decode_utf8($ENV{ANON_PATTERN})); $re = qr/(?i)$pat/ }
+              if (NFKC($_) =~ /$re/) { print "$ARGV:$.:$_"; $found = 1 }
               END { exit($found ? 1 : 0) }' "$file"
 }
 

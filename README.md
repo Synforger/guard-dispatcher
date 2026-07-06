@@ -152,14 +152,16 @@ except an explicit `exempt`:
   content is still caught at `pre-push` — but `git push --no-verify`
   skips that too. Bypass is a deliberate operator action, never a
   default.
-- Text that never passes through git or `pr-create.sh` — PR/Issue
-  *comments*, reviews, wikis, gists, anything typed into the GitHub web
-  UI — is not scanned live. The deep audit covers PR/Issue title+body
-  after the fact, but not comment threads.
+- Text that never passes through git or `pr-create.sh` — wikis, gists,
+  and anything typed into the GitHub web UI — is not scanned live. The
+  deep audit covers PR/Issue title+body and comment threads (conversation
+  + inline review comments) after the fact; a PR review *summary* body,
+  wikis, and gists remain out of scope.
 - A repository whose local `core.hooksPath` overrides the global one
   runs no baseline; `doctor.sh` exists to surface exactly that.
-- The scan is literal PCRE against your word list — it cannot flag an
-  identifier the list does not contain.
+- The scan folds case and Unicode width (NFKC) before matching, but is
+  otherwise literal PCRE against your word list — it cannot flag an
+  identifier whose base form the list does not contain.
 
 ## Escape hatches
 
