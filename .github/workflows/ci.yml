@@ -1,0 +1,31 @@
+name: CI
+
+# Mirror of the local gate suite — the checks themselves live in the
+# repository (bats suite over throwaway git repos with sentinel word
+# lists) and run offline; this workflow only gives GitHub a trigger to
+# run the same suite on pull requests, so external contributors get a
+# status check without owning the guard machinery.
+#
+# Visibility guard: public-repo runner minutes are free; on a private
+# repository this workflow refuses to run so it can never consume the
+# plan's minute quota. Local gates remain the source of truth there.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install bats
+        run: sudo apt-get update -q && sudo apt-get install -y -q bats
+      - name: Dispatcher bats suite
+        run: bats tests/
