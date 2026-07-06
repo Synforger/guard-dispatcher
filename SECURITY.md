@@ -26,7 +26,7 @@ contact channel listed in the repo's README.
 | version | supported |
 |---|---|
 | main (= rolling release) | ✅ active |
-| tagged releases (= v0.x) | ⚠️ best effort (= no formal LTS) |
+| tagged releases (= v1.x) | ⚠️ best effort (= no formal LTS) |
 | forks / mirrors | ❌ out of scope |
 
 This is a personal project; there is no enterprise LTS. Security fixes

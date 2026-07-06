@@ -12,10 +12,11 @@
 #   4. 全 branch 名 (= local + remote)
 #   5. 全 tag 名 + tag annotation 本文
 #   6. 全 commit author + committer email + name
-#   7. GitHub PR title / body / labels (= gh api)
-#   8. GitHub Issue title / body
+#   7. GitHub PR title / body + comment threads (= gh api)
+#   8. GitHub Issue title / body + comment threads
 #   9. GitHub repo description / topics / homepage
 #  10. GitHub releases (= title + body + tag)
+#  11. GitHub Actions run records (= displayTitle、 force-push で不変)
 #
 # gh CLI 未 install / 未認証なら 7-11 を skip 警告。 git 履歴系 1-6 は git
 # だけで実行可能。
@@ -140,8 +141,10 @@ if [ -n "${RANGE}" ]; then
 fi
 
 # 共通 perl scanner (= 全 source で再利用)
+# NFKC で全角 / 互換文字を canonical 形に畳んでから照合する (= 半角 word list
+# を全角表記がすり抜けるのを防ぐ)。 (?i) で大小も畳む。
 scan_perl() {
-    perl -ne 'BEGIN { $re = qr{(?i)$ENV{ANON_PATTERN}} } if (/$re/) { print "$&\n" }' 2>/dev/null | sort -u
+    perl -CSD -MUnicode::Normalize -MEncode -ne 'BEGIN { my $pat = NFKC(decode_utf8($ENV{ANON_PATTERN})); $re = qr{(?i)$pat} } my $n = NFKC($_); if ($n =~ /$re/) { print "$&\n" }' 2>/dev/null | sort -u
 }
 
 count_hits() {
@@ -246,23 +249,35 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
         if [ -z "${repo}" ]; then
             log_warn "remote origin is not a GitHub URL, skipping GitHub-side sources 7-11"
         else
-            # --- source 7+8: PR + Issue title/body ---
+            # --- source 7-8: PR + Issue title/body + comment threads ---
             # The issues endpoint returns PRs too, so one paginated walk
-            # covers both. With --github-since, only records updated after
-            # that instant are fetched (body edits bump updated_at, so
-            # after-the-fact edits are still caught) — keeps the weekly
-            # cost proportional to the week's activity, not repo age.
+            # covers both title + body. Comment threads are the one public
+            # text surface that never passes through git or pr-create.sh, so
+            # they are folded into this source: `issues/comments` catches PR
+            # conversation + Issue comments (a PR comment is an issue comment
+            # server-side), `pulls/comments` catches inline diff review
+            # comments. Residual = a PR review *summary* body, which only a
+            # per-PR endpoint exposes (rare, left out to keep the walk cheap).
+            # With --github-since every endpoint is filtered to records
+            # updated after that instant (edits bump updated_at), keeping the
+            # weekly cost proportional to activity, not repo age.
             if [ -n "${GITHUB_SINCE}" ]; then
-                printf '\n=== source 7-8/11: GitHub PR+Issue title/body (updated since %s) ===\n' "${GITHUB_SINCE}" >&2
-                hits=$(gh api --paginate "repos/${repo}/issues?state=all&per_page=100&since=${GITHUB_SINCE}" --jq '.[] | .title, .body' 2>/dev/null | scan_perl)
-                n=$(count_hits "GitHub PRs+Issues" "${hits}")
-                total=$((total + n))
+                printf '\n=== source 7-8/11: GitHub PR+Issue title/body/comments (updated since %s) ===\n' "${GITHUB_SINCE}" >&2
+                hits=$( {
+                    gh api --paginate "repos/${repo}/issues?state=all&per_page=100&since=${GITHUB_SINCE}" --jq '.[] | .title, .body'
+                    gh api --paginate "repos/${repo}/issues/comments?per_page=100&since=${GITHUB_SINCE}" --jq '.[].body'
+                    gh api --paginate "repos/${repo}/pulls/comments?per_page=100&since=${GITHUB_SINCE}" --jq '.[].body'
+                } 2>/dev/null | scan_perl)
             else
-                printf '\n=== source 7-8/11: GitHub PR+Issue title/body (full) ===\n' >&2
-                hits=$(gh api --paginate "repos/${repo}/issues?state=all&per_page=100" --jq '.[] | .title, .body' 2>/dev/null | scan_perl)
-                n=$(count_hits "GitHub PRs+Issues" "${hits}")
-                total=$((total + n))
+                printf '\n=== source 7-8/11: GitHub PR+Issue title/body/comments (full) ===\n' >&2
+                hits=$( {
+                    gh api --paginate "repos/${repo}/issues?state=all&per_page=100" --jq '.[] | .title, .body'
+                    gh api --paginate "repos/${repo}/issues/comments?per_page=100" --jq '.[].body'
+                    gh api --paginate "repos/${repo}/pulls/comments?per_page=100" --jq '.[].body'
+                } 2>/dev/null | scan_perl)
             fi
+            n=$(count_hits "GitHub PR/Issue text" "${hits}")
+            total=$((total + n))
 
             # --- source 9: repo description + topics + homepage ---
             printf '\n=== source 9/11: GitHub repo description / topics / homepage ===\n' >&2
