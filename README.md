@@ -28,8 +28,10 @@ identity permanently into public history.
 | repair | `scanners/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
 | health | `git-hooks/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
 
-Enforcement targets are selected by `origin` URL (see *Scope* below);
-all other repositories pass through untouched.
+Content scanning is **default-on for every repository** — the only way
+out is an explicit `exempt` opt-out. Identity and branch-flow
+enforcement are additionally applied to repositories selected by
+`origin` URL (see *Scope* below).
 
 ## Install
 
@@ -64,18 +66,27 @@ Every hook follows the same AND-composition:
    failing repo hook fails the operation — but a passing one does not
    skip the baseline. Repo hooks add rules; they never replace the
    guard.
-2. Classify the repository. Baseline scans run for:
+2. **Content scans run on every repository by default** — staged files,
+   commit messages, outgoing push ranges, ref names. An arbitrary remote
+   is not an excuse: a personal identifier leaking is a fail-safe concern
+   regardless of where the repo points.
+3. **Identity and branch-flow enforcement** (committer allow-list,
+   protected-branch refusal) applies only where a specific identity is
+   required:
    - repositories in the enforced organisation (edit
      `dispatcher::detect_repo_kind` in
      `git-hooks/lib/dispatcher-common.sh` to set yours),
    - repositories with no remote (fail-safe),
    - repositories opted in locally via `git config guard.scope enforced`.
-3. Everything else runs only its own repo-local hooks. Explicit opt-out
-   is available via `git config guard.scope exempt`, and a blanket
-   opt-out for every repo under a private state directory can be set
-   with `git config --global guard.exemptPrefix ~/some/private/tree` —
-   useful when that directory's contents include the very words the
-   master list flags, which makes the baseline structurally impossible.
+
+   Third-party repositories keep their own committer identity and flow —
+   they are content-scanned, never identity-rewritten.
+4. The only hard opt-out is explicit: `git config guard.scope exempt`
+   per clone, or a blanket
+   `git config --global guard.exemptPrefix ~/some/private/tree` for
+   every repo under a private state directory — useful when that
+   directory's contents include the very words the master list flags,
+   which makes the baseline structurally impossible.
 
 ### Local scope opt-in (no repo changes)
 
@@ -104,6 +115,51 @@ first (AND-composition), so per-repo rules still apply on top.
 Scanners resolve repo-local first (`.tooling/local-ci/`), then fall
 back to this checkout's `scanners/` — so individual repositories need
 no toolkit of their own, but can override it.
+
+## Scan guarantee
+
+The contract a machine-wide install provides, stated precisely — both
+directions.
+
+### Guaranteed
+
+On a machine where `doctor.sh` reports no gaps, for every repository
+except an explicit `exempt`:
+
+- **No commit is created** whose staged file contents or commit message
+  match the word list (`pre-commit`, `commit-msg`).
+- **No push publishes** matching content: every outgoing commit is
+  deep-scanned — all blobs (full diffs), the message, and the
+  author/committer name+email — and the pushed branch or tag name is
+  scanned as well (`pre-push`). A new-branch push scans exactly the
+  commits the remote does not already have; force-pushed rewritten
+  history falls back to a full scan of the new history.
+- On identity-enforced repositories (enforced org / no-remote /
+  `guard.scope enforced`), additionally: the committer and every author
+  in the outgoing range must be on the identity allow-list, and direct
+  pushes to protected branches are refused.
+- PRs opened through `scripts/pr-create.sh` have their title and body
+  scanned before `gh pr create` runs.
+- After the fact, `anon-audit-deep` sweeps 11 sources — tracked files,
+  every history blob, commit messages, branch names, tag names +
+  annotations, author/committer fields, GitHub PR + Issue title/body,
+  repo description/topics/homepage, releases, and Actions run titles.
+  The weekly audit runs it scoped to the week's activity.
+
+### Not covered — know your gaps
+
+- `git commit --no-verify` skips the commit-time scan by design; the
+  content is still caught at `pre-push` — but `git push --no-verify`
+  skips that too. Bypass is a deliberate operator action, never a
+  default.
+- Text that never passes through git or `pr-create.sh` — PR/Issue
+  *comments*, reviews, wikis, gists, anything typed into the GitHub web
+  UI — is not scanned live. The deep audit covers PR/Issue title+body
+  after the fact, but not comment threads.
+- A repository whose local `core.hooksPath` overrides the global one
+  runs no baseline; `doctor.sh` exists to surface exactly that.
+- The scan is literal PCRE against your word list — it cannot flag an
+  identifier the list does not contain.
 
 ## Escape hatches
 
