@@ -70,7 +70,12 @@ Every hook follows the same AND-composition:
      `git-hooks/lib/dispatcher-common.sh` to set yours),
    - repositories with no remote (fail-safe),
    - repositories opted in locally via `git config guard.scope enforced`.
-3. Everything else runs only its own repo-local hooks.
+3. Everything else runs only its own repo-local hooks. Explicit opt-out
+   is available via `git config guard.scope exempt`, and a blanket
+   opt-out for every repo under a private state directory can be set
+   with `git config --global guard.exemptPrefix ~/some/private/tree` —
+   useful when that directory's contents include the very words the
+   master list flags, which makes the baseline structurally impossible.
 
 ### Local scope opt-in (no repo changes)
 

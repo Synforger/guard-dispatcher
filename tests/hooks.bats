@@ -17,6 +17,15 @@ setup() {
     [ "$status" -eq 0 ]
 }
 
+@test "pre-commit: exempt repo is a no-op even with a flagged file" {
+    mk_repo synforger
+    git config guard.scope exempt
+    echo "${SENTINEL}" > leak.txt
+    git add leak.txt
+    run_pre_commit
+    [ "$status" -eq 0 ]
+}
+
 @test "pre-commit: clean staged file passes on enforced repo" {
     mk_repo synforger
     echo "harmless" > ok.txt
@@ -174,4 +183,36 @@ setup() {
     unknown_sha="1111111111111111111111111111111111111111"
     run_pre_push "refs/heads/feature/x ${head} refs/heads/feature/x ${unknown_sha}"
     [ "$status" -eq 0 ]
+}
+
+@test "pre-push: new branch scans only commits missing from the remote" {
+    mk_repo synforger
+    # A flagged commit that is already published (reachable from a
+    # remote-tracking ref) must not block a new branch whose actual
+    # outgoing delta is clean.
+    echo "${SENTINEL}" > old-leak.txt && git add old-leak.txt && commit_bypassing_hooks "feat: published leak"
+    git update-ref refs/remotes/origin/develop HEAD
+    echo "clean" > clean.txt && git add clean.txt && commit_bypassing_hooks "feat: clean on top"
+    head="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/feature/x ${head} refs/heads/feature/x ${ZERO_SHA}"
+    [ "$status" -eq 0 ]
+}
+
+@test "pre-push: new branch with an already-public tip is skipped" {
+    mk_repo synforger
+    echo "${SENTINEL}" > old-leak.txt && git add old-leak.txt && commit_bypassing_hooks "feat: published leak"
+    git update-ref refs/remotes/origin/develop HEAD
+    head="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/feature/x ${head} refs/heads/feature/x ${ZERO_SHA}"
+    [ "$status" -eq 0 ]
+}
+
+@test "pre-push: new branch with fresh history is scanned in full" {
+    mk_repo synforger
+    # No remote-tracking refs exist, so nothing is provably public —
+    # the whole new history is scanned and the leak is caught.
+    echo "${SENTINEL}" > leak.txt && git add leak.txt && commit_bypassing_hooks "feat: sneaky"
+    head="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/feature/x ${head} refs/heads/feature/x ${ZERO_SHA}"
+    [ "$status" -eq 1 ]
 }

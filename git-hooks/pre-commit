@@ -24,7 +24,7 @@ dispatcher::run_local_hook "pre-commit" "$@" || local_status=$?
 
 kind="$(dispatcher::detect_repo_kind)"
 case "${kind}" in
-    other)
+    other|exempt)
         exit "${local_status}"
         ;;
     synforger|no-remote|enforced)

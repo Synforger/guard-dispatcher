@@ -18,11 +18,13 @@
 #
 # Range calculation:
 #   normal push  — <remote-sha>..<local-sha>
-#   new branch   — origin/<default>..<local-sha>
-#                  (approximation: scans the delta from the repo's default
-#                   branch, since the remote has no ref yet. Covers the
-#                   common feature-branch push. Truly disjoint histories
-#                   fall back to full mode via task audit:deep.)
+#   new branch   — <nearest-public-base>..<local-sha>
+#                  (base = the boundary between the tip and everything
+#                   already reachable from the target remote's tracking
+#                   refs, so published history is never re-scanned.
+#                   Nothing outgoing = skip; no public ancestor at all =
+#                   full new-history scan; several attachment points =
+#                   origin/<default> approximation as the safe over-scan.)
 # =============================================================================
 set -eu
 
@@ -41,7 +43,7 @@ else
 fi
 
 kind="$(dispatcher::detect_repo_kind)"
-if [ "${kind}" = "other" ]; then
+if [ "${kind}" = "other" ] || [ "${kind}" = "exempt" ]; then
     exit "${local_status}"
 fi
 
@@ -56,6 +58,7 @@ MSG
 fi
 
 zero='0000000000000000000000000000000000000000'
+remote_name="${1:-origin}"
 default_branch="$(dispatcher::default_branch)"
 allowed_emails="$(dispatcher::allowed_emails)"
 any_leak=0
@@ -95,12 +98,37 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     rm -f "${ref_tmp}"
 
     if [ "${remote_sha}" = "${zero}" ]; then
-        # new remote branch — scan the delta from origin/<default>
-        revspec="origin/${default_branch}..${local_sha}"
-        if ! git rev-parse "origin/${default_branch}" >/dev/null 2>&1; then
-            # No local ref for the default branch (fresh clone edge case) —
-            # fall back to scanning the single tip commit.
+        # New remote branch — scan only the truly-outgoing commits, i.e.
+        # those not already reachable from any tracking ref of the target
+        # remote. Ranging from origin/<default> instead would re-scan
+        # published history forever under a squash-merge flow (commits
+        # between the default branch and a feature tip never become
+        # ancestors of the default branch), tripping the audit on every
+        # new branch even when the actual delta is clean.
+        outgoing_count="$(git rev-list --count "${local_sha}" --not --remotes="${remote_name}" 2>/dev/null || echo 0)"
+        if [ "${outgoing_count}" -eq 0 ]; then
+            # Tip is already reachable on the remote — nothing outgoing.
+            continue
+        fi
+        bases="$(git rev-list --boundary "${local_sha}" --not --remotes="${remote_name}" 2>/dev/null | sed -n 's/^-//p' | sort -u)"
+        base_count="$(printf '%s' "${bases}" | grep -c . || true)"
+        if [ "${base_count}" -eq 1 ]; then
+            # Exactly one public attachment point — express it as the
+            # two-dot range the scanners (and anon-fix) understand.
+            revspec="${bases}..${local_sha}"
+        elif [ "${base_count}" -eq 0 ]; then
+            # Nothing reachable is public (fresh or disjoint history) —
+            # scan the entire new history (safe side).
             revspec="${local_sha}"
+        else
+            # Multiple public attachment points (a merge of published
+            # lines): a two-dot range cannot express the exact outgoing
+            # set, so keep the default-branch approximation as the safe
+            # over-scan.
+            revspec="origin/${default_branch}..${local_sha}"
+            if ! git rev-parse "origin/${default_branch}" >/dev/null 2>&1; then
+                revspec="${local_sha}"
+            fi
         fi
     else
         if git rev-parse --verify "${remote_sha}^{commit}" >/dev/null 2>&1; then
