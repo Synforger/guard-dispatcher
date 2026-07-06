@@ -5,12 +5,12 @@
 # Behaviour:
 #   1. If the repo ships `.githooks/commit-msg`, run it first (AND — a pass
 #      does not skip the baseline below).
-#   2. On enforced (and no-remote fail-safe) repos, run
+#   2. On every repo except an explicit `exempt`, run
 #      `.tooling/local-ci/anon-scan.sh` against the commit message file so
 #      personal identifiers cannot leak via commit subject / body — the gap
 #      that turned `gh run` records into a public leak surface earlier this
-#      week. Missing scanner = hard fail.
-#   3. Other repos remain a no-op after delegation.
+#      week. Default-on; opt-out is explicit only. Missing scanner = hard fail.
+#   3. Only an `exempt` repo is a no-op after delegation.
 #
 # Git invokes this hook as `commit-msg <message-file>`, where <message-file>
 # is the path to a temporary file (typically .git/COMMIT_EDITMSG) whose
@@ -25,7 +25,7 @@ local_status=0
 dispatcher::run_local_hook "commit-msg" "$@" || local_status=$?
 
 kind="$(dispatcher::detect_repo_kind)"
-if [ "${kind}" = "other" ] || [ "${kind}" = "exempt" ]; then
+if [ "${kind}" = "exempt" ]; then
     exit "${local_status}"
 fi
 
