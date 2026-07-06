@@ -9,10 +9,19 @@ setup() {
 
 # --- pre-commit ---------------------------------------------------------------
 
-@test "pre-commit: other repo is a no-op" {
+@test "pre-commit: other repo is scanned (default-on) and blocked on a leak" {
     mk_repo other
     echo "${SENTINEL}" > leak.txt
     git add leak.txt
+    run_pre_commit
+    [ "$status" -ne 0 ]
+}
+
+@test "pre-commit: other repo keeps its own committer identity (no identity enforcement)" {
+    mk_repo other
+    git config user.email "someone-else@example.com"
+    echo "clean content" > ok.txt
+    git add ok.txt
     run_pre_commit
     [ "$status" -eq 0 ]
 }
@@ -90,12 +99,12 @@ setup() {
     [ "$status" -eq 1 ]
 }
 
-@test "commit-msg: other repo is a no-op even with a flagged message" {
+@test "commit-msg: other repo is scanned (default-on) and blocked on a flagged message" {
     mk_repo other
     msg="${BATS_TEST_TMPDIR}/msg.txt"
     echo "feat: mention ${SENTINEL}" > "${msg}"
     run_commit_msg "${msg}"
-    [ "$status" -eq 0 ]
+    [ "$status" -ne 0 ]
 }
 
 # --- pre-push -----------------------------------------------------------------
@@ -116,6 +125,26 @@ setup() {
     head="$(git rev-parse HEAD)"
     run_pre_push "refs/heads/feature/x ${head} refs/heads/feature/x ${base}"
     [ "$status" -eq 1 ]
+}
+
+@test "pre-push: other repo is scanned (default-on) and blocked on a leak" {
+    mk_repo other
+    base="$(git rev-parse HEAD)"
+    echo "${SENTINEL}" > leak.txt && git add leak.txt && commit_bypassing_hooks "feat: sneaky"
+    head="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/feature/x ${head} refs/heads/feature/x ${base}"
+    [ "$status" -eq 1 ]
+}
+
+@test "pre-push: other repo keeps its own author (no identity enforcement)" {
+    mk_repo other
+    base="$(git rev-parse HEAD)"
+    echo "clean content" > ok.txt
+    git add ok.txt
+    git -c user.email=someone-else@example.com commit -q -m "feat: third-party author"
+    head="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/feature/x ${head} refs/heads/feature/x ${base}"
+    [ "$status" -eq 0 ]
 }
 
 @test "pre-push: direct push to main is refused" {
