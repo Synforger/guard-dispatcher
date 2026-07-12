@@ -1,0 +1,7 @@
+# Repo-local gitleaks config. Extends the default ruleset.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "staledocs pair ledger stores git blob hashes (40-hex), not secrets"
+paths = ['''\.staledocs/pairs/.*\.json$''']
