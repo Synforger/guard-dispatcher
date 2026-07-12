@@ -1,0 +1,29 @@
+{
+  "ack": {
+    "at": "2026-07-12T20:27:10+00:00",
+    "code_blobs": {
+      "git-hooks/commit-msg": "b5b393eb48eac157efac720fdc612bfa3f60ed92",
+      "git-hooks/doctor.sh": "7458605e9254e6a36006d0e14afc3be6983a8831",
+      "git-hooks/install.sh": "cb85ff449b50072566b48a155a06afaa70f2e578",
+      "git-hooks/lib/dispatcher-common.sh": "48abb0b0258b12f1d647d3480690c6e240a9a76b",
+      "git-hooks/pre-commit": "2c3174757b5e07796fa856bcdd01384100832729",
+      "git-hooks/pre-push": "bb846dc6f3d626f6fa3c3cb7fd3256ddfa6daeee",
+      "scanners/anon-audit-deep.sh": "f62706e4d356853f337ce4f41a467110984d79b6",
+      "scanners/anon-fix.sh": "9344b6654f1b24ffc1ca8bc6871459e8f955c412",
+      "scanners/anon-scan.sh": "1f8db506987f9cf78601993ef40f7a4bc89dcf9d",
+      "scanners/anon-sync-truth.sh": "01a4afa545dacb041c16acccd7bb82d72b525ddc",
+      "scanners/anon-words.example.txt": "5f64d17c23caaf2ed50df7c2d274c2cefd040099",
+      "scanners/setup-lib.sh": "1def0b59ae9ae3286d8cc9e45579a256ae779892",
+      "scripts/bootstrap-machine.sh": "dea088ed7363d252221daab1ff9703048904f078",
+      "scripts/install-weekly-audit.sh": "10d3da18af41999b8d248b7b48eb7496d305cbb3",
+      "scripts/pr-create.sh": "665229e884c75bd1826ae7dbb31dc989171df9cd",
+      "scripts/staledocs-check.sh": "34d54b7f6e5e777d77d5b72abc63fc5aa3633655",
+      "scripts/weekly-audit.sh": "c8deae256ec6f6c27fde296ffd29d1ef2aeee876"
+    },
+    "commit": "25a9ea77933d46a546a15fe630825070d5494645",
+    "doc_blob": "4036d0c8cc50b4b66d95727ebebeb73487791f5a",
+    "note": "onboarding baseline (README read-verified against hooks/scanners/scripts)"
+  },
+  "doc": "README.md",
+  "schema": 1
+}
