@@ -29,3 +29,5 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q bats
       - name: Dispatcher bats suite
         run: bats tests/
+      - name: staledocs coherence gate
+        run: bash scripts/staledocs-check.sh
