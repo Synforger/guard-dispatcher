@@ -1,0 +1,41 @@
+# staledocs — deterministic code<->docs drift detection.
+# README is the single deep doc of this repo and owns the whole machinery.
+version: 1
+gate: strict
+
+source:
+  include:
+    - "git-hooks/**"
+    - "scanners/**"
+    - "scripts/**"
+  exclude: []
+
+docs:
+  include:
+    - "README.md"
+    - "SECURITY.md"
+    - "CONTRIBUTING.md"
+  exclude: []
+
+pairs:
+  - doc: README.md
+    code: ["git-hooks/**", "scanners/**", "scripts/**"]
+
+mirror:
+  enabled: false
+
+standalone:
+  - SECURITY.md
+  - CONTRIBUTING.md
+
+global: []
+
+anchors:
+  min_length: 3
+  ignore:
+    # machine path under $HOME, not a repo path
+    - "$HOME/.config/anon-words/master.txt"
+    # paths inside repos that INSTALL the guard, not inside this repo
+    - ".tooling/local-ci/anon-words.txt"
+    - ".tooling/local-ci/"
+  include_fenced: false
