@@ -1,0 +1,32 @@
+{
+  "accepted": {
+    "anchors": {
+      "ignore": [
+        "$HOME/.config/anon-words/master.txt",
+        ".tooling/local-ci/",
+        ".tooling/local-ci/anon-words.txt"
+      ],
+      "include_fenced": false,
+      "min_length": 3
+    },
+    "docs_exclude": [],
+    "docs_include": [
+      "CONTRIBUTING.md",
+      "README.md",
+      "SECURITY.md"
+    ],
+    "gate": "strict",
+    "pair_docs": [
+      "README.md"
+    ],
+    "source_exclude": [],
+    "source_include": [
+      "git-hooks/**",
+      "scanners/**",
+      "scripts/**"
+    ]
+  },
+  "at": "2026-07-15T08:45:27+00:00",
+  "note": "initial config baseline (staledocs 1.0 rollout)",
+  "schema": 1
+}
