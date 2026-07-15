@@ -25,6 +25,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # staledocs trailer acks resolve against history; a shallow clone blinds the coherence gate
       - name: Install bats
         run: sudo apt-get update -q && sudo apt-get install -y -q bats
       - name: Dispatcher bats suite
