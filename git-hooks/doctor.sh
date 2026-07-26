@@ -10,9 +10,9 @@
 # is quietly skipped.
 #
 # Usage:
-#   _core/git-hooks/doctor.sh                       # scan ~/.git-hooks + CWD
-#   _core/git-hooks/doctor.sh <repo>... [<repo>...] # scan the given repos
-#   _core/git-hooks/doctor.sh --glob '<projects-root>/*'     # shell glob
+#   git-hooks/doctor.sh                       # scan ~/.git-hooks + CWD
+#   git-hooks/doctor.sh <repo>... [<repo>...] # scan the given repos
+#   git-hooks/doctor.sh --glob '<projects-root>/*'     # shell glob
 #
 # Exit code:
 #   0 — nothing wrong (dispatcher installed globally + every scanned repo is

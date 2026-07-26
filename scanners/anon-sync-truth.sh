@@ -32,7 +32,8 @@ if [ -f "${TRUTH_PATH}" ]; then
     cp "${TRUTH_PATH}" "${TARGET_PATH}"
     log_ok "synced anon-words.txt from operator master (${TRUTH_PATH})"
     echo "  → ${TARGET_PATH}"
-    line_count=$(grep -vc '^#\|^$' "${TARGET_PATH}" || true)
+    # BSD grep has no BRE alternation — use two -e patterns instead.
+    line_count=$(grep -cv -e '^#' -e '^$' "${TARGET_PATH}" || true)
     log_info "active pattern count: ${line_count} lines"
     exit 0
 fi

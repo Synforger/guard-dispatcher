@@ -20,8 +20,10 @@ if ! command -v staledocs >/dev/null 2>&1; then
         echo "staledocs-check: staledocs CLI not found; bootstrapping ${venv}"
         python3 -m venv "${venv}"
     fi
-    # keep the cached copy current — a stale venv must not pin old behaviour
-    "${venv}/bin/pip" install --quiet --upgrade staledocs
+    # keep the cached copy current within the same major — a stale venv must
+    # not pin old behaviour, but a surprise major release must not flip every
+    # repo's gate at once either. Bump the ceiling deliberately.
+    "${venv}/bin/pip" install --quiet --upgrade 'staledocs>=1,<2'
     PATH="${venv}/bin:${PATH}"
     export PATH
 fi
