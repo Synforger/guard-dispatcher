@@ -80,6 +80,17 @@ fi
 ANON_PATTERN="$(IFS='|'; echo "${fragments[*]}")"
 export ANON_PATTERN
 
+# Fail-closed compile probe. The per-file perl already exits non-zero on a
+# compile error (treated as "found"), but that reports a leak that does not
+# exist, per scanned file. Refusing up front with exit 2 keeps the failure
+# a loud configuration error instead — and keeps the semantics identical to
+# anon-audit-deep.sh, whose piped perl would otherwise fail open.
+if ! perl -CSD -MUnicode::Normalize -MEncode -e \
+        'my $pat = NFKC(decode_utf8($ENV{ANON_PATTERN})); qr/(?i)$pat/' 2>/dev/null; then
+    echo "error: word list does not compile as PCRE (${WORDS_FILE}) — fix the broken fragment" >&2
+    exit 2
+fi
+
 # Files / dirs that legitimately contain string fragments matching the
 # pattern (build artefacts, lockfiles, and the policy files that define the
 # pattern itself).

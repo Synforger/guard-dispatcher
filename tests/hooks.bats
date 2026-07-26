@@ -81,6 +81,25 @@ setup() {
     [ "$status" -eq 1 ]
 }
 
+@test "pre-commit: staged leak is caught even when the worktree copy was cleaned afterwards" {
+    mk_repo synforger
+    echo "contains ${SENTINEL} here" > leak.txt
+    git add leak.txt
+    echo "clean now" > leak.txt
+    run_pre_commit
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"STAGED content"* ]]
+}
+
+@test "pre-commit: unstaged worktree leak does not block a clean staged commit" {
+    mk_repo synforger
+    echo "harmless" > ok.txt
+    git add ok.txt
+    echo "${SENTINEL}" >> ok.txt
+    run_pre_commit
+    [ "$status" -eq 0 ]
+}
+
 # --- commit-msg ---------------------------------------------------------------
 
 @test "commit-msg: clean message passes" {

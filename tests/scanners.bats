@@ -31,6 +31,30 @@ WIDE_SENTINEL='ＸＬＥＡＫＸ７ｑ３ｚ'
     [ "$status" -eq 0 ]
 }
 
+# --- fail-closed on a malformed word list -------------------------------------
+# A fragment that does not compile as PCRE must be a loud configuration
+# error (exit 2), never a silent pass: the deep audit's piped perl used to
+# die inside a command substitution and report "0 hits = clean".
+
+@test "anon-scan: malformed word-list pattern is a configuration error (exit 2)" {
+    mk_repo synforger
+    printf '%s\nbroken(\n' "${SENTINEL}" > "${ANON_WORDS_FILE}"
+    echo "leak ${SENTINEL}" > leak.txt
+    ANON_SCAN_PATHS="$(pwd)/leak.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"does not compile"* ]]
+}
+
+@test "deep audit: malformed word-list pattern fails closed (exit 2, range mode)" {
+    mk_repo synforger
+    base="$(git rev-parse HEAD)"
+    echo "leak ${SENTINEL}" > leak.txt && git add leak.txt && commit_bypassing_hooks "feat: leaky"
+    printf '%s\nbroken(\n' "${SENTINEL}" > "${ANON_WORDS_FILE}"
+    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh" --range "${base}..HEAD"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"does not compile"* ]]
+}
+
 # --- anon-audit-deep.sh: comment threads --------------------------------------
 
 # Install a fake `gh` on PATH. Every GitHub call is clean except the
