@@ -69,17 +69,34 @@ if [ -z "${staged}" ]; then
     exit "${local_status}"
 fi
 
-repo_root="$(git rev-parse --show-toplevel)"
+# Scan the STAGED blobs, not the working-tree files. The two can differ
+# (stage a file, then edit it again before committing): scanning the
+# worktree would let a staged leak through whenever the worktree copy was
+# cleaned afterwards, and would conversely block a commit whose staged
+# content is clean. Each index blob is materialised under a temp mirror
+# that preserves the repo-relative path, so the scanner's basename /
+# extension exclusions keep working and findings print a recognisable path.
+staging_dir="$(mktemp -d -t guard-staged.XXXXXX)"
+trap 'rm -rf "${staging_dir}"' EXIT
+
 abs_paths=""
 while IFS= read -r rel; do
     [ -z "${rel}" ] && continue
-    abs_paths="${abs_paths}${repo_root}/${rel}
+    mkdir -p "${staging_dir}/$(dirname "${rel}")"
+    # A gitlink (submodule) or an intent-to-add entry has no readable blob —
+    # nothing stageable to scan, skip it.
+    if ! git show ":${rel}" > "${staging_dir}/${rel}" 2>/dev/null; then
+        rm -f "${staging_dir}/${rel}"
+        continue
+    fi
+    abs_paths="${abs_paths}${staging_dir}/${rel}
 "
 done <<EOF
 ${staged}
 EOF
 
 if ! ANON_SCAN_PATHS="${abs_paths}" bash "${scanner}"; then
+    printf '[pre-commit] the leak is in the STAGED content (paths above mirror the repo layout under %s)\n' "${staging_dir}" >&2
     exit 1
 fi
 exit "${local_status}"

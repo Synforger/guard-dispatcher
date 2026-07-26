@@ -125,6 +125,16 @@ if [ -z "${ANON_PATTERN}" ]; then
 fi
 export ANON_PATTERN
 
+# Fail-closed compile probe: one malformed PCRE fragment in the word list
+# would otherwise make every perl invocation below die inside a command
+# substitution, turning "scanner crashed" into "0 hits = clean" — a push
+# boundary that silently disarms itself. Refuse to scan at all instead.
+if ! perl -CSD -MUnicode::Normalize -MEncode -e \
+        'my $pat = NFKC(decode_utf8($ENV{ANON_PATTERN})); qr{(?i)$pat}' 2>/dev/null; then
+    log_fail "word list does not compile as PCRE (${WORDS_FILE}) — fix the broken fragment; scanning is disabled until it compiles"
+    exit 2
+fi
+
 # range mode の検証: revspec を git rev-list に食わせて合法か確認。 空 range
 # (= push 対象 commit ゼロ) は clean 扱いで即 exit 0。
 if [ -n "${RANGE}" ]; then
