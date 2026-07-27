@@ -52,8 +52,9 @@ external tools, and finishes with a doctor pass. It is idempotent.
 Scanners read one PCRE fragment per line from the first of:
 
 1. `$ANON_WORDS_FILE` (explicit override)
-2. `$HOME/.config/anon-words/master.txt` (recommended location)
-3. a repo-local `.tooling/local-ci/anon-words.txt` (legacy)
+2. `git config guard.wordlist` (scope-specific list — see *Local scope opt-in* below)
+3. `$HOME/.config/anon-words/master.txt` (recommended location)
+4. a repo-local `.tooling/local-ci/anon-words.txt` (legacy)
 
 The word list is private operator data — it is never committed
 anywhere. See `scanners/anon-words.example.txt` for the format.
@@ -106,8 +107,8 @@ written into any repository:
     allowedEmails = you@users.noreply.github.com,noreply@github.com
 ```
 
-`guard.wordlist` feeds the scanners a scope-specific list (resolution:
-`$ANON_WORDS_FILE` → `guard.wordlist` → operator master → repo-local).
+`guard.wordlist` feeds the scanners a scope-specific list (resolution
+order is single-sourced in *Word list* above).
 `guard.allowedEmails` (comma-separated) replaces the built-in identity
 list for that scope. Existing repo-local `.githooks/` keep running
 first (AND-composition), so per-repo rules still apply on top.

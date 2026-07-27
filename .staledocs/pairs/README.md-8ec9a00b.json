@@ -1,6 +1,6 @@
 {
   "ack": {
-    "at": "2026-07-26T19:36:55+00:00",
+    "at": "2026-07-27T04:10:45+00:00",
     "code_blobs": {
       "git-hooks/commit-msg": "b5b393eb48eac157efac720fdc612bfa3f60ed92",
       "git-hooks/doctor.sh": "873d656ebbf62245ad8930e11c64ab28a9156d6e",
@@ -20,9 +20,9 @@
       "scripts/staledocs-check.sh": "8e39b263ccf2e96e2ea705a717882b45e15941ad",
       "scripts/weekly-audit.sh": "c8deae256ec6f6c27fde296ffd29d1ef2aeee876"
     },
-    "commit": "bd0a3b4886e7dfec2509cf28fa9bd70f4f8cf931",
-    "doc_blob": "4036d0c8cc50b4b66d95727ebebeb73487791f5a",
-    "note": "anon-fix.sh still rewrites unpushed history in place (now with an upstream-intact assert); pre-push contract unchanged (ref scan resolves the scanner explicitly, csv/ipynb now in scan scope)"
+    "commit": "edb784895de3886c8a93b5ed23205ef39072fcce",
+    "doc_blob": "523e397f039f627a2784944de1b4c91f8a30e045",
+    "note": "README.md Word list section now carries the full 4-step resolution matching scanners/anon-scan.sh; the opt-in paragraph references it instead of restating the chain"
   },
   "doc": "README.md",
   "schema": 1
