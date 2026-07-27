@@ -186,9 +186,11 @@ fi
 
 found=0
 for path in "${scan_paths[@]}"; do
-    # Skip non-text files quickly.
+    # Skip binary formats quickly. Text-bearing data formats stay IN scope:
+    # .csv holds free-text columns and .ipynb embeds outputs (usernames,
+    # local paths) — both have real leak surface, so they are scanned.
     case "$path" in
-        *.png|*.jpg|*.jpeg|*.gif|*.pdf|*.zip|*.gz|*.tar|*.so|*.dylib|*.dll|*.exe|*.bin|*.csv|*.npy|*.ipynb)
+        *.png|*.jpg|*.jpeg|*.gif|*.pdf|*.zip|*.gz|*.tar|*.so|*.dylib|*.dll|*.exe|*.bin|*.npy)
             continue
             ;;
     esac

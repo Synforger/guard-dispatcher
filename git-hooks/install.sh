@@ -2,14 +2,14 @@
 # =============================================================================
 # Global hooks dispatcher — installer
 # =============================================================================
-# Symlinks this repo's `_core/git-hooks/` into `~/.git-hooks/` and points
+# Symlinks this repo's `git-hooks/` into `~/.git-hooks/` and points
 # git's global `core.hooksPath` at it. Every git repo on this machine will
 # then route hook execution through the dispatcher; non-Synforger repos are
 # a no-op (see pre-commit dispatcher for classification logic).
 #
 # Idempotent: re-running the installer just re-points the symlinks at the
 # clone you ran it from. Use that to switch which clone is the source of
-# truth (`cd <other clone> && _core/git-hooks/install.sh`).
+# truth (`cd <other clone> && git-hooks/install.sh`).
 #
 # Rollback:
 #   git config --global --unset core.hooksPath

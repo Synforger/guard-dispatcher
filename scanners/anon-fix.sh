@@ -218,6 +218,24 @@ git-filter-repo \
 echo ""
 echo "anon-fix: filter-repo pass complete. Verifying..."
 
+# --- Upstream-intact assert ---------------------------------------------------
+# --refs rewrites the whole branch, relying on filter-repo's identity
+# behaviour to keep untouched commits at their original shas. If a
+# replacement rule matched content in an already-published commit upstream
+# of the range, that guarantee silently breaks: the branch diverges from
+# origin and the next push is refused. Catch it here, loudly.
+if ! git merge-base --is-ancestor "${a_sha}" "$(git rev-parse "${current_branch}")" 2>/dev/null; then
+    cat >&2 <<UPSTREAM
+error: the rewrite touched commits UPSTREAM of ${RANGE%..*} — the branch no
+       longer contains the original base ${a_sha:0:12}. A word-list rule
+       matched already-published history, so the branch now diverges from
+       its remote. Recover with git reflog (the pre-rewrite tip is there),
+       then either narrow the word list or scrub the published history via
+       the deliberate force-push flow instead.
+UPSTREAM
+    exit 1
+fi
+
 # --- Verify ------------------------------------------------------------------
 # The range endpoints changed shape (B was rewritten), so re-resolve them
 # for the verification pass.

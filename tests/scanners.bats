@@ -31,6 +31,25 @@ WIDE_SENTINEL='ＸＬＥＡＫＸ７ｑ３ｚ'
     [ "$status" -eq 0 ]
 }
 
+# --- text-bearing data formats stay in scope ----------------------------------
+# .csv and .ipynb are text with real leak surface (free-text columns,
+# notebook outputs with usernames / local paths) — they must be scanned,
+# not skipped as binary.
+
+@test "anon-scan: a leak inside a .csv is caught" {
+    mk_repo other
+    printf 'id,comment\n1,"mentions %s"\n' "${SENTINEL}" > data.csv
+    ANON_SCAN_PATHS="$(pwd)/data.csv" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+}
+
+@test "anon-scan: a leak inside a .ipynb output cell is caught" {
+    mk_repo other
+    printf '{"cells":[{"outputs":[{"text":["path of %s"]}]}]}\n' "${SENTINEL}" > nb.ipynb
+    ANON_SCAN_PATHS="$(pwd)/nb.ipynb" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+}
+
 # --- fail-closed on a malformed word list -------------------------------------
 # A fragment that does not compile as PCRE must be a loud configuration
 # error (exit 2), never a silent pass: the deep audit's piped perl used to
