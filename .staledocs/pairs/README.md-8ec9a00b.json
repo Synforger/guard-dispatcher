@@ -23,7 +23,7 @@
       "scripts/pr-create.sh",
       "user.email"
     ],
-    "at": "2026-07-27T04:16:59+00:00",
+    "at": "2026-07-27T04:20:52+00:00",
     "code_blobs": {
       "git-hooks/commit-msg": "b5b393eb48eac157efac720fdc612bfa3f60ed92",
       "git-hooks/doctor.sh": "873d656ebbf62245ad8930e11c64ab28a9156d6e",
@@ -43,9 +43,9 @@
       "scripts/staledocs-check.sh": "8040d173b5cf9530886b0582533535432dcabb91",
       "scripts/weekly-audit.sh": "c8deae256ec6f6c27fde296ffd29d1ef2aeee876"
     },
-    "commit": "1460a3ed2226c1cf1ca6ad520a3c096ac09cf1c5",
+    "commit": "95cc0f4c4d1077828879a0e07e31a17efcecd1cd",
     "doc_blob": "523e397f039f627a2784944de1b4c91f8a30e045",
-    "note": "scripts/staledocs-check.sh pin moved to staledocs>=2,<3; README does not state the pin value so no doc change needed"
+    "note": "v2 anchor-baseline migration: arm every claim that resolves today; unarmed shortlist was empty"
   },
   "doc": "README.md",
   "schema": 1
