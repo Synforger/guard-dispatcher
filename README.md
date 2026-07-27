@@ -125,20 +125,28 @@ directions.
 ### Guaranteed
 
 On a machine where `doctor.sh` reports no gaps, for every repository
-except an explicit `exempt`:
+except an explicit `exempt`. Each behavioural guarantee names the test
+file that pins it — the bats suite is the executable form of this
+contract, and the coherence gate watches the pin references stay alive:
 
 - **No commit is created** whose staged file contents or commit message
-  match the word list (`pre-commit`, `commit-msg`).
+  match the word list (`pre-commit`, `commit-msg`). The scan reads the
+  staged blobs, not the working tree — cleaning a file after staging it
+  does not unblock the leak. Pinned in `tests/hooks.bats`.
 - **No push publishes** matching content: every outgoing commit is
   deep-scanned — all blobs (full diffs), the message, and the
   author/committer name+email — and the pushed branch or tag name is
   scanned as well (`pre-push`). A new-branch push scans exactly the
   commits the remote does not already have; force-pushed rewritten
-  history falls back to a full scan of the new history.
+  history falls back to a full scan of the new history. Pinned in
+  `tests/hooks.bats`.
+- **A word list that does not compile refuses to scan** (exit 2,
+  configuration error) — a broken fragment can never silently disarm a
+  boundary. Pinned in `tests/scanners.bats`.
 - On identity-enforced repositories (enforced org / no-remote /
   `guard.scope enforced`), additionally: the committer and every author
   in the outgoing range must be on the identity allow-list, and direct
-  pushes to protected branches are refused.
+  pushes to protected branches are refused. Pinned in `tests/hooks.bats`.
 - PRs opened through `scripts/pr-create.sh` have their title and body
   scanned before `gh pr create` runs.
 - After the fact, `anon-audit-deep` sweeps 11 sources — tracked files,
