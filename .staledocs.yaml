@@ -8,6 +8,9 @@ source:
     - "git-hooks/**"
     - "scanners/**"
     - "scripts/**"
+    # the bats suite is the executable form of the README scan guarantee —
+    # the guarantee bullets pin themselves to these files by name
+    - "tests/**"
   exclude: []
 
 docs:
@@ -19,7 +22,7 @@ docs:
 
 pairs:
   - doc: README.md
-    code: ["git-hooks/**", "scanners/**", "scripts/**"]
+    code: ["git-hooks/**", "scanners/**", "scripts/**", "tests/**"]
 
 mirror:
   enabled: false

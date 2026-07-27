@@ -52,8 +52,9 @@ external tools, and finishes with a doctor pass. It is idempotent.
 Scanners read one PCRE fragment per line from the first of:
 
 1. `$ANON_WORDS_FILE` (explicit override)
-2. `$HOME/.config/anon-words/master.txt` (recommended location)
-3. a repo-local `.tooling/local-ci/anon-words.txt` (legacy)
+2. `git config guard.wordlist` (scope-specific list — see *Local scope opt-in* below)
+3. `$HOME/.config/anon-words/master.txt` (recommended location)
+4. a repo-local `.tooling/local-ci/anon-words.txt` (legacy)
 
 The word list is private operator data — it is never committed
 anywhere. See `scanners/anon-words.example.txt` for the format.
@@ -106,8 +107,8 @@ written into any repository:
     allowedEmails = you@users.noreply.github.com,noreply@github.com
 ```
 
-`guard.wordlist` feeds the scanners a scope-specific list (resolution:
-`$ANON_WORDS_FILE` → `guard.wordlist` → operator master → repo-local).
+`guard.wordlist` feeds the scanners a scope-specific list (resolution
+order is single-sourced in *Word list* above).
 `guard.allowedEmails` (comma-separated) replaces the built-in identity
 list for that scope. Existing repo-local `.githooks/` keep running
 first (AND-composition), so per-repo rules still apply on top.
@@ -124,20 +125,28 @@ directions.
 ### Guaranteed
 
 On a machine where `doctor.sh` reports no gaps, for every repository
-except an explicit `exempt`:
+except an explicit `exempt`. Each behavioural guarantee names the test
+file that pins it — the bats suite is the executable form of this
+contract, and the coherence gate watches the pin references stay alive:
 
 - **No commit is created** whose staged file contents or commit message
-  match the word list (`pre-commit`, `commit-msg`).
+  match the word list (`pre-commit`, `commit-msg`). The scan reads the
+  staged blobs, not the working tree — cleaning a file after staging it
+  does not unblock the leak. Pinned in `tests/hooks.bats`.
 - **No push publishes** matching content: every outgoing commit is
   deep-scanned — all blobs (full diffs), the message, and the
   author/committer name+email — and the pushed branch or tag name is
   scanned as well (`pre-push`). A new-branch push scans exactly the
   commits the remote does not already have; force-pushed rewritten
-  history falls back to a full scan of the new history.
+  history falls back to a full scan of the new history. Pinned in
+  `tests/hooks.bats`.
+- **A word list that does not compile refuses to scan** (exit 2,
+  configuration error) — a broken fragment can never silently disarm a
+  boundary. Pinned in `tests/scanners.bats`.
 - On identity-enforced repositories (enforced org / no-remote /
   `guard.scope enforced`), additionally: the committer and every author
   in the outgoing range must be on the identity allow-list, and direct
-  pushes to protected branches are refused.
+  pushes to protected branches are refused. Pinned in `tests/hooks.bats`.
 - PRs opened through `scripts/pr-create.sh` have their title and body
   scanned before `gh pr create` runs.
 - After the fact, `anon-audit-deep` sweeps 11 sources — tracked files,
