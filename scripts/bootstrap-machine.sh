@@ -58,14 +58,32 @@ else
     log_ok "gh command guard installed (${GH_SHIM})"
 fi
 
-# A shim that the shell never resolves to is the same as no shim at all.
-case ":${PATH}:" in
-    *":${GH_SHIM_DIR}:"*) ;;
-    *) log_warn "${GH_SHIM_DIR} is not on PATH — add it ahead of the real gh or the guard is inert" ;;
-esac
-resolved_gh="$(command -v gh 2>/dev/null || true)"
-if [ -n "${resolved_gh}" ] && [ "${resolved_gh}" != "${GH_SHIM}" ]; then
-    log_warn "gh resolves to ${resolved_gh}, not the shim — move ${GH_SHIM_DIR} earlier on PATH"
+# A shim the shell never resolves to is the same as no shim at all — and
+# PATH order is per-shell, not per-machine: a login bash rebuilds PATH from
+# the system defaults and never reads a zsh profile, so a shim that sits
+# first in one shell can sit behind the real binary in another. Checking
+# only the shell that happens to run this script would report a coverage
+# that does not exist. Ask each shell installed here.
+shim_gaps=0
+for sh_bin in zsh bash sh; do
+    command -v "${sh_bin}" >/dev/null 2>&1 || continue
+    resolved="$("${sh_bin}" -lc 'command -v gh' 2>/dev/null | tail -1 || true)"
+    [ -n "${resolved}" ] || continue
+    if [ "${resolved}" = "${GH_SHIM}" ]; then
+        log_ok "login ${sh_bin} resolves gh to the shim"
+    else
+        shim_gaps=$((shim_gaps + 1))
+        log_warn "login ${sh_bin} resolves gh to ${resolved} — gh calls from ${sh_bin} go unscanned"
+    fi
+done
+if [ "${shim_gaps}" -gt 0 ]; then
+    cat >&2 <<MSG
+    To close a gap, put the shim directory ahead of the real CLI in that
+    shell's own startup file, e.g. for bash:
+
+        echo 'export PATH="${GH_SHIM_DIR}:\$PATH"' >> ~/.bash_profile
+
+MSG
 fi
 
 # --- 3. operator master -----------------------------------------------------

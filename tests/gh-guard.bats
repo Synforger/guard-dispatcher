@@ -84,6 +84,17 @@ ran() { [ -f "${RAN_MARKER}" ]; }
     ran
 }
 
+# The path of a body file stays on this machine — only its contents are sent.
+# Scanning the path refuses legitimate sends whenever the temp directory sits
+# under a flagged word, which is exactly how this was found.
+@test "gh-guard: the path of a body file is not itself scanned, only its contents" {
+    mkdir -p "${BATS_TEST_TMPDIR}/${SENTINEL}-dir"
+    printf 'perfectly ordinary text\n' > "${BATS_TEST_TMPDIR}/${SENTINEL}-dir/body.md"
+    run gh pr create --title "ok" --body-file "${BATS_TEST_TMPDIR}/${SENTINEL}-dir/body.md"
+    [ "$status" -eq 0 ]
+    ran
+}
+
 @test "gh-guard: a plain GET api call is passed through unscanned" {
     run gh api "repos/owner/${SENTINEL}"
     [ "$status" -eq 0 ]

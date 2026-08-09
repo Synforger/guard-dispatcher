@@ -183,10 +183,12 @@ contract, and the coherence gate watches the pin references stay alive:
   scans it live. The deep audit covers PR/Issue title+body and comment
   threads (conversation + inline review comments) after the fact; a PR
   review *summary* body, wikis, and gists stay out of scope there too.
-- The `gh` shim only guards calls that resolve through PATH. Invoking the
-  binary by absolute path, or from a shell that puts the real CLI first,
-  goes around it — `bootstrap-machine.sh` warns when the shell does not
-  resolve `gh` to the shim.
+- The `gh` shim only guards calls that resolve through PATH, and PATH order
+  is per-shell: a login `bash` rebuilds it from the system defaults and
+  never reads a `zsh` profile, so the shim can sit first in one shell and
+  behind the real binary in another. `bootstrap-machine.sh` resolves `gh`
+  in every installed login shell and names the ones that miss it. Invoking
+  the binary by absolute path goes around it regardless.
 - A repository whose local `core.hooksPath` overrides the global one
   runs no baseline; `doctor.sh` exists to surface exactly that.
 - The scan folds case and Unicode width (NFKC) before matching, but is

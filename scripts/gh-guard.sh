@@ -118,7 +118,35 @@ stdin_file=""
 cleanup() { rm -f "${payload}" "${stdin_file}"; }
 trap cleanup EXIT
 
-printf '%s\n' "$@" > "${payload}"
+# The argument vector — minus the paths of files whose *contents* are the
+# thing being sent. A body file's path stays on this machine, so scanning it
+# refuses legitimate sends whenever the temp directory happens to sit under a
+# flagged word. The contents are collected further down.
+: > "${payload}"
+prev=""
+for arg in "$@"; do
+    skip=0
+    case "${prev}" in
+        --body-file|--notes-file|--template|--input)
+            skip=1
+            ;;
+        -F|--field|-f|--raw-field)
+            # `key=@path` sends the key and the file's contents, never the path.
+            case "${arg}" in
+                *=@*)
+                    printf '%s=\n' "${arg%%=@*}" >> "${payload}"
+                    skip=1
+                    ;;
+                @*) skip=1 ;;
+            esac
+            ;;
+    esac
+    case "${arg}" in
+        --body-file=*|--notes-file=*|--template=*|--input=*) skip=1 ;;
+    esac
+    [ "${skip}" -eq 1 ] || printf '%s\n' "${arg}" >> "${payload}"
+    prev="${arg}"
+done
 
 # A payload read from stdin has to be captured to be scanned, then replayed to
 # the real CLI. Only drain stdin when an argument actually asks for it —
