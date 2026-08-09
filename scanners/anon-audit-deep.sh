@@ -273,6 +273,12 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
                 if env -u GH_TOKEN -u GITHUB_TOKEN gh repo view "${repo}" --json nameWithOwner >/dev/null 2>&1; then
                     GH_MODE=keyring
                     log_warn "GH_TOKEN cannot see ${repo} — falling back to the keyring credential"
+                elif command -v direnv >/dev/null 2>&1 &&
+                     direnv exec "${PROJECT_ROOT}" gh repo view "${repo}" --json nameWithOwner >/dev/null 2>&1; then
+                    # Some repositories carry their own token in a per-directory
+                    # .envrc — the same path `pr-create.sh` uses to reach them.
+                    GH_MODE=direnv
+                    log_warn "GH_TOKEN cannot see ${repo} — falling back to the repository's direnv credential"
                 else
                     GH_MODE=none
                     log_warn "no available credential can see ${repo}"
@@ -286,6 +292,7 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
                 case "${GH_MODE}" in
                     default) out="$(gh "$@" 2>&1)"; rc=$? ;;
                     keyring) out="$(env -u GH_TOKEN -u GITHUB_TOKEN gh "$@" 2>&1)"; rc=$? ;;
+                    direnv)  out="$(direnv exec "${PROJECT_ROOT}" gh "$@" 2>&1)"; rc=$? ;;
                     *)       return 1 ;;
                 esac
                 if [ "${rc}" -ne 0 ]; then
