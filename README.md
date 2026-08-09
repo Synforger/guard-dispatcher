@@ -25,6 +25,7 @@ identity permanently into public history.
 | push | `pre-push` | outgoing commit range deep-scanned (blobs, messages, authors); every author/committer must be an allowed identity |
 | push (refs) | `pre-push` | branch/tag names scanned; direct pushes to main/develop refused (initial branch-creating push exempt; `GUARD_ALLOW_PROTECTED_PUSH=1` overrides once) |
 | PR | `scripts/pr-create.sh` | PR title/body scanned before `gh pr create` |
+| any `gh` send | `scripts/gh-guard.sh` (PATH shim) | argument vector, body/notes/template files and stdin payloads scanned before the CLI runs; read-only subcommands pass through |
 | repair | `scanners/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
 | health | `git-hooks/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
 
@@ -149,6 +150,14 @@ contract, and the coherence gate watches the pin references stay alive:
   pushes to protected branches are refused. Pinned in `tests/hooks.bats`.
 - PRs opened through `scripts/pr-create.sh` have their title and body
   scanned before `gh pr create` runs.
+- **Nothing the `gh` CLI sends leaves unscanned** while the PATH shim is
+  installed: the argument vector, any file passed as a body, notes,
+  template or request payload, and a payload piped in on stdin are all
+  scanned first. Read-only subcommands (`view`, `list`, `status`, a plain
+  `GET` through `api`, …) pass through untouched, because those
+  legitimately name accounts and repositories. An unrecognised subcommand
+  is scanned rather than assumed harmless, and an unresolvable scanner
+  refuses the command. Pinned in `tests/gh-guard.bats`.
 - After the fact, `anon-audit-deep` sweeps 11 sources — tracked files,
   every history blob, commit messages, branch names, tag names +
   annotations, author/committer fields, GitHub PR + Issue title/body +
@@ -169,11 +178,15 @@ contract, and the coherence gate watches the pin references stay alive:
   content is still caught at `pre-push` — but `git push --no-verify`
   skips that too. Bypass is a deliberate operator action, never a
   default.
-- Text that never passes through git or `pr-create.sh` — wikis, gists,
-  and anything typed into the GitHub web UI — is not scanned live. The
-  deep audit covers PR/Issue title+body and comment threads (conversation
-  + inline review comments) after the fact; a PR review *summary* body,
-  wikis, and gists remain out of scope.
+- Text typed straight into the GitHub web UI — a wiki page, a gist, an
+  edit made in the browser — never passes through this machine, so nothing
+  scans it live. The deep audit covers PR/Issue title+body and comment
+  threads (conversation + inline review comments) after the fact; a PR
+  review *summary* body, wikis, and gists stay out of scope there too.
+- The `gh` shim only guards calls that resolve through PATH. Invoking the
+  binary by absolute path, or from a shell that puts the real CLI first,
+  goes around it — `bootstrap-machine.sh` warns when the shell does not
+  resolve `gh` to the shim.
 - A repository whose local `core.hooksPath` overrides the global one
   runs no baseline; `doctor.sh` exists to surface exactly that.
 - The scan folds case and Unicode width (NFKC) before matching, but is
@@ -185,8 +198,10 @@ contract, and the coherence gate watches the pin references stay alive:
 - One-off bypass: `git commit --no-verify` / `git push --no-verify`
   (hooks are a guardrail, not a prison — but see your own policies).
 - Per-repo bypass: set a local `core.hooksPath`.
+- One-off `gh` bypass: `GH_GUARD_SKIP=1 gh …`.
 - Full uninstall:
-  `git config --global --unset core.hooksPath && rm -rf ~/.git-hooks`.
+  `git config --global --unset core.hooksPath && rm -rf ~/.git-hooks`
+  and `rm ~/.local/bin/gh`.
 
 ## Repository layout
 
@@ -196,9 +211,10 @@ git-hooks/          pre-commit / commit-msg / pre-push dispatchers,
 scanners/           anon-scan, anon-audit-deep (11-source audit),
                     anon-fix (history scrub), anon-sync-truth,
                     setup-lib, anon-words.example.txt
-scripts/            bootstrap-machine.sh, pr-create.sh,
-                    weekly-audit.sh, install-weekly-audit.sh
-tests/              bats suite (dispatcher helpers + all three hooks)
+scripts/            bootstrap-machine.sh, gh-guard.sh (PATH shim),
+                    pr-create.sh, weekly-audit.sh, install-weekly-audit.sh
+tests/              bats suite (dispatcher helpers, all three hooks,
+                    scanners, gh shim)
 ```
 
 ## Tests

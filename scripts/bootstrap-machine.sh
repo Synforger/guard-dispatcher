@@ -8,11 +8,13 @@
 #
 # やること (= 冪等、 何度実行しても安全):
 #   1. global hooks dispatcher の arm (= git-hooks/install.sh)
-#   2. operator master word list の存在確認 (= 不在なら配置手順を案内、
+#   2. gh command guard の設置 (= ~/.local/bin/gh を shim に、 CLI が送る
+#      本文 / コメント / payload を hook の外側で scan)
+#   3. operator master word list の存在確認 (= 不在なら配置手順を案内、
 #      scanner は master 直読するので per-repo 配信は不要)
-#   3. 外部 binary の存在確認 (= gitleaks / git-filter-repo / task / gh /
+#   4. 外部 binary の存在確認 (= gitleaks / git-filter-repo / task / gh /
 #      perl、 不在は install ヒント表示。 hard fail にはしない)
-#   4. 総仕上げの診断 (= hooks doctor、 マシン診断軸込み)
+#   5. 総仕上げの診断 (= hooks doctor、 マシン診断軸込み)
 #
 # Exit:
 #   0 = 配備完了 + doctor clean
@@ -38,7 +40,35 @@ echo "=== bootstrap-machine: arming this machine ==="
 # --- 1. dispatcher arm ------------------------------------------------------
 bash "${GUARD_ROOT}/git-hooks/install.sh"
 
-# --- 2. operator master -----------------------------------------------------
+# --- 2. gh command guard ------------------------------------------------------
+# The hooks only see what leaves through git. Everything the CLI sends —
+# PR and issue bodies, comment threads, release notes, repository
+# descriptions, API payloads — bypasses them entirely, and a wrapper for one
+# command only covers the path someone remembers to call. Shadow the binary
+# instead, so the scan happens wherever the call comes from.
+GH_SHIM_DIR="${HOME}/.local/bin"
+GH_SHIM="${GH_SHIM_DIR}/gh"
+mkdir -p "${GH_SHIM_DIR}"
+if [ -e "${GH_SHIM}" ] && [ ! -L "${GH_SHIM}" ]; then
+    log_warn "${GH_SHIM} exists and is not a symlink — left alone, so gh calls stay unscanned"
+elif [ "$(readlink "${GH_SHIM}" 2>/dev/null || true)" = "${GUARD_ROOT}/scripts/gh-guard.sh" ]; then
+    log_ok "gh command guard already installed (${GH_SHIM})"
+else
+    ln -sf "${GUARD_ROOT}/scripts/gh-guard.sh" "${GH_SHIM}"
+    log_ok "gh command guard installed (${GH_SHIM})"
+fi
+
+# A shim that the shell never resolves to is the same as no shim at all.
+case ":${PATH}:" in
+    *":${GH_SHIM_DIR}:"*) ;;
+    *) log_warn "${GH_SHIM_DIR} is not on PATH — add it ahead of the real gh or the guard is inert" ;;
+esac
+resolved_gh="$(command -v gh 2>/dev/null || true)"
+if [ -n "${resolved_gh}" ] && [ "${resolved_gh}" != "${GH_SHIM}" ]; then
+    log_warn "gh resolves to ${resolved_gh}, not the shim — move ${GH_SHIM_DIR} earlier on PATH"
+fi
+
+# --- 3. operator master -----------------------------------------------------
 if [ ! -f "${TRUTH_PATH}" ]; then
     log_warn "operator master word list not found: ${TRUTH_PATH}"
     cat >&2 <<MSG
@@ -59,7 +89,7 @@ MSG
 fi
 log_ok "operator master present (${TRUTH_PATH})"
 
-# --- 3. external binaries ----------------------------------------------------
+# --- 4. external binaries ----------------------------------------------------
 missing=0
 need() {
     local bin="$1" hint="$2"
@@ -79,6 +109,6 @@ if [ "${missing}" -gt 0 ]; then
     log_warn "${missing} optional binaries missing — features degrade gracefully but install them for full coverage"
 fi
 
-# --- 4. final diagnosis -------------------------------------------------------
+# --- 5. final diagnosis -------------------------------------------------------
 echo ""
 bash "${GUARD_ROOT}/git-hooks/doctor.sh" "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
