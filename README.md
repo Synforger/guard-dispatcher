@@ -155,6 +155,13 @@ contract, and the coherence gate watches the pin references stay alive:
   comment threads, repo description/topics/homepage, releases, and
   Actions run titles.
   The weekly audit runs it scoped to the week's activity.
+- **A GitHub source that cannot be fetched is reported as a finding, never
+  as clean.** The audit settles reachability once before scanning and falls
+  back to the keyring credential when an environment token cannot see the
+  organisation; if no credential resolves the repository, every GitHub-side
+  source counts against the run. Silence is not proof — an erroring API call
+  used to collapse into empty output, which a scan reports as clean, leaving
+  a whole organisation green forever. Pinned in `tests/scanners.bats`.
 
 ### Not covered — know your gaps
 

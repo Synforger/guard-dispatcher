@@ -259,6 +259,47 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
         if [ -z "${repo}" ]; then
             log_warn "remote origin is not a GitHub URL, skipping GitHub-side sources 7-11"
         else
+            # --- Settle reachability before scanning anything ---
+            # `gh auth status` passing does not mean this credential can see
+            # this repository: an environment PAT that was never authorised
+            # for an organisation resolves none of its repos, while the
+            # keyring credential does. Hitting the API in that state returns
+            # zero lines, and a scan of zero lines reports "clean" — a
+            # fail-open that keeps an entire org green forever. Measure
+            # reachability once here; sources that cannot be fetched are
+            # reported as findings below, never as clean.
+            GH_MODE=default
+            if ! gh repo view "${repo}" --json nameWithOwner >/dev/null 2>&1; then
+                if env -u GH_TOKEN -u GITHUB_TOKEN gh repo view "${repo}" --json nameWithOwner >/dev/null 2>&1; then
+                    GH_MODE=keyring
+                    log_warn "GH_TOKEN cannot see ${repo} — falling back to the keyring credential"
+                else
+                    GH_MODE=none
+                    log_warn "no available credential can see ${repo}"
+                fi
+            fi
+
+            # Thin wrapper that propagates the API call's exit status instead
+            # of letting an error collapse into empty output.
+            gh_capture() {
+                local out rc
+                case "${GH_MODE}" in
+                    default) out="$(gh "$@" 2>&1)"; rc=$? ;;
+                    keyring) out="$(env -u GH_TOKEN -u GITHUB_TOKEN gh "$@" 2>&1)"; rc=$? ;;
+                    *)       return 1 ;;
+                esac
+                if [ "${rc}" -ne 0 ]; then
+                    printf '%s\n' "${out}" | sed 's/^/      /' >&2
+                    return 1
+                fi
+                printf '%s\n' "${out}"
+            }
+
+            # An unfetchable source counts as one finding. Silence is not proof.
+            unreachable() {
+                log_fail "$1: UNREACHABLE (= counted as a finding, never clean)"
+                total=$((total + 1))
+            }
             # --- source 7-8: PR + Issue title/body + comment threads ---
             # The issues endpoint returns PRs too, so one paginated walk
             # covers both title + body. Comment threads are the one public
@@ -273,33 +314,53 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
             # weekly cost proportional to activity, not repo age.
             if [ -n "${GITHUB_SINCE}" ]; then
                 printf '\n=== source 7-8/11: GitHub PR+Issue title/body/comments (updated since %s) ===\n' "${GITHUB_SINCE}" >&2
-                hits=$( {
-                    gh api --paginate "repos/${repo}/issues?state=all&per_page=100&since=${GITHUB_SINCE}" --jq '.[] | .title, .body'
-                    gh api --paginate "repos/${repo}/issues/comments?per_page=100&since=${GITHUB_SINCE}" --jq '.[].body'
-                    gh api --paginate "repos/${repo}/pulls/comments?per_page=100&since=${GITHUB_SINCE}" --jq '.[].body'
-                } 2>/dev/null | scan_perl)
+                since_q="&since=${GITHUB_SINCE}"
             else
                 printf '\n=== source 7-8/11: GitHub PR+Issue title/body/comments (full) ===\n' >&2
-                hits=$( {
-                    gh api --paginate "repos/${repo}/issues?state=all&per_page=100" --jq '.[] | .title, .body'
-                    gh api --paginate "repos/${repo}/issues/comments?per_page=100" --jq '.[].body'
-                    gh api --paginate "repos/${repo}/pulls/comments?per_page=100" --jq '.[].body'
-                } 2>/dev/null | scan_perl)
+                since_q=""
             fi
-            n=$(count_hits "GitHub PR/Issue text" "${hits}")
-            total=$((total + n))
+            pr_text=""
+            pr_ok=1
+            for ep in \
+                "repos/${repo}/issues?state=all&per_page=100${since_q}|.[] | .title, .body" \
+                "repos/${repo}/issues/comments?per_page=100${since_q}|.[].body" \
+                "repos/${repo}/pulls/comments?per_page=100${since_q}|.[].body"
+            do
+                if api_out=$(gh_capture api --paginate "${ep%%|*}" --jq "${ep#*|}"); then
+                    pr_text="${pr_text}
+${api_out}"
+                else
+                    pr_ok=0
+                    break
+                fi
+            done
+            if [ "${pr_ok}" -eq 1 ]; then
+                hits=$(printf '%s' "${pr_text}" | scan_perl)
+                n=$(count_hits "GitHub PR/Issue text" "${hits}")
+                total=$((total + n))
+            else
+                unreachable "GitHub PR/Issue text"
+            fi
 
             # --- source 9: repo description + topics + homepage ---
             printf '\n=== source 9/11: GitHub repo description / topics / homepage ===\n' >&2
-            hits=$(gh repo view "${repo}" --json description,topics,homepageUrl 2>/dev/null | scan_perl)
-            n=$(count_hits "GitHub repo metadata" "${hits}")
-            total=$((total + n))
+            if api_out=$(gh_capture repo view "${repo}" --json description,repositoryTopics,homepageUrl); then
+                hits=$(printf '%s' "${api_out}" | scan_perl)
+                n=$(count_hits "GitHub repo metadata" "${hits}")
+                total=$((total + n))
+            else
+                unreachable "GitHub repo metadata"
+            fi
 
             # --- source 10: releases ---
             printf '\n=== source 10/11: GitHub releases ===\n' >&2
-            hits=$(gh api --paginate "repos/${repo}/releases?per_page=100" --jq '.[] | .name, .body, .tag_name' 2>/dev/null | scan_perl)
-            n=$(count_hits "GitHub releases" "${hits}")
-            total=$((total + n))
+            if api_out=$(gh_capture api --paginate "repos/${repo}/releases?per_page=100" --jq '.[] | .name, .body, .tag_name'); then
+                hits=$(printf '%s' "${api_out}" | scan_perl)
+                n=$(count_hits "GitHub releases" "${hits}")
+                total=$((total + n))
+            else
+                unreachable "GitHub releases"
+            fi
 
             # --- source 11: GitHub Actions run records (= displayTitle) ---
             # `gh run` の run record は force-push で書き換わらない: 元 commit
@@ -311,12 +372,17 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
                 # Run titles are immutable, so a created-date filter loses
                 # nothing. The API accepts date-only bounds.
                 since_date="${GITHUB_SINCE%%T*}"
-                hits=$(gh api --paginate "repos/${repo}/actions/runs?per_page=100&created=%3E%3D${since_date}" --jq '.workflow_runs[].display_title' 2>/dev/null | scan_perl)
+                runs_path="repos/${repo}/actions/runs?per_page=100&created=%3E%3D${since_date}"
             else
-                hits=$(gh api --paginate "repos/${repo}/actions/runs?per_page=100" --jq '.workflow_runs[].display_title' 2>/dev/null | scan_perl)
+                runs_path="repos/${repo}/actions/runs?per_page=100"
             fi
-            n=$(count_hits "GitHub runs" "${hits}")
-            total=$((total + n))
+            if api_out=$(gh_capture api --paginate "${runs_path}" --jq '.workflow_runs[].display_title'); then
+                hits=$(printf '%s' "${api_out}" | scan_perl)
+                n=$(count_hits "GitHub runs" "${hits}")
+                total=$((total + n))
+            else
+                unreachable "GitHub runs"
+            fi
         fi
     fi
 fi

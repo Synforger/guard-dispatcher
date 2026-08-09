@@ -120,3 +120,54 @@ STUB
     run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
     [ "$status" -eq 0 ]
 }
+
+# --- fail-closed on unfetchable GitHub sources --------------------------------
+# An API call that errors used to collapse into empty output, and a scan of
+# empty output reports "clean". A credential that cannot see an organisation
+# therefore left every repo in it green forever, while the operator read the
+# report as proof. Silence is not proof: an unfetchable source is a finding.
+
+# Repository resolves, but every API call errors.
+setup_gh_stub_api_error() {
+    local bindir="${BATS_TEST_TMPDIR}/stub-bin"
+    mkdir -p "${bindir}"
+    cat > "${bindir}/gh" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi
+if [ "$1" = "repo" ] && [ "$2" = "view" ]; then echo '{}'; exit 0; fi
+echo "HTTP 403: Resource not accessible by integration" >&2
+exit 1
+STUB
+    chmod +x "${bindir}/gh"
+    export PATH="${bindir}:${PATH}"
+}
+
+# No credential can resolve the repository at all.
+setup_gh_stub_unresolvable() {
+    local bindir="${BATS_TEST_TMPDIR}/stub-bin"
+    mkdir -p "${bindir}"
+    cat > "${bindir}/gh" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi
+echo "GraphQL: Could not resolve to a Repository" >&2
+exit 1
+STUB
+    chmod +x "${bindir}/gh"
+    export PATH="${bindir}:${PATH}"
+}
+
+@test "deep audit: an erroring GitHub API call is a finding, not a clean source" {
+    mk_repo synforger
+    setup_gh_stub_api_error
+    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"UNREACHABLE"* ]]
+}
+
+@test "deep audit: a repo no credential can resolve is a finding, not a clean source" {
+    mk_repo synforger
+    setup_gh_stub_unresolvable
+    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"UNREACHABLE"* ]]
+}
