@@ -117,9 +117,11 @@ if [ ! -f "${WORDS_FILE}" ]; then
     exit 2
 fi
 
-# 真値を 1 行 1 pattern として読み、 | で連結して PCRE 化
-ANON_PATTERN="$(grep -v '^#' "${WORDS_FILE}" | grep -v '^$' | sed -E 's/[[:space:]]+#.*$//' | tr '\n' '|' | sed 's/|$//')"
-if [ -z "${ANON_PATTERN}" ]; then
+# 真値の解析は anon-pattern.sh が唯一の実装 (= pre-commit 側と同じ口を通す)
+# shellcheck source=anon-pattern.sh
+source "${SCRIPT_DIR}/anon-pattern.sh"
+
+if ! ANON_PATTERN="$(build_anon_pattern "${WORDS_FILE}")"; then
     log_fail "anon-words.txt contains no active patterns"
     exit 2
 fi

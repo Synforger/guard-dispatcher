@@ -61,23 +61,16 @@ if [ ! -f "${WORDS_FILE}" ]; then
     exit 2
 fi
 
-# Build the PCRE alternation from the word list. Each non-comment, non-blank
-# line is one fragment; the trailing " #..." inline comment and surrounding
-# whitespace are stripped.
-fragments=()
-while IFS= read -r line || [ -n "${line}" ]; do
-    line="${line%%#*}"                                   # drop comments
-    line="$(printf '%s' "${line}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-    [ -z "${line}" ] && continue
-    fragments+=("${line}")
-done < "${WORDS_FILE}"
+# Build the PCRE alternation from the word list. The parsing lives in
+# anon-pattern.sh so this scanner and the deep audit cannot drift apart on
+# what a line in the list means.
+# shellcheck source=anon-pattern.sh
+source "${SCRIPT_DIR}/anon-pattern.sh"
 
-if [ "${#fragments[@]}" -eq 0 ]; then
+if ! ANON_PATTERN="$(build_anon_pattern "${WORDS_FILE}")"; then
     echo "error: ${WORDS_FILE} contains no patterns" >&2
     exit 2
 fi
-
-ANON_PATTERN="$(IFS='|'; echo "${fragments[*]}")"
 export ANON_PATTERN
 
 # Fail-closed compile probe. The per-file perl already exits non-zero on a

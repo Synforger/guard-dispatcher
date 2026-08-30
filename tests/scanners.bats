@@ -31,6 +31,40 @@ WIDE_SENTINEL='ＸＬＥＡＫＸ７ｑ３ｚ'
     [ "$status" -eq 0 ]
 }
 
+# --- cs: prefix (case-sensitive fragments) ------------------------------------
+# A pattern whose meaning lives in its capitalisation is prefixed `cs:` and
+# must stop folding case. This is not hypothetical: the weekly audit reported
+# the same finding four weeks running because a capitalised path prefix, once
+# folded, matched the same word inside an ordinary URL in a PR body. The
+# fixtures below use a sentinel rather than the real pattern, so the test does
+# not depend on what any particular word list happens to contain.
+
+CASE_SENTINEL='XCaseX7q3z'
+
+@test "anon-scan: a cs: pattern does not fire on the opposite case" {
+    mk_repo other
+    printf 'cs:%s\n' "${CASE_SENTINEL}" > "${ANON_WORDS_FILE}"
+    printf 'harmless text with %s in it\n' "$(printf '%s' "${CASE_SENTINEL}" | tr '[:upper:]' '[:lower:]')" > lower.txt
+    ANON_SCAN_PATHS="$(pwd)/lower.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -eq 0 ]
+}
+
+@test "anon-scan: a cs: pattern still catches the exact case" {
+    mk_repo other
+    printf 'cs:%s\n' "${CASE_SENTINEL}" > "${ANON_WORDS_FILE}"
+    printf 'a real leak: %s\n' "${CASE_SENTINEL}" > exact.txt
+    ANON_SCAN_PATHS="$(pwd)/exact.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+}
+
+@test "anon-scan: a plain pattern keeps folding case (names are caught however written)" {
+    mk_repo other
+    printf '%s\n' "${SENTINEL}" > "${ANON_WORDS_FILE}"
+    printf '%s\n' "$(printf '%s' "${SENTINEL}" | tr '[:lower:]' '[:upper:]')" > upper.txt
+    ANON_SCAN_PATHS="$(pwd)/upper.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+}
+
 # --- text-bearing data formats stay in scope ----------------------------------
 # .csv and .ipynb are text with real leak surface (free-text columns,
 # notebook outputs with usernames / local paths) — they must be scanned,

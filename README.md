@@ -60,6 +60,12 @@ Scanners read one PCRE fragment per line from the first of:
 The word list is private operator data — it is never committed
 anywhere. See `scanners/anon-words.example.txt` for the format.
 
+Fragments are matched case-insensitively, so a name is caught however it is
+capitalised. Prefix a line `cs:` when the capitalisation *is* the meaning and
+folding it would fire on unrelated text: the macOS home-root prefix, for one,
+is a path carrying a username when capitalised and a common URL segment when
+lowercased, so it belongs on a `cs:` line.
+
 ## Scope
 
 Every hook follows the same AND-composition:
