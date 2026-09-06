@@ -22,7 +22,7 @@ identity permanently into public history.
 | commit (content) | `pre-commit` | staged files scanned against your word list |
 | commit (identity) | `pre-commit` | `user.email` must be one of the allowed identities |
 | commit (message) | `commit-msg` | commit subject/body scanned |
-| push | `pre-push` | outgoing commit range deep-scanned (blobs, messages, authors); every author/committer must be an allowed identity |
+| push | `pre-push` | outgoing commit range deep-scanned (blobs, messages, authors); every author/committer must be an allowed identity, or a GitHub bot account |
 | push (refs) | `pre-push` | branch/tag names scanned; direct pushes to main/develop refused (initial branch-creating push exempt; `GUARD_ALLOW_PROTECTED_PUSH=1` overrides once) |
 | PR | `scripts/pr-create.sh` | PR title/body scanned before `gh pr create` |
 | any `gh` send | `scripts/gh-guard.sh` (PATH shim) | argument vector, body/notes/template files and stdin payloads scanned before the CLI runs; read-only subcommands pass through |
@@ -119,6 +119,15 @@ order is single-sourced in *Word list* above).
 `guard.allowedEmails` (comma-separated) replaces the built-in identity
 list for that scope. Existing repo-local `.githooks/` keep running
 first (AND-composition), so per-repo rules still apply on top.
+
+The push-time identity check additionally accepts GitHub bot accounts
+(`<id>+<name>[bot]@users.noreply.github.com`) wherever they appear in the
+outgoing range. A merged dependabot pull request puts one into the history,
+and promoting that history to another branch would otherwise fail a check
+with nothing left to protect — the commits are already public, and the
+address belongs to GitHub rather than to a person or an organisation. This
+exemption is push-only: `pre-commit` still requires `user.email` to be on the
+allowed list, because the operator is never a bot.
 
 Scanners resolve repo-local first (`.tooling/local-ci/`), then fall
 back to this checkout's `scanners/` — so individual repositories need

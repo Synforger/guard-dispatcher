@@ -148,3 +148,42 @@ setup() {
     [ "${lines[0]}" = "synforge.dev@gmail.com" ]
     [ "${#lines[@]}" -eq 3 ]
 }
+
+# GitHub bot accounts reach the history through a merged dependabot PR. They are
+# exempt in the pre-push range check by shape, and must NOT leak into the
+# operator identity list that pre-commit uses.
+
+@test "history_identity_exempt_re: matches a dependabot address" {
+    run bash -c ". '${GUARD_ROOT}/git-hooks/lib/dispatcher-common.sh'; \
+        printf '%s\n' '49699333+dependabot[bot]@users.noreply.github.com' \
+        | grep -Eq \"\$(dispatcher::history_identity_exempt_re)\""
+    [ "${status}" -eq 0 ]
+}
+
+@test "history_identity_exempt_re: matches other GitHub bots, not just dependabot" {
+    for addr in '41898282+github-actions[bot]@users.noreply.github.com' \
+                '29139614+renovate[bot]@users.noreply.github.com'; do
+        run bash -c ". '${GUARD_ROOT}/git-hooks/lib/dispatcher-common.sh'; \
+            printf '%s\n' '${addr}' | grep -Eq \"\$(dispatcher::history_identity_exempt_re)\""
+        [ "${status}" -eq 0 ]
+    done
+}
+
+@test "history_identity_exempt_re: does not match a human noreply address" {
+    for addr in 'someone@users.noreply.github.com' \
+                '12345+someone@users.noreply.github.com' \
+                'dependabot[bot]@example.com' \
+                'evil+dependabot[bot]@users.noreply.github.com.attacker.test'; do
+        run bash -c ". '${GUARD_ROOT}/git-hooks/lib/dispatcher-common.sh'; \
+            printf '%s\n' '${addr}' | grep -Eq \"\$(dispatcher::history_identity_exempt_re)\""
+        [ "${status}" -ne 0 ]
+    done
+}
+
+@test "allowed_emails: the bot exemption stays out of the operator identity list" {
+    mk_repo no-remote
+    run dispatcher::allowed_emails
+    [ "${#lines[@]}" -eq 3 ]
+    printf '%s\n' "${lines[@]}" | grep -Fqv 'bot' || true
+    ! printf '%s\n' "${lines[@]}" | grep -Fq '[bot]'
+}

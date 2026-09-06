@@ -27,14 +27,14 @@
       "tests/scanners.bats",
       "user.email"
     ],
-    "at": "2026-08-30T11:19:43+00:00",
+    "at": "2026-09-06T19:39:48+00:00",
     "code_blobs": {
       "git-hooks/commit-msg": "b5b393eb48eac157efac720fdc612bfa3f60ed92",
       "git-hooks/doctor.sh": "873d656ebbf62245ad8930e11c64ab28a9156d6e",
       "git-hooks/install.sh": "a671a7fc0123cec6efd566f6207a92d00da1e1e3",
-      "git-hooks/lib/dispatcher-common.sh": "48abb0b0258b12f1d647d3480690c6e240a9a76b",
+      "git-hooks/lib/dispatcher-common.sh": "36e59c0cca85e112e9ad69a2373860d4a3f5570e",
       "git-hooks/pre-commit": "e48361b5cc78ca97072d95aec2f8e7d9f1c719b0",
-      "git-hooks/pre-push": "5cefbae39f95aebddaaa612779644821336a2571",
+      "git-hooks/pre-push": "a941f9157affbf28545e50f6e978079eabd57af2",
       "scanners/anon-audit-deep.sh": "97cc6d0280694ab2e0e66cee161e5e9a724832f8",
       "scanners/anon-fix.sh": "63644760087f431633f3a71589685dfb5858a0a0",
       "scanners/anon-pattern.sh": "1d9ddda19878312a6676ab72267c9103880e6b44",
@@ -48,15 +48,15 @@
       "scripts/pr-create.sh": "665229e884c75bd1826ae7dbb31dc989171df9cd",
       "scripts/staledocs-check.sh": "8040d173b5cf9530886b0582533535432dcabb91",
       "scripts/weekly-audit.sh": "c8deae256ec6f6c27fde296ffd29d1ef2aeee876",
-      "tests/dispatcher-common.bats": "c3c3c8efb0fbb2d5e9d8456c5db7b1912413c47b",
+      "tests/dispatcher-common.bats": "38874927c1234b79d65d0bb01350ff456203274c",
       "tests/gh-guard.bats": "29ca2c4dc0e5c476afef996a74e3f21412b5fe38",
       "tests/helpers.bash": "a4692cbc563d67cbfb29ebb90b6768995bd4226a",
       "tests/hooks.bats": "bc4fb3b3999e796c3fb24c203c68d07908d43820",
       "tests/scanners.bats": "4c807fd06dd11c18c956f3c73c3a537b18ed9c0f"
     },
-    "commit": "9cf1aabbe31a113c490cd401b72eee776f2f24bf",
-    "doc_blob": "c5602758b96535c3c40946433bb0ddb15234a2d9",
-    "note": "\u5b9f\u30d1\u30bf\u30fc\u30f3\u3092\u672c\u6587\u306b\u66f8\u304f\u3068\u81ea\u5206\u306e\u691c\u67fb\u306b\u6b62\u3081\u3089\u308c\u308b\u305f\u3081\u3001README.md / scanners/anon-pattern.sh / scanners/anon-words.example.txt \u306e\u8aac\u660e\u3092\u5f79\u5272\u306e\u8a18\u8ff0\u3078\u66f8\u304d\u63db\u3048\u3001tests/scanners.bats \u306e fixture \u3092\u76ee\u5370\u6587\u5b57\u5217\u65b9\u5f0f\u306b\u5909\u66f4\u3057\u305f\u3002build_anon_pattern \u306e (?-i:) \u5b9f\u88c5\u3068 cs: \u8a18\u6cd5\u306f\u5909\u308f\u3063\u3066\u3044\u306a\u3044"
+    "commit": "eb9dbd6a36ca96391e04fd784f955dd635d113ff",
+    "doc_blob": "03f8d0fed675d9d6807c533bbe99ce729fe54519",
+    "note": "README.md now states the push-time bot exemption added in git-hooks/pre-push and dispatcher-common.sh, and says explicitly that pre-commit is unchanged; the tests in tests/dispatcher-common.bats pin that separation."
   },
   "doc": "README.md",
   "schema": 1
