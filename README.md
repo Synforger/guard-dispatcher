@@ -127,7 +127,7 @@ directions.
 On a machine where `doctor.sh` reports no gaps, for every repository
 except an explicit `exempt`. Each behavioural guarantee names the test
 file that pins it — the bats suite is the executable form of this
-contract, and the coherence gate watches the pin references stay alive:
+contract:
 
 - **No commit is created** whose staged file contents or commit message
   match the word list (`pre-commit`, `commit-msg`). The scan reads the
