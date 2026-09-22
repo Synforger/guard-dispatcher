@@ -1,9 +1,0 @@
-{
-  "anchors": [
-    ".github/ISSUE_TEMPLATE/"
-  ],
-  "at": "2026-07-27T04:20:51+00:00",
-  "doc": "CONTRIBUTING.md",
-  "note": "v2 anchor-baseline migration: arm every claim that resolves today; unarmed shortlist was empty",
-  "schema": 1
-}
