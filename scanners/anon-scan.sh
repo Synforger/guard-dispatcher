@@ -111,6 +111,7 @@ EXCLUDE_GLOBS=(
     '*.min.js'
     'anon-check.yml'  # the workflow file is allowed to reference the scanner
     'anon-words.txt'  # the word list is the pattern definition itself
+    'guards.toml'     # a guard's own configuration has to spell what it bans
     'config.json'     # gitignored per-deriver config (= config.example.json is public)
 )
 

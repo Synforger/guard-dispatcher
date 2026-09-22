@@ -31,6 +31,30 @@ WIDE_SENTINEL='ＸＬＥＡＫＸ７ｑ３ｚ'
     [ "$status" -eq 0 ]
 }
 
+# --- files that define the pattern --------------------------------------------
+# A scanner cannot flag the file whose job is to name what must not appear: the
+# word list does it, and so does the configuration of any other guard that bans
+# paths or words. The exclusion is by basename, so the same content under any
+# other name is still a leak.
+
+DEFINITION_SENTINEL='XDefX7q3z'
+
+@test "anon-scan: a guard's own configuration is not a leak" {
+    mk_repo other
+    printf '%s\n' "${DEFINITION_SENTINEL}" > "${ANON_WORDS_FILE}"
+    printf 'banned = ["%s"]\n' "${DEFINITION_SENTINEL}" > guards.toml
+    ANON_SCAN_PATHS="$(pwd)/guards.toml" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -eq 0 ]
+}
+
+@test "anon-scan: the same content under another name is still a leak" {
+    mk_repo other
+    printf '%s\n' "${DEFINITION_SENTINEL}" > "${ANON_WORDS_FILE}"
+    printf 'banned = ["%s"]\n' "${DEFINITION_SENTINEL}" > settings.toml
+    ANON_SCAN_PATHS="$(pwd)/settings.toml" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+}
+
 # --- cs: prefix (case-sensitive fragments) ------------------------------------
 # A pattern whose meaning lives in its capitalisation is prefixed `cs:` and
 # must stop folding case. This is not hypothetical: the weekly audit reported
