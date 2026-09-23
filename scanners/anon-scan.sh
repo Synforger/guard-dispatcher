@@ -117,15 +117,51 @@ EXCLUDE_GLOBS=(
 
 scan_with_perl() {
     local file="$1"
+    # An Office document is scanned through a temporary file holding its unpacked
+    # XML; report the document the author knows, not the scratch file.
+    local label="${2:-$1}"
     # NFKC folds full-width / compatibility characters to their canonical
     # form before matching, so a full-width rendering of a listed name
     # (`Ｎａｍｅ` -> `Name`) and half-width katakana can no longer slip past a
     # half-width word list. `(?i)` still folds case. Match on the normalized
     # form, print the original line.
-    perl -CSD -MUnicode::Normalize -MEncode -ne '
+    ANON_LABEL="$label" perl -CSD -MUnicode::Normalize -MEncode -ne '
               BEGIN { my $pat = NFKC(decode_utf8($ENV{ANON_PATTERN})); $re = qr/(?i)$pat/ }
-              if (NFKC($_) =~ /$re/) { print "$ARGV:$.:$_"; $found = 1 }
+              if (NFKC($_) =~ /$re/) { print "$ENV{ANON_LABEL}:$.:$_"; $found = 1 }
               END { exit($found ? 1 : 0) }' "$file"
+}
+
+# An Office document is a zip: its text lives in the XML parts inside it, and a
+# plain scan reads the compressed bytes — never a single word of the content.
+# Until this existed those files reported clean without being looked at, while
+# the raw bytes also flooded the run with "Malformed UTF-8" from the matcher.
+scan_office() {
+    local path="$1" unpacked status=0
+    # Two different failures, asked separately: a file that is not a zip at all,
+    # and a zip holding no text. Folding them together made "unzip found nothing
+    # matching *.rels" look like "this file is unreadable".
+    if ! unzip -l "$path" >/dev/null 2>&1; then
+        # ⚠ Never report an unreadable document as clean.
+        echo "${path}: could not be opened as an Office document; NOT scanned" >&2
+        return 1
+    fi
+    unpacked="$(mktemp -t anon-office.XXXXXX)" || return 0
+    # Only the text-bearing parts. Media is skipped: it is the same binary
+    # problem one level down, and an image carries no word-list hit.
+    # One element per line. An Office part is a single line of XML thousands of
+    # characters long, and a hit printed as that whole line tells the author
+    # nothing about where it is. Attributes stay on the line they belong to,
+    # because file names and authorship live in them.
+    unzip -p "$path" '*.xml' '*.rels' 2>/dev/null \
+        | perl -pe 's/></>\n</g' > "$unpacked" || true
+    if [ ! -s "$unpacked" ]; then
+        rm -f "$unpacked"
+        echo "${path}: opened, but carries no XML part; NOT scanned" >&2
+        return 1
+    fi
+    scan_with_perl "$unpacked" "$path" || status=1
+    rm -f "$unpacked"
+    return "$status"
 }
 
 # Returns 0 if `basename($1)` is in EXCLUDE_GLOBS, 1 otherwise. Used to keep
@@ -185,6 +221,13 @@ for path in "${scan_paths[@]}"; do
     # local paths) — both have real leak surface, so they are scanned.
     case "$path" in
         *.png|*.jpg|*.jpeg|*.gif|*.pdf|*.zip|*.gz|*.tar|*.so|*.dylib|*.dll|*.exe|*.bin|*.npy)
+            continue
+            ;;
+        # Office documents are zips whose text is in the XML inside them.
+        *.pptx|*.potx|*.pptm|*.docx|*.dotx|*.docm|*.xlsx|*.xltx|*.xlsm)
+            if ! scan_office "$path"; then
+                found=1
+            fi
             continue
             ;;
     esac

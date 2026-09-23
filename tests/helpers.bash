@@ -60,3 +60,16 @@ run_pre_push() {
 }
 
 ZERO_SHA="0000000000000000000000000000000000000000"
+
+# mk_office <path> <text> — a minimal Office document: a zip whose only XML part
+# carries <text>. Real .pptx/.docx files are zips, so a scanner that reads the
+# raw bytes sees compressed data and never the words.
+mk_office() {
+    local path="$1" text="$2" work
+    work="$(mktemp -d)" || return 1
+    mkdir -p "${work}/ppt/slides"
+    printf '<?xml version="1.0"?><p:sld><a:t>%s</a:t></p:sld>\n' "${text}" \
+        > "${work}/ppt/slides/slide1.xml"
+    ( cd "${work}" && zip -q -r "${path}" . )
+    rm -rf "${work}"
+}

@@ -229,3 +229,58 @@ STUB
     [ "$status" -ne 0 ]
     [[ "$output" == *"UNREACHABLE"* ]]
 }
+
+# --- Office documents ---------------------------------------------------------
+# A .pptx is a zip. Scanning its bytes reads compressed data, so the words
+# inside were never looked at while the file still reported clean.
+
+@test "anon-scan: a word inside an Office document is found" {
+    mk_repo other
+    mk_office "$(pwd)/deck.pptx" "${SENTINEL}"
+    ANON_SCAN_PATHS="$(pwd)/deck.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+}
+
+@test "anon-scan: an Office document is named by its own path, not a scratch file" {
+    mk_repo other
+    mk_office "$(pwd)/deck.pptx" "${SENTINEL}"
+    ANON_SCAN_PATHS="$(pwd)/deck.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [[ "$output" == *"deck.pptx"* ]]
+    [[ "$output" != *"anon-office"* ]]
+}
+
+@test "anon-scan: an Office document with nothing to hide stays clean" {
+    mk_repo other
+    mk_office "$(pwd)/clean.pptx" "an ordinary heading"
+    ANON_SCAN_PATHS="$(pwd)/clean.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -eq 0 ]
+}
+
+@test "anon-scan: a file that cannot be opened as an Office document is not called clean" {
+    mk_repo other
+    printf 'not a zip at all\n' > broken.pptx
+    ANON_SCAN_PATHS="$(pwd)/broken.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"NOT scanned"* ]]
+}
+
+@test "anon-scan: a zip with no XML part is not called clean either" {
+    mk_repo other
+    work="$(mktemp -d)"
+    printf 'just a picture\n' > "${work}/image.bin"
+    ( cd "${work}" && zip -q -r "$(pwd)/../empty.pptx" . ) 2>/dev/null || true
+    zip -q -j "$(pwd)/empty.pptx" "${work}/image.bin"
+    rm -rf "${work}"
+    ANON_SCAN_PATHS="$(pwd)/empty.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"no XML part"* ]]
+}
+
+@test "anon-scan: a hit inside an Office document points at one element, not the whole part" {
+    mk_repo other
+    mk_office "$(pwd)/deck.pptx" "${SENTINEL}"
+    ANON_SCAN_PATHS="$(pwd)/deck.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    longest=$(printf '%s\n' "$output" | awk '{ if (length($0) > m) m = length($0) } END { print m }')
+    [ "$longest" -lt 500 ]
+}
