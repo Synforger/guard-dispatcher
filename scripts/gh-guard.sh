@@ -196,7 +196,9 @@ for arg in "$@"; do
     prev="${arg}"
 done
 
-if ! ANON_SCAN_PATHS="${payload}" bash "${SCANNER}"; then
+# ⚠ 走査の報告は stderr へ。stdout は本物の CLI のもの (= `$(gh api ...)` を jq に
+# 渡す呼び手が、先頭に混ざった「clean」の 1 行で JSON を読めなくなった)。
+if ! ANON_SCAN_PATHS="${payload}" bash "${SCANNER}" >&2; then
     printf '\n[gh-guard] refusing to send: this command carries a flagged identifier.\n' >&2
     printf '           Fix the text (or the file it points at) and run it again.\n' >&2
     exit 1

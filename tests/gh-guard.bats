@@ -76,6 +76,19 @@ ran() { [ -f "${RAN_MARKER}" ]; }
     ran
 }
 
+# A caller reads the real CLI's stdout (`$(gh api ... )` into jq). The guard's
+# own report of a clean scan went there too and broke a script that parsed the
+# JSON a write returned, so the guard keeps stdout for the real CLI alone.
+@test "gh-guard: a clean send leaves the real CLI's stdout untouched" {
+    cat > "${REAL_DIR}/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '{"id":1}\n'
+STUB
+    chmod +x "${REAL_DIR}/gh"
+    out=$(gh api repos/owner/name/rulesets --method POST -f name=ordinary 2>/dev/null)
+    [ "${out}" = '{"id":1}' ]
+}
+
 # Read-only calls legitimately name accounts and repositories. Blocking them
 # would turn the guard into something to switch off.
 @test "gh-guard: read-only subcommands are passed through unscanned" {
