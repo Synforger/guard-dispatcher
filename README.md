@@ -22,9 +22,10 @@ identity permanently into public history.
 | commit (content) | `pre-commit` | staged files scanned against your word list |
 | commit (identity) | `pre-commit` | `user.email` must be one of the allowed identities |
 | commit (message) | `commit-msg` | commit subject/body scanned |
-| push | `pre-push` | outgoing commit range deep-scanned (blobs, messages, authors); every author/committer must be an allowed identity |
+| push | `pre-push` | outgoing commit range deep-scanned (blobs, messages, authors); every author/committer must be an allowed identity, or a GitHub bot account |
 | push (refs) | `pre-push` | branch/tag names scanned; direct pushes to main/develop refused (initial branch-creating push exempt; `GUARD_ALLOW_PROTECTED_PUSH=1` overrides once) |
 | PR | `scripts/pr-create.sh` | PR title/body scanned before `gh pr create` |
+| any `gh` send | `scripts/gh-guard.sh` (PATH shim) | argument vector, body/notes/template files and stdin payloads scanned before the CLI runs; read-only subcommands pass through |
 | repair | `scanners/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
 | health | `git-hooks/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
 
@@ -58,6 +59,12 @@ Scanners read one PCRE fragment per line from the first of:
 
 The word list is private operator data — it is never committed
 anywhere. See `scanners/anon-words.example.txt` for the format.
+
+Fragments are matched case-insensitively, so a name is caught however it is
+capitalised. Prefix a line `cs:` when the capitalisation *is* the meaning and
+folding it would fire on unrelated text: the macOS home-root prefix, for one,
+is a path carrying a username when capitalised and a common URL segment when
+lowercased, so it belongs on a `cs:` line.
 
 ## Scope
 
@@ -113,6 +120,15 @@ order is single-sourced in *Word list* above).
 list for that scope. Existing repo-local `.githooks/` keep running
 first (AND-composition), so per-repo rules still apply on top.
 
+The push-time identity check additionally accepts GitHub bot accounts
+(`<id>+<name>[bot]@users.noreply.github.com`) wherever they appear in the
+outgoing range. A merged dependabot pull request puts one into the history,
+and promoting that history to another branch would otherwise fail a check
+with nothing left to protect — the commits are already public, and the
+address belongs to GitHub rather than to a person or an organisation. This
+exemption is push-only: `pre-commit` still requires `user.email` to be on the
+allowed list, because the operator is never a bot.
+
 Scanners resolve repo-local first (`.tooling/local-ci/`), then fall
 back to this checkout's `scanners/` — so individual repositories need
 no toolkit of their own, but can override it.
@@ -149,12 +165,27 @@ contract:
   pushes to protected branches are refused. Pinned in `tests/hooks.bats`.
 - PRs opened through `scripts/pr-create.sh` have their title and body
   scanned before `gh pr create` runs.
+- **Nothing the `gh` CLI sends leaves unscanned** while the PATH shim is
+  installed: the argument vector, any file passed as a body, notes,
+  template or request payload, and a payload piped in on stdin are all
+  scanned first. Read-only subcommands (`view`, `list`, `status`, a plain
+  `GET` through `api`, …) pass through untouched, because those
+  legitimately name accounts and repositories. An unrecognised subcommand
+  is scanned rather than assumed harmless, and an unresolvable scanner
+  refuses the command. Pinned in `tests/gh-guard.bats`.
 - After the fact, `anon-audit-deep` sweeps 11 sources — tracked files,
   every history blob, commit messages, branch names, tag names +
   annotations, author/committer fields, GitHub PR + Issue title/body +
   comment threads, repo description/topics/homepage, releases, and
   Actions run titles.
   The weekly audit runs it scoped to the week's activity.
+- **A GitHub source that cannot be fetched is reported as a finding, never
+  as clean.** The audit settles reachability once before scanning and falls
+  back to the keyring credential when an environment token cannot see the
+  organisation; if no credential resolves the repository, every GitHub-side
+  source counts against the run. Silence is not proof — an erroring API call
+  used to collapse into empty output, which a scan reports as clean, leaving
+  a whole organisation green forever. Pinned in `tests/scanners.bats`.
 
 ### Not covered — know your gaps
 
@@ -162,11 +193,17 @@ contract:
   content is still caught at `pre-push` — but `git push --no-verify`
   skips that too. Bypass is a deliberate operator action, never a
   default.
-- Text that never passes through git or `pr-create.sh` — wikis, gists,
-  and anything typed into the GitHub web UI — is not scanned live. The
-  deep audit covers PR/Issue title+body and comment threads (conversation
-  + inline review comments) after the fact; a PR review *summary* body,
-  wikis, and gists remain out of scope.
+- Text typed straight into the GitHub web UI — a wiki page, a gist, an
+  edit made in the browser — never passes through this machine, so nothing
+  scans it live. The deep audit covers PR/Issue title+body and comment
+  threads (conversation + inline review comments) after the fact; a PR
+  review *summary* body, wikis, and gists stay out of scope there too.
+- The `gh` shim only guards calls that resolve through PATH, and PATH order
+  is per-shell: a login `bash` rebuilds it from the system defaults and
+  never reads a `zsh` profile, so the shim can sit first in one shell and
+  behind the real binary in another. `bootstrap-machine.sh` resolves `gh`
+  in every installed login shell and names the ones that miss it. Invoking
+  the binary by absolute path goes around it regardless.
 - A repository whose local `core.hooksPath` overrides the global one
   runs no baseline; `doctor.sh` exists to surface exactly that.
 - The scan folds case and Unicode width (NFKC) before matching, but is
@@ -178,8 +215,10 @@ contract:
 - One-off bypass: `git commit --no-verify` / `git push --no-verify`
   (hooks are a guardrail, not a prison — but see your own policies).
 - Per-repo bypass: set a local `core.hooksPath`.
+- One-off `gh` bypass: `GH_GUARD_SKIP=1 gh …`.
 - Full uninstall:
-  `git config --global --unset core.hooksPath && rm -rf ~/.git-hooks`.
+  `git config --global --unset core.hooksPath && rm -rf ~/.git-hooks`
+  and `rm ~/.local/bin/gh`.
 
 ## Repository layout
 
@@ -189,9 +228,10 @@ git-hooks/          pre-commit / commit-msg / pre-push dispatchers,
 scanners/           anon-scan, anon-audit-deep (11-source audit),
                     anon-fix (history scrub), anon-sync-truth,
                     setup-lib, anon-words.example.txt
-scripts/            bootstrap-machine.sh, pr-create.sh,
-                    weekly-audit.sh, install-weekly-audit.sh
-tests/              bats suite (dispatcher helpers + all three hooks)
+scripts/            bootstrap-machine.sh, gh-guard.sh (PATH shim),
+                    pr-create.sh, weekly-audit.sh, install-weekly-audit.sh
+tests/              bats suite (dispatcher helpers, all three hooks,
+                    scanners, gh shim)
 ```
 
 ## Tests

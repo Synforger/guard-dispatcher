@@ -188,6 +188,27 @@ dispatcher::allowed_emails() {
     # would otherwise always fail.
 }
 
+# Identities that may legitimately appear in *history* but never as the
+# operator's own.
+#
+# GitHub-hosted bot accounts always take the form
+# `<numeric id>+<name>[bot]@users.noreply.github.com`. The account belongs to
+# GitHub, the address is public on every pull request such a bot opens, and it
+# carries no personal or organisational information — the same reasoning that
+# already admits `noreply@github.com`. A merged dependabot PR puts one of these
+# into the history, and promoting that history to another branch then fails an
+# identity check that has nothing to protect: the commits are already public.
+#
+# Matched by shape rather than listed one literal at a time, because the next
+# bot — renovate, copilot, a re-numbered dependabot — would otherwise fail in
+# exactly the same way and need the same one-off entry.
+#
+# Deliberately NOT part of dispatcher::allowed_emails: pre-commit uses that
+# list to check who *you* are committing as, and the operator is never a bot.
+dispatcher::history_identity_exempt_re() {
+    printf '%s' '^[0-9]+\+[A-Za-z0-9._-]+\[bot\]@users\.noreply\.github\.com$'
+}
+
 # Branches that must never receive a direct push from this machine.
 # PR merges happen server-side, so a local push to these refs is always a
 # process violation, except the very first push that creates the branch

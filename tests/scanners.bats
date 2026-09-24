@@ -31,6 +31,64 @@ WIDE_SENTINEL='ＸＬＥＡＫＸ７ｑ３ｚ'
     [ "$status" -eq 0 ]
 }
 
+# --- files that define the pattern --------------------------------------------
+# A scanner cannot flag the file whose job is to name what must not appear: the
+# word list does it, and so does the configuration of any other guard that bans
+# paths or words. The exclusion is by basename, so the same content under any
+# other name is still a leak.
+
+DEFINITION_SENTINEL='XDefX7q3z'
+
+@test "anon-scan: a guard's own configuration is not a leak" {
+    mk_repo other
+    printf '%s\n' "${DEFINITION_SENTINEL}" > "${ANON_WORDS_FILE}"
+    printf 'banned = ["%s"]\n' "${DEFINITION_SENTINEL}" > guards.toml
+    ANON_SCAN_PATHS="$(pwd)/guards.toml" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -eq 0 ]
+}
+
+@test "anon-scan: the same content under another name is still a leak" {
+    mk_repo other
+    printf '%s\n' "${DEFINITION_SENTINEL}" > "${ANON_WORDS_FILE}"
+    printf 'banned = ["%s"]\n' "${DEFINITION_SENTINEL}" > settings.toml
+    ANON_SCAN_PATHS="$(pwd)/settings.toml" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+}
+
+# --- cs: prefix (case-sensitive fragments) ------------------------------------
+# A pattern whose meaning lives in its capitalisation is prefixed `cs:` and
+# must stop folding case. This is not hypothetical: the weekly audit reported
+# the same finding four weeks running because a capitalised path prefix, once
+# folded, matched the same word inside an ordinary URL in a PR body. The
+# fixtures below use a sentinel rather than the real pattern, so the test does
+# not depend on what any particular word list happens to contain.
+
+CASE_SENTINEL='XCaseX7q3z'
+
+@test "anon-scan: a cs: pattern does not fire on the opposite case" {
+    mk_repo other
+    printf 'cs:%s\n' "${CASE_SENTINEL}" > "${ANON_WORDS_FILE}"
+    printf 'harmless text with %s in it\n' "$(printf '%s' "${CASE_SENTINEL}" | tr '[:upper:]' '[:lower:]')" > lower.txt
+    ANON_SCAN_PATHS="$(pwd)/lower.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -eq 0 ]
+}
+
+@test "anon-scan: a cs: pattern still catches the exact case" {
+    mk_repo other
+    printf 'cs:%s\n' "${CASE_SENTINEL}" > "${ANON_WORDS_FILE}"
+    printf 'a real leak: %s\n' "${CASE_SENTINEL}" > exact.txt
+    ANON_SCAN_PATHS="$(pwd)/exact.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+}
+
+@test "anon-scan: a plain pattern keeps folding case (names are caught however written)" {
+    mk_repo other
+    printf '%s\n' "${SENTINEL}" > "${ANON_WORDS_FILE}"
+    printf '%s\n' "$(printf '%s' "${SENTINEL}" | tr '[:lower:]' '[:upper:]')" > upper.txt
+    ANON_SCAN_PATHS="$(pwd)/upper.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+}
+
 # --- text-bearing data formats stay in scope ----------------------------------
 # .csv and .ipynb are text with real leak surface (free-text columns,
 # notebook outputs with usernames / local paths) — they must be scanned,
@@ -119,4 +177,110 @@ STUB
     setup_gh_stub
     run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
     [ "$status" -eq 0 ]
+}
+
+# --- fail-closed on unfetchable GitHub sources --------------------------------
+# An API call that errors used to collapse into empty output, and a scan of
+# empty output reports "clean". A credential that cannot see an organisation
+# therefore left every repo in it green forever, while the operator read the
+# report as proof. Silence is not proof: an unfetchable source is a finding.
+
+# Repository resolves, but every API call errors.
+setup_gh_stub_api_error() {
+    local bindir="${BATS_TEST_TMPDIR}/stub-bin"
+    mkdir -p "${bindir}"
+    cat > "${bindir}/gh" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi
+if [ "$1" = "repo" ] && [ "$2" = "view" ]; then echo '{}'; exit 0; fi
+echo "HTTP 403: Resource not accessible by integration" >&2
+exit 1
+STUB
+    chmod +x "${bindir}/gh"
+    export PATH="${bindir}:${PATH}"
+}
+
+# No credential can resolve the repository at all.
+setup_gh_stub_unresolvable() {
+    local bindir="${BATS_TEST_TMPDIR}/stub-bin"
+    mkdir -p "${bindir}"
+    cat > "${bindir}/gh" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi
+echo "GraphQL: Could not resolve to a Repository" >&2
+exit 1
+STUB
+    chmod +x "${bindir}/gh"
+    export PATH="${bindir}:${PATH}"
+}
+
+@test "deep audit: an erroring GitHub API call is a finding, not a clean source" {
+    mk_repo synforger
+    setup_gh_stub_api_error
+    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"UNREACHABLE"* ]]
+}
+
+@test "deep audit: a repo no credential can resolve is a finding, not a clean source" {
+    mk_repo synforger
+    setup_gh_stub_unresolvable
+    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"UNREACHABLE"* ]]
+}
+
+# --- Office documents ---------------------------------------------------------
+# A .pptx is a zip. Scanning its bytes reads compressed data, so the words
+# inside were never looked at while the file still reported clean.
+
+@test "anon-scan: a word inside an Office document is found" {
+    mk_repo other
+    mk_office "$(pwd)/deck.pptx" "${SENTINEL}"
+    ANON_SCAN_PATHS="$(pwd)/deck.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+}
+
+@test "anon-scan: an Office document is named by its own path, not a scratch file" {
+    mk_repo other
+    mk_office "$(pwd)/deck.pptx" "${SENTINEL}"
+    ANON_SCAN_PATHS="$(pwd)/deck.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [[ "$output" == *"deck.pptx"* ]]
+    [[ "$output" != *"anon-office"* ]]
+}
+
+@test "anon-scan: an Office document with nothing to hide stays clean" {
+    mk_repo other
+    mk_office "$(pwd)/clean.pptx" "an ordinary heading"
+    ANON_SCAN_PATHS="$(pwd)/clean.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -eq 0 ]
+}
+
+@test "anon-scan: a file that cannot be opened as an Office document is not called clean" {
+    mk_repo other
+    printf 'not a zip at all\n' > broken.pptx
+    ANON_SCAN_PATHS="$(pwd)/broken.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"NOT scanned"* ]]
+}
+
+@test "anon-scan: a zip with no XML part is not called clean either" {
+    mk_repo other
+    work="$(mktemp -d)"
+    printf 'just a picture\n' > "${work}/image.bin"
+    ( cd "${work}" && zip -q -r "$(pwd)/../empty.pptx" . ) 2>/dev/null || true
+    zip -q -j "$(pwd)/empty.pptx" "${work}/image.bin"
+    rm -rf "${work}"
+    ANON_SCAN_PATHS="$(pwd)/empty.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"no XML part"* ]]
+}
+
+@test "anon-scan: a hit inside an Office document points at one element, not the whole part" {
+    mk_repo other
+    mk_office "$(pwd)/deck.pptx" "${SENTINEL}"
+    ANON_SCAN_PATHS="$(pwd)/deck.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    longest=$(printf '%s\n' "$output" | awk '{ if (length($0) > m) m = length($0) } END { print m }')
+    [ "$longest" -lt 500 ]
 }
