@@ -312,6 +312,8 @@ contract:
 git-hooks/          entry points git calls: pre-commit / commit-msg / pre-push
                     dispatchers, lib/dispatcher-common.sh
 gh-shim/            entry point PATH resolves as `gh`: gh-guard.sh
+agent-hooks/        entry points an AI agent calls before each tool:
+                    claude-code/area-guard.py
 scanners/           the judgement the entry points call: anon-scan,
                     anon-audit-deep (11-source audit), anon-fix (history
                     scrub), anon-sync-truth, corpus-scan (private documents),
@@ -320,7 +322,7 @@ scripts/            setting up and checking a machine: bootstrap-machine.sh,
                     install.sh, doctor.sh, pr-create.sh, weekly-audit.sh,
                     install-weekly-audit.sh
 tests/              bats suite (dispatcher helpers, all three hooks,
-                    scanners, gh shim)
+                    scanners, gh shim, agent hook)
 ```
 
 ## Tests
