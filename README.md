@@ -142,20 +142,41 @@ documents themselves. Everything it reads is configured on this machine only:
 
 ```
 ~/.config/guard/areas.txt               <name> <path> [<path> ...]   one area per line
+                                        <prefix>* <path>/* ...       one area per sub-folder
                                         _exempt <path> ...           never scanned
 ~/.config/guard/patterns/<name>.txt     regular expressions for identifiers of a shape
                                         (product codes, client names), case-insensitive
 ~/.config/guard/allow.txt               phrases that are fine to send
-~/.config/guard/background.txt          folders of public text, and `published <dir>`
+~/.config/guard/ignore.txt              folders inside an area that hold none of its
+                                        documents (an external corpus, build logs)
+~/.config/guard/background.txt          folders of public text and code, and `published <dir>`
                                         for your own repositories as their remote has them
 ```
 
-An area's documents are its Office files (`.pptx` `.docx` `.xlsx`, read from
-their XML, never their compressed bytes) and the Markdown that lives outside
-any git repository. A sent line is a hit when it holds a run of those
-documents: 12 characters of Japanese, or 40 characters without Japanese
-(twelve characters of English are two common words). Runs that also appear in
-the background text are not specific to any area and are dropped.
+`client-* /srv/company/clients/*` makes every sub-folder of `clients/` its own area
+(`client-acme`, `client-beta`, ...), so a client folder created tomorrow is
+guarded from the moment it exists. A folder already named on an explicit line
+keeps that name.
+
+An area's documents are everything under it that holds its words:
+
+| kind | files | a sent line is a hit when it |
+|---|---|---|
+| prose | Office (`.pptx` `.docx` `.xlsx`, read from their XML, never their compressed bytes), PDF (`pdftotext`, wrapped lines rejoined), Markdown | holds a run of 12 characters of Japanese, or 40 without (twelve characters of English are two common words) |
+| lines | CSV, TSV, plain text, and every file a git repository inside the area tracks — its code | is, once whitespace is folded, a whole line of the same length bar |
+
+Code is matched line by line because that is how it is copied, and because
+printing every run of every line of a code base would hold hundreds of
+millions of values. Inside a repository only what it tracks counts: untracked
+output and vendored folders (`third_party/`, `vendor/`, ...) are someone
+else's. Runs and lines that also appear in the background text and code are
+not specific to any area and are dropped.
+
+Prints are kept per document and reused while a document is unchanged.
+Documents changed since the last scan are found through Spotlight and added at
+once; when Spotlight cannot answer (indexing off, an area it does not index,
+not macOS) everything is walked again, and a full walk happens at least every
+six hours. A document that could not be read is listed by `--status`.
 
 **Where the text is going decides what it may carry**: every area that does
 not contain the destination is checked. Areas nest — a client inside a
@@ -177,9 +198,9 @@ the current folder's remote — never the folder the command was typed in:
 Visibility is asked without credentials first (only a public repository
 answers), then as each account `gh` holds, and remembered for ten minutes.
 
-The fingerprints are rebuilt at most every six hours (`corpus-scan.py
---refresh` forces it; `--status` shows what is loaded). A machine with no
-`areas.txt` prints `NOT CHECKED` and passes.
+`corpus-scan.py --refresh` walks everything now; `--status` shows what is
+loaded and what could not be read. A machine with no `areas.txt` prints
+`NOT CHECKED` and passes.
 
 ## Scan guarantee
 
@@ -271,6 +292,12 @@ contract:
 - Per-repo bypass: set a local `core.hooksPath`.
 - One-off `gh` bypass: `GH_GUARD_SKIP=1 gh …`.
 - One-off private-document bypass: `GUARD_CORPUS_SKIP=1 git push …` (or `gh …`).
+- Tuning the private-document scan: `GUARD_CORPUS_RUN` / `GUARD_CORPUS_LATIN_RUN`
+  (run length for prose), `GUARD_CORPUS_CODE_LINES` (how many consecutive whole
+  lines of an area's code a sent file must hold to be a hit),
+  `GUARD_VISIBILITY_TTL` (seconds a repository's visibility is remembered).
+- An AI agent is better held to none of these: an agent-side hook can refuse
+  any command that carries them (the operator types them, the agent does not).
 - Full uninstall:
   `git config --global --unset core.hooksPath && rm -rf ~/.git-hooks`
   and `rm ~/.local/bin/gh`.

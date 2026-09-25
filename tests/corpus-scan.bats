@@ -302,13 +302,280 @@ gh_shim() {
     [ "$status" -eq 0 ]
 }
 
-@test "corpus: Markdown inside a git repository is not treated as a document" {
+@test "corpus: a file a repository does not track is not its document" {
     mk_repo_at "${CLIENT}/repos/tool"
-    printf 'a readme sentence that is only code documentation\n' > README.md
+    printf 'a readme sentence that is only local scratch output here\n' > README.md
     mk_repo other
-    commit_line "a readme sentence that is only code documentation"
+    commit_line "a readme sentence that is only local scratch output here"
     scan_last
     [ "$status" -eq 0 ]
+}
+
+# --- code, data and PDF ------------------------------------------------------------
+
+CODE_LINE='    calibrated = apply_offset_table(raw_frames, acme_offsets, window=17)'
+
+# client_code <line> — commit a file holding <line> to a repository inside the client.
+client_code() {
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    printf 'def run():\n%s\n    return x\n' "$1" > pipeline.py
+    git add pipeline.py
+    commit_bypassing_hooks "add pipeline"
+}
+
+@test "corpus: a whole line of a client repository's code is caught, however it is indented" {
+    client_code "${CODE_LINE}"
+    mk_repo other
+    commit_line "        calibrated = apply_offset_table(raw_frames, acme_offsets, window=17)"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client text"* ]]
+}
+
+@test "corpus: a short line of code is too common to mean anything" {
+    client_code "${CODE_LINE}"
+    mk_repo other
+    commit_line "    return x"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: code in a vendored folder is someone else's, not the area's" {
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    mkdir -p third_party/lib
+    printf '%s\n' "${CODE_LINE}" > third_party/lib/x.py
+    git add third_party
+    commit_bypassing_hooks "vendor"
+    mk_repo other
+    commit_line "${CODE_LINE}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a line of code also found in public code is not the area's" {
+    client_code "${CODE_LINE}"
+    mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
+    printf '%s\n' "${CODE_LINE}" > "${BATS_TEST_TMPDIR}/public/lib/same.py"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line "${CODE_LINE}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: with GUARD_CORPUS_CODE_LINES=2 a lone common line passes and a copied block is caught" {
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    printf 'def run():\n%s\n    result = merge_panels(calibrated, seam_allowance=0.35)\n' "${CODE_LINE}" > pipeline.py
+    git add pipeline.py
+    commit_bypassing_hooks "add pipeline"
+    mk_repo other
+    export GUARD_CORPUS_CODE_LINES=2
+    commit_line "${CODE_LINE}"
+    scan_last
+    [ "$status" -eq 0 ]
+    printf '%s\n    result = merge_panels(calibrated, seam_allowance=0.35)\n' "${CODE_LINE}" > block.py
+    git add block.py
+    commit_bypassing_hooks "copy a block"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: a license wrapped differently from its public copy is not the area's" {
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    printf '# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY\n# EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED FOREVER AND EVER\n' > header.py
+    git add header.py
+    commit_bypassing_hooks "header"
+    mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
+    printf 'THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND\nCONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES ARE\nDISCLAIMED FOREVER AND EVER\n' > "${BATS_TEST_TMPDIR}/public/lib/LICENSE"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line '# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY'
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a row of a CSV is caught" {
+    printf 'id,label,score\n4411,acme-left-sleeve-measurement-batch,0.8731\n' > "${CLIENT}/received/table.csv"
+    mk_repo other
+    commit_line "4411,acme-left-sleeve-measurement-batch,0.8731"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+# mk_pdf <path> <text> — a one-page PDF whose text layer holds <text> (ASCII).
+mk_pdf() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+path, text = sys.argv[1], sys.argv[2]
+stream = f"BT /F1 10 Tf 20 700 Td ({text}) Tj ET".encode()
+objs = [b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+out, offsets = b"%PDF-1.4\n", []
+for i, body in enumerate(objs, 1):
+    offsets.append(len(out))
+    out += b"%d 0 obj\n" % i + body + b"\nendobj\n"
+xref = len(out)
+out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+out += b"".join(b"%010d 00000 n \n" % o for o in offsets)
+out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+open(path, "wb").write(out)
+PY
+}
+
+@test "corpus: the text of a PDF is caught" {
+    command -v pdftotext >/dev/null || skip "pdftotext is not installed"
+    mk_pdf "${CLIENT}/received/report.pdf" "the sleeve seam drifts four millimetres per wash cycle"
+    mk_repo other
+    commit_line "the sleeve seam drifts four millimetres per wash cycle"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: a sentence a PDF wrapped across lines is joined again" {
+    run python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('c', '${GUARD_ROOT}/scanners/corpus-scan.py')
+c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
+print(c.join_wrapped(['採寸表の三段目は夜', '明けに読み直すこと', '', 'the next', 'paragraph']))"
+    [ "$output" = "['採寸表の三段目は夜明けに読み直すこと', 'the next paragraph']" ]
+}
+
+@test "corpus: a run reaching past an allowed phrase is not a hit" {
+    # the document and the sent line share the allowed phrase plus the few words after it
+    printf 'open System Settings then Privacy and Security then Screen Recording for the app\n' > "${CLIENT}/received/howto.md"
+    printf 'System Settings then Privacy and Security then Screen Recording\n' > "${GUARD_CONFIG_DIR}/allow.txt"
+    mk_repo other
+    commit_line "- System Settings then Privacy and Security then Screen Recording for the process"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a repository holding the area from outside keeps its notes out of the area" {
+    # an agent's state tree (a repository) with a folder for the company inside it
+    STATE="${BATS_TEST_TMPDIR}/state-tree"
+    mkdir -p "${STATE}/projects/co"
+    git -C "${BATS_TEST_TMPDIR}" init -q "${STATE}"
+    printf 'the agent writes its own session notes in this very folder\n' > "${STATE}/projects/co/notes.md"
+    git -C "${STATE}" add -A && git -C "${STATE}" -c core.hooksPath=/dev/null commit -q -m notes
+    printf 'co %s/projects/co\n' "${STATE}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo other
+    commit_line "the agent writes its own session notes in this very folder"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a license text in a repository is public boilerplate" {
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    printf 'Redistributions of source code must retain the above copyright notice\n' > LICENSE
+    git add LICENSE
+    commit_bypassing_hooks "license"
+    mk_repo other
+    commit_line "Redistributions of source code must retain the above copyright notice"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a folder in ignore.txt holds no documents" {
+    mkdir -p "${WORK}/corpus-external"
+    printf '%s\n' "${COMPANY_TEXT}" > "${WORK}/corpus-external/a.txt"
+    rm "${WORK}/meetings/plan.md"
+    printf '%s\n' "${WORK}/corpus-external" > "${GUARD_CONFIG_DIR}/ignore.txt"
+    mk_repo other
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+# --- a new client folder is an area at once -----------------------------------------
+
+@test "corpus: a client folder made after the areas were written is its own area" {
+    printf 'client-* %s/clients/*\n' "${WORK}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mkdir -p "${WORK}/clients/beta"
+    printf 'beta keeps the pattern archive under the north stairs\n' > "${WORK}/clients/beta/brief.md"
+    # beta's own repository may carry it (checked first: once another client's repository
+    # has committed the line, that repository holds it too)
+    mk_repo_at "${WORK}/clients/beta/repos/tool"
+    commit_line "beta keeps the pattern archive under the north stairs"
+    scan_last
+    [ "$status" -eq 0 ]
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    commit_line "beta keeps the pattern archive under the north stairs"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client-beta text"* ]]
+}
+
+@test "corpus: a folder named on an explicit line keeps that name" {
+    printf 'client-* %s/clients/*\n' "${WORK}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo other
+    commit_line "${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *" client text"* ]]
+    [[ "$output" != *"client-acme"* ]]
+}
+
+# --- a document changed after the build is checked at once --------------------------
+
+# spotlight_stub <reported-file> — mdutil says indexing is on; mdfind finds any probe
+# asked by name and reports <reported-file> as changed.
+spotlight_stub() {
+    STUB="${BATS_TEST_TMPDIR}/spotlight"; mkdir -p "${STUB}"
+    printf '#!/bin/sh\necho "/:"\necho "\tIndexing enabled."\n' > "${STUB}/mdutil"
+    cat > "${STUB}/mdfind" <<SH
+#!/bin/sh
+[ "\$3" = "-name" ] && { echo "\$2/\$4"; exit 0; }
+echo "\${SPOTLIGHT_REPORTS:-}" | grep . | grep "^\$2" || true
+SH
+    chmod +x "${STUB}/mdutil" "${STUB}/mdfind"
+    export SPOTLIGHT_REPORTS="$1"
+}
+
+@test "corpus: a document Spotlight reports as changed is caught without a full rebuild" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
+    # Spotlight answers with physical paths (= /var/folders is /private/var/folders)
+    SPOTLIGHT_REPORTS="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "${CLIENT}/received/late.md")"
+    export SPOTLIGHT_REPORTS
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"walking the private documents"* ]]
+}
+
+@test "corpus: when Spotlight cannot answer, everything is walked again" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"walking the private documents"* ]]
+}
+
+@test "corpus: when Spotlight does not index an area, everything is walked again" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    printf '#!/bin/sh\nexit 0\n' > "${STUB}/mdfind"     # finds nothing, not even a known document
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
 }
 
 @test "corpus: no areas on this machine says NOT CHECKED and passes" {

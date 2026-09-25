@@ -10,19 +10,33 @@ Areas are defined on this machine only (never in a repository):
     ~/.config/guard/areas.txt
         <name> <path> [<path> ...]     one area per line; nested paths belong
                                        to the innermost area
+        <prefix>* <path>/* ...         one area per sub-folder of <path>, named
+                                       <prefix><folder> (= a client folder made
+                                       tomorrow is an area from the moment it exists)
         _exempt <path> ...             repositories that are never scanned
     ~/.config/guard/patterns/<name>.txt
         one regular expression per line (case-insensitive) for identifiers of
         that area that follow a shape: product codes, client names
     ~/.config/guard/allow.txt          phrases that are fine to send
-    ~/.config/guard/background.txt     folders of public text; any run of text
-                                       that also appears there is not specific
-                                       to an area and is dropped
+    ~/.config/guard/ignore.txt         folders inside an area that hold no documents
+                                       of it (an external corpus, build logs)
+    ~/.config/guard/background.txt     folders of public text and code; whatever
+                                       also appears there is not specific to an
+                                       area and is dropped
 
-An area's documents are the Office files (.pptx .docx .xlsx) under its paths,
-plus Markdown that lives outside any git repository. Every run of RUN
-consecutive characters in them becomes a fingerprint. A line that is sent and
-holds the same RUN characters is a hit.
+An area's documents are everything under its paths that holds its words:
+
+    prose  Office (.pptx .docx .xlsx, read from their XML), PDF (pdftotext),
+           Markdown -- every run of RUN consecutive characters holding Japanese,
+           or LATIN_RUN without, is a print
+    lines  CSV, TSV, plain text, and every file a git repository there tracks
+           (= its code) -- every whole line of at least that length is a print
+
+Inside a repository only what it tracks counts (untracked output and vendored
+third-party folders do not). A sent line is a hit when it holds a prose run or
+is a whole printed line. Prints are kept per document and reused while the
+document is unchanged; documents changed since the last look are found through
+Spotlight and added at once, and everything is walked again every MAX_AGE.
 
 What is checked depends on where the text is going: every area that does not
 contain the destination. A repository inside an area may carry that area's
@@ -55,6 +69,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import hashlib
+import heapq
 import html
 import json
 import os
@@ -75,6 +90,8 @@ from pathlib import Path
 # so a run without any Japanese has to be much longer before it means anything.
 RUN = int(os.environ.get("GUARD_CORPUS_RUN", "12"))
 LATIN_RUN = int(os.environ.get("GUARD_CORPUS_LATIN_RUN", "40"))
+# How many consecutive whole lines of an area's code or data a sent file has to hold to be a hit.
+CODE_LINES = int(os.environ.get("GUARD_CORPUS_CODE_LINES", "1"))
 JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]")
 MAX_AGE = int(os.environ.get("GUARD_CORPUS_MAX_AGE", str(6 * 3600)))
 BACKGROUND_MAX_AGE = 7 * 24 * 3600
@@ -82,6 +99,19 @@ CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
 CACHE = Path(os.environ.get("GUARD_CORPUS_CACHE", Path.home() / ".cache/guard-corpus"))
 EXEMPT = "_exempt"
 OFFICE = {".pptx", ".docx", ".xlsx", ".pptm", ".docm", ".xlsm"}
+TEXT = {".md", ".csv", ".tsv", ".txt"}
+LOCKFILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock", "uv.lock",
+             "Gemfile.lock", "composer.lock", "go.sum"}
+GENERATED = {".pbxproj", ".xcscheme", ".xcworkspacedata", ".storyboard", ".xib", ".plist", ".csproj", ".sln",
+             ".vcxproj", ".filters", ".meta", ".uproject", ".uplugin"}
+# Folders of a repository that hold someone else's code: public text, not the area's.
+VENDORED = {"vendor", "vendors", "external", "extern", "third_party", "thirdparty", "third-party", "3rdparty"}
+# Raised whenever a change to reading or printing makes the kept prints of an unchanged document wrong.
+PRINT_FORMAT = 2
+DOCS = CACHE / "docs"
+INDEX = DOCS / "index.json"
+# Past this many changed documents since the last full walk, walk again instead of growing the delta.
+MAX_DELTA = 200
 TEXT_RUN = re.compile(r"<(?:a:|w:)?t(?:\s[^>]*)?>([^<]*)</(?:a:|w:)?t>")
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "third_party", "dist", "build",
              "target", ".fetchcontent-cache", "DerivedData", "site-packages", ".gradle", "obj", "bin",
@@ -98,6 +128,7 @@ GITHUB_URL = [
     re.compile(r"^([\w.-]+)/([\w.-]+)$"),
 ]
 GH_API_REPO = re.compile(r"^/?repos/([\w.-]+)/([\w.-]+)")
+COMMENT_MARKS = re.compile(r"^\s*(?:#+|//+|/\*+|\*+|--|;+|%+|<!--|'''|\"\"\")\s*|\s*(?:\*/|-->)\s*$")
 
 
 def say(message: str) -> None:
@@ -115,12 +146,30 @@ def read_lines(path: Path) -> list[str]:
             if line.strip() and not line.lstrip().startswith("#")]
 
 
-def load_areas() -> dict[str, list[Path]]:
-    areas: dict[str, list[Path]] = {}
-    for line in read_lines(CONFIG / "areas.txt"):
+def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
+    """Areas by name. A line whose name holds `*` and whose paths end in `/*` makes one
+    area per sub-folder (`client-* /srv/company/clients/*` -> `client-acme` for `clients/acme`),
+    so a folder created tomorrow is guarded from the moment it exists. A path already
+    named on an explicit line keeps that line's name."""
+    explicit: dict[str, list[Path]] = {}
+    templates: list[tuple[str, list[Path]]] = []
+    for line in read_lines(source or CONFIG / "areas.txt"):
         parts = shlex.split(line, comments=True)
-        if len(parts) >= 2:
-            areas.setdefault(parts[0], []).extend(expand(p) for p in parts[1:])
+        if len(parts) < 2:
+            continue
+        if "*" in parts[0]:
+            templates.append((parts[0], [expand(p[:-2]) for p in parts[1:] if p.endswith("/*")]))
+        else:
+            explicit.setdefault(parts[0], []).extend(expand(p) for p in parts[1:])
+    areas = dict(explicit)
+    named = {r for roots in explicit.values() for r in roots}
+    for template, parents in templates:
+        for parent in parents:
+            children = sorted(parent.iterdir()) if parent.is_dir() else []
+            for child in children:
+                child = expand(str(child))
+                if child.is_dir() and not child.name.startswith(".") and child not in named:
+                    areas.setdefault(template.replace("*", child.name), []).append(child)
     return areas
 
 
@@ -155,6 +204,16 @@ def fingerprints(text: str) -> set[int]:
     return {digest(w) for w in windows(text)}
 
 
+def line_print(line: str) -> int | None:
+    """One print for a whole line of code or data, long enough to mean something on its own
+    (the same bar as a run: 12 characters holding Japanese, 40 without). Code is copied line by
+    line, and printing every run of every line would hold hundreds of millions of values."""
+    text = normalize(line)
+    if len(text) >= LATIN_RUN or (len(text) >= RUN and len(JAPANESE.findall(text)) * 2 >= len(text)):
+        return digest("\0line\0" + text)
+    return None
+
+
 # --- building an area's fingerprints ------------------------------------------
 
 def office_units(path: Path) -> list[str]:
@@ -167,36 +226,127 @@ def office_units(path: Path) -> list[str]:
     return units
 
 
-def in_git_worktree(folder: Path, cache: dict[Path, bool]) -> bool:
-    if folder not in cache:
-        cache[folder] = (folder / ".git").exists() or (
-            folder.parent != folder and in_git_worktree(folder.parent, cache))
-    return cache[folder]
+def join_wrapped(lines: list[str]) -> list[str]:
+    """A PDF breaks a sentence wherever the page ran out of width. Paragraphs are rejoined --
+    without a space between two Japanese characters, with one otherwise -- so a sentence
+    copied out whole still holds the runs the page split."""
+    paragraphs, current = [], ""
+    for line in lines:
+        line = line.strip()
+        if not line:
+            if current:
+                paragraphs.append(current)
+            current = ""
+            continue
+        glue = "" if current and JAPANESE.match(current[-1]) and JAPANESE.match(line[0]) else " "
+        current = f"{current}{glue}{line}" if current else line
+    if current:
+        paragraphs.append(current)
+    return paragraphs
 
 
-def documents(roots: list[Path], inner: list[Path]):
-    """(path, units) for every document under roots, skipping nested areas."""
-    git_cache: dict[Path, bool] = {}
+def pdf_units(path: Path) -> list[str]:
+    run = subprocess.run(["pdftotext", "-q", "-enc", "UTF-8", str(path), "-"], capture_output=True, timeout=300)
+    if run.returncode != 0:
+        raise OSError(f"pdftotext could not read {path}")
+    return join_wrapped(run.stdout.decode("utf-8", "replace").splitlines())
+
+
+def text_units(path: Path) -> list[str]:
+    data = path.read_bytes()
+    if b"\0" in data[:8192]:          # binary under a text name
+        return []
+    return data.decode("utf-8", "replace").splitlines()
+
+
+def unit_reader(path: Path, tracked: bool):
+    """(kind, read) for a file, or None when it is not a document. kind "runs" prints every run
+    of prose (Office, PDF, Markdown); kind "lines" prints whole lines of code and data (CSV, TSV,
+    plain text, and every other file a repository tracks), which is what an agent most easily copies."""
+    suffix, name = path.suffix.lower(), path.name
+    if name.startswith("~$") or name in LOCKFILES or suffix in {".lock", ".map"} or name.endswith(".min.js"):
+        return None
+    # Public boilerplate: license texts, and project files an IDE writes from its own template.
+    if name.upper().startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE")) or suffix in GENERATED:
+        return None
+    if suffix in OFFICE:
+        # Office files are measured by their text, not their size: a deck is
+        # mostly images, and its XML parts stay small however large it gets.
+        return "runs", lambda: office_units(path)
+    if suffix == ".pdf":
+        return "runs", lambda: pdf_units(path)
+    if suffix == ".md" and not tracked:
+        return "runs", lambda: text_units(path)
+    # Markdown a repository tracks documents its code, in the words its authors use everywhere:
+    # it is matched by the line, like the code, not by the run like a slide.
+    if suffix in TEXT or tracked:
+        return "lines", lambda: text_units(path)
+    return None
+
+
+class Repos:
+    """Which repository a file belongs to, and what that repository tracks (asked once per repository)."""
+
+    def __init__(self) -> None:
+        self.names: dict[Path, set[str]] = {}
+
+    def of(self, folder: Path) -> Path | None:
+        return next((p for p in [folder, *folder.parents] if (p / ".git").exists()), None)
+
+    def tracked(self, repo: Path) -> set[str]:
+        if repo not in self.names:
+            out = subprocess.run(["git", "-C", str(repo), "ls-files", "-z"], capture_output=True).stdout
+            self.names[repo] = {n.decode("utf-8", "replace") for n in out.split(b"\0") if n}
+        return self.names[repo]
+
+    def reader(self, path: Path, repo: Path | None | bool = False, root: Path | None = None):
+        """unit_reader for a file, applying the repository rule: inside a repository only what it
+        tracks, minus vendored code (= untracked output and third-party copies are not its documents).
+        Office files and PDFs count wherever they sit. `repo` may be passed when already known.
+
+        Only a repository that lies inside the area (`root`) is the area's. One that holds the area
+        from outside -- an agent's own state tree with a folder for the company -- keeps its notes,
+        not the area's documents: only its Office files and PDFs are read."""
+        if repo is False:
+            repo = self.of(path.parent)
+        if repo is not None and root is not None and not (repo == root or root in repo.parents):
+            return unit_reader(path, tracked=False) if path.suffix.lower() in OFFICE | {".pdf"} else None
+        if repo is not None and path.suffix.lower() not in OFFICE | {".pdf"}:
+            relative = str(path.relative_to(repo))
+            if relative not in self.tracked(repo) or any(p.lower() in VENDORED for p in Path(relative).parts[:-1]):
+                return None
+        return unit_reader(path, tracked=repo is not None)
+
+
+def document(path: Path, repos: Repos, repo: Path | None | bool = False, root: Path | None = None):
+    """(stamp, (kind, read)) for a document, or None. The stamp changes whenever the content may have."""
+    reader = repos.reader(path, repo, root)
+    if reader is None:
+        return None
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    if not path.is_file() or (st.st_size > MAX_FILE and path.suffix.lower() not in OFFICE | {".pdf"}):
+        return None
+    # How a document is read is part of its stamp: prints made the old way are never reused.
+    return f"{PRINT_FORMAT}:{reader[0]}:{st.st_mtime_ns}:{st.st_size}", reader
+
+
+def documents(roots: list[Path], inner: list[Path], ignored: list[Path], repos: Repos):
+    """(path, stamp, read) for every document under roots, skipping nested areas and ignored folders."""
     for root in roots:
+        repo_of = {root: repos.of(root)}     # a folder's repository is its own, or its parent's
         for folder, dirs, files in os.walk(root):
             here = Path(folder)
+            if here != root:
+                repo_of[here] = here if (here / ".git").exists() else repo_of[here.parent]
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")
-                       and here / d not in inner]
+                       and here / d not in inner and here / d not in ignored]
             for name in files:
-                path = here / name
-                suffix = path.suffix.lower()
-                if name.startswith("~$"):
-                    continue
-                try:
-                    # Office files are measured by their text, not their size: a deck is
-                    # mostly images, and its XML parts stay small however large it gets.
-                    if suffix in OFFICE:
-                        yield path, office_units(path)
-                    elif (suffix == ".md" and path.stat().st_size <= MAX_FILE
-                          and not in_git_worktree(here, git_cache)):
-                        yield path, path.read_text(encoding="utf-8", errors="replace").splitlines()
-                except (OSError, zipfile.BadZipFile):
-                    continue
+                found = document(here / name, repos, repo_of[here], root)
+                if found:
+                    yield (here / name, *found)
 
 
 def published_texts(parent: Path):
@@ -214,15 +364,27 @@ def published_texts(parent: Path):
         names = subprocess.run(["git", "-C", repo, "ls-tree", "-r", "--name-only", head],
                                capture_output=True, text=True).stdout.split("\n")
         for name in names:
-            if Path(name).suffix.lower() in {".md", ".rst", ".txt"}:
-                blob = subprocess.run(["git", "-C", repo, "show", f"{head}:{name}"], capture_output=True)
-                if blob.returncode == 0 and len(blob.stdout) <= MAX_FILE:
-                    yield blob.stdout.decode("utf-8", "replace")
+            if not name:
+                continue
+            blob = subprocess.run(["git", "-C", repo, "show", f"{head}:{name}"], capture_output=True)
+            if blob.returncode == 0 and len(blob.stdout) <= MAX_FILE and b"\0" not in blob.stdout[:8192]:
+                yield name, blob.stdout.decode("utf-8", "replace")
+
+
+def public_prints(name: str, text: str) -> set[int]:
+    """What a public file makes unremarkable: every run of its prose, every line of its code."""
+    prints = {v for line in text.splitlines() if (v := line_print(line)) is not None}
+    if (Path(name).suffix.lower() in {".md", ".rst", ".txt"}
+            or Path(name).name.upper().startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE"))):
+        # A license reads the same however each copy wraps its lines, so its runs are kept too.
+        prints |= fingerprints(text)
+    return prints
 
 
 def background_prints() -> array:
     """Runs of public text, sorted. Public text changes rarely, so it keeps for a week."""
-    cached, source = CACHE / "background.bin", CONFIG / "background.txt"
+    # The format is in the name: public text read another way is never mistaken for the old table.
+    cached, source = CACHE / f"background-{PRINT_FORMAT}.bin", CONFIG / "background.txt"
     if (cached.is_file() and source.is_file() and cached.stat().st_mtime > source.stat().st_mtime
             and time.time() - cached.stat().st_mtime < BACKGROUND_MAX_AGE):
         table = array("Q")
@@ -231,15 +393,21 @@ def background_prints() -> array:
     prints: set[int] = set()
     for entry in read_lines(source):
         if entry.startswith("published "):
-            for text in published_texts(expand(entry.split(None, 1)[1])):
-                prints |= fingerprints(text)
+            for name, text in published_texts(expand(entry.split(None, 1)[1])):
+                prints |= public_prints(name, text)
             continue
         for folder, dirs, files in os.walk(expand(entry)):
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
             for name in files:
                 path = Path(folder, name)
-                if path.suffix.lower() in {".md", ".rst", ".txt"} and path.stat().st_size <= MAX_FILE:
-                    prints |= fingerprints(path.read_text(encoding="utf-8", errors="replace"))
+                try:
+                    if path.stat().st_size > MAX_FILE or path.is_symlink():
+                        continue
+                    data = path.read_bytes()
+                except OSError:
+                    continue
+                if b"\0" not in data[:8192]:
+                    prints |= public_prints(name, data.decode("utf-8", "replace"))
     table = array("Q", sorted(prints))
     CACHE.mkdir(parents=True, exist_ok=True)
     cached.write_bytes(table.tobytes())
@@ -251,51 +419,222 @@ def present(table: array, value: int) -> bool:
     return at < len(table) and table[at] == value
 
 
-def build(areas: dict[str, list[Path]]) -> dict:
+def read_table(path: Path) -> array:
+    table = array("Q")
+    if path.is_file():
+        table.frombytes(path.read_bytes())
+    return table
+
+
+def inner_roots(areas: dict[str, list[Path]], name: str) -> list[Path]:
+    return [r for other, rs in areas.items() if other != name for r in rs
+            if any(r != root and root in r.parents for root in areas[name])]
+
+
+def area_of_path(areas: dict[str, list[Path]], path: Path) -> str | None:
+    """The innermost area holding path (= the one whose root is longest)."""
+    best = max(((len(r.parts), n) for n, rs in areas.items() for r in rs if path == r or r in path.parents),
+               default=None)
+    return best[1] if best else None
+
+
+def document_prints(path: Path, stamp: str, read, known: dict, index: dict, area: str) -> bool:
+    """Make sure one document's runs are on disk; reuse them while its stamp holds. False = unreadable."""
+    key = str(path)
+    fid = hashlib.sha1(key.encode()).hexdigest()
+    cached = known.get(key)
+    if not (cached and cached[0] == stamp and (DOCS / f"{fid}.bin").is_file()):
+        kind, reader = read
+        try:
+            units = reader()
+        except (OSError, ValueError, zipfile.BadZipFile, subprocess.TimeoutExpired):
+            return False
+        prints: set[int] = set()
+        for unit in units:
+            if kind == "runs":
+                prints |= fingerprints(unit)
+            elif (value := line_print(unit)) is not None:
+                prints.add(value)
+        (DOCS / f"{fid}.bin").write_bytes(array("Q", sorted(prints)).tobytes())
+    index[key] = [stamp, fid, area]
+    return True
+
+
+def merged(fids: list[str], allowed: set[int], public: array) -> array:
+    """The union of many documents' sorted runs, minus what is fine to send or public."""
+    out, last = array("Q"), None
+    for value in heapq.merge(*(read_table(DOCS / f"{f}.bin") for f in fids)):
+        if value != last and value not in allowed and not present(public, value):
+            out.append(value)
+        last = value
+    return out
+
+
+def build(areas: dict[str, list[Path]], full: bool = True) -> dict:
+    """Walk every area and reuse the runs of every document whose stamp holds. A full build merges
+    each area's table anew; otherwise the documents that changed go to the area's delta table and
+    the merge waits until the delta grows past MAX_DELTA (= a walk costs the walk, not the merge).
+    A document gone from disk stays in the table until the next full build (= the safe side)."""
     started = time.time()
     public = background_prints()
     allowed: set[int] = set()
     for phrase in read_lines(CONFIG / "allow.txt"):
         allowed |= fingerprints(phrase)
-    CACHE.mkdir(parents=True, exist_ok=True)
-    summary = {"built": started, "run": [RUN, LATIN_RUN], "areas": {}}
+    DOCS.mkdir(parents=True, exist_ok=True)
+    old = json.loads(INDEX.read_text()) if INDEX.is_file() else {}
+    previous = json.loads((CACHE / "summary.json").read_text()) if (CACHE / "summary.json").is_file() else {}
+    index: dict = {}
+    ignored = [expand(p) for p in read_lines(CONFIG / "ignore.txt")]
+    repos = Repos()
+    summary = {"built": started, "checked": started, "run": [RUN, LATIN_RUN], "areas": {}, "unreadable": []}
     for name, roots in areas.items():
         if name == EXEMPT:
             continue
-        inner = [r for other, rs in areas.items() if other != name for r in rs
-                 if any(r != root and root in r.parents for root in roots)]
-        prints: set[int] = set()
-        count = 0
-        for _, units in documents(roots, inner):
-            count += 1
-            for unit in units:
-                prints |= fingerprints(unit)
-        prints = {p for p in prints - allowed if not present(public, p)}
-        (CACHE / f"{name}.bin").write_bytes(array("Q", sorted(prints)).tobytes())
-        summary["areas"][name] = {"documents": count, "fingerprints": len(prints)}
+        fids, changed = [], []
+        for path, stamp, read in documents(roots, inner_roots(areas, name), ignored, repos):
+            key = str(path)
+            fresh = key not in old or old[key][0] != stamp or old[key][2] != name
+            if not document_prints(path, stamp, read, old, index, name):
+                summary["unreadable"].append(key)
+                continue
+            fids.append(index[key][1])
+            if fresh or (not full and old[key][-1] == "delta"):
+                index[key].append("delta")
+                changed.append(index[key][1])
+        base = CACHE / f"{name}.bin"
+        keep_base = (not full and base.is_file() and name in previous.get("areas", {})
+                     and len(changed) <= MAX_DELTA)
+        if keep_base:
+            (CACHE / f"{name}.delta.bin").write_bytes(merged(changed, allowed, public).tobytes())
+            count = len(read_table(base))
+        else:
+            table = merged(fids, allowed, public)
+            base.write_bytes(table.tobytes())
+            (CACHE / f"{name}.delta.bin").unlink(missing_ok=True)
+            for key, entry in index.items():
+                if entry[2] == name and entry[-1] == "delta":
+                    entry.pop()
+            count = len(table)
+        summary["areas"][name] = {"documents": len(fids), "fingerprints": count}
+    kept = {v[1] for v in index.values()}
+    for stale in {v[1] for v in old.values()} - kept:
+        (DOCS / f"{stale}.bin").unlink(missing_ok=True)
+    INDEX.write_text(json.dumps(index))
     summary["seconds"] = round(time.time() - started, 1)
     (CACHE / "summary.json").write_text(json.dumps(summary, indent=1))
     return summary
 
 
-def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, array]:
+def spotlight_changes(roots: list[Path], since: float, known: dict) -> list[Path] | None:
+    """Files under roots whose content changed since `since`, as Spotlight knows them.
+    None when Spotlight cannot be trusted to answer: not macOS, indexing off, an error, or a
+    root it does not index (= it cannot find a document already known to be there)."""
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since - 60))   # a minute of slack for the indexer
+    tops = [r for r in set(roots) if not any(o != r and o in r.parents for o in roots)]
+    mounts = set()
+    for root in tops:
+        mount = root
+        while not os.path.ismount(mount) and mount != mount.parent:
+            mount = mount.parent
+        mounts.add(mount)
+    # Every question at once: each is a separate indexer round trip.
+    asks: list[tuple[str, Path | None, subprocess.Popen]] = []
+    try:
+        for mount in mounts:
+            asks.append(("state", None, subprocess.Popen(["mdutil", "-s", str(mount)], stdout=subprocess.PIPE,
+                                                         stderr=subprocess.DEVNULL, text=True)))
+        for root in tops:
+            probe = next((Path(k) for k in known if root in Path(k).parents and Path(k).is_file()), None)
+            if probe is not None:
+                asks.append(("probe", probe, subprocess.Popen(
+                    ["mdfind", "-onlyin", str(probe.parent), "-name", probe.name],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)))
+            asks.append(("changed", root, subprocess.Popen(
+                ["mdfind", "-onlyin", str(root), f"kMDItemFSContentChangeDate >= $time.iso({stamp})"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)))
+    except OSError:
+        return None
+    found: list[Path] = []
+    for kind, subject, ask in asks:
+        try:
+            out, _ = ask.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            ask.kill()
+            return None
+        if ask.returncode != 0:
+            return None
+        if kind == "state" and "Indexing enabled" not in out:
+            return None
+        if kind == "probe" and str(subject) not in out.splitlines():
+            return None
+        if kind == "changed":
+            found += [Path(p) for p in out.splitlines() if p]
+    return found
+
+
+def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
+    """Add the documents changed since the last look to per-area delta tables.
+    None = a full walk is needed instead (Spotlight could not answer, or the delta grew large).
+    A deleted document stays in the tables until the next full walk (= the safe side)."""
+    index = json.loads(INDEX.read_text()) if INDEX.is_file() else {}
+    roots = [r for n, rs in areas.items() if n != EXEMPT for r in rs]
+    changed = spotlight_changes(roots, summary["checked"], index)
+    if changed is None:
+        return None
+    started = time.time()
+    ignored = [expand(p) for p in read_lines(CONFIG / "ignore.txt")]
+    repos = Repos()
+    touched: set[str] = set()
+    for path in changed:
+        path = expand(str(path))
+        area = area_of_path(areas, path)
+        if area in (None, EXEMPT) or any(path == i or i in path.parents for i in ignored):
+            continue
+        root = max((r for r in areas[area] if r in path.parents), key=lambda r: len(r.parts))
+        if any(p in SKIP_DIRS or p.startswith(".") for p in path.relative_to(root).parts[:-1]):
+            continue
+        found = document(path, repos, root=root)
+        if found and document_prints(path, *found, index, index, area):
+            index[str(path)].append("delta")
+            touched.add(area)
+    deltas = {n: [v[1] for v in index.values() if v[2] == n and v[-1] == "delta"] for n in touched}
+    if sum(len(f) for f in deltas.values()) > MAX_DELTA:
+        return None
+    if touched:
+        allowed: set[int] = set()
+        for phrase in read_lines(CONFIG / "allow.txt"):
+            allowed |= fingerprints(phrase)
+        public = background_prints()
+        for name, fids in deltas.items():
+            (CACHE / f"{name}.delta.bin").write_bytes(merged(fids, allowed, public).tobytes())
+        INDEX.write_text(json.dumps(index))
+    summary["checked"] = started
+    (CACHE / "summary.json").write_text(json.dumps(summary, indent=1))
+    return summary
+
+
+def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
+    """Per area, the tables a sent line is looked up in: the full build and what changed since."""
     summary_path = CACHE / "summary.json"
-    fresh = False
+    summary, full = None, True
     if summary_path.is_file() and not refresh:
         summary = json.loads(summary_path.read_text())
-        fresh = (time.time() - summary["built"] < MAX_AGE and summary["run"] == [RUN, LATIN_RUN]
-                 and set(summary["areas"]) == {n for n in areas if n != EXEMPT})
-    if not fresh:
-        say("rebuilding fingerprints of the private documents (once every few hours)...")
-        summary = build(areas)
+        current = (summary.get("checked") and summary["run"] == [RUN, LATIN_RUN]
+                   and set(summary["areas"]) == {n for n in areas if n != EXEMPT})
+        full = not current
+        if not current or time.time() - summary["built"] >= MAX_AGE:
+            summary = None
+        else:
+            summary = catch_up(areas, summary)
+    if summary is None:
+        say("walking the private documents (unchanged ones are reused)...")
+        summary = build(areas, full=full)
         say(f"built in {summary['seconds']}s: " + ", ".join(
             f"{n} {a['documents']} documents" for n, a in summary["areas"].items()))
-    prints = {}
-    for name in summary["areas"]:
-        table = array("Q")
-        table.frombytes((CACHE / f"{name}.bin").read_bytes())
-        prints[name] = table
-    return prints
+        if summary["unreadable"]:
+            say(f"{len(summary['unreadable'])} documents could not be read (see --status)")
+    return {name: [read_table(CACHE / f"{name}.bin"), read_table(CACHE / f"{name}.delta.bin")]
+            for name in summary["areas"]}
 
 
 # --- where the text is going --------------------------------------------------
@@ -458,8 +797,45 @@ def outgoing(span: str) -> list[tuple[str, str]]:
     return lines
 
 
-def hit_span(line: str, table: array) -> str | None:
-    return next((w for w in windows(line) if present(table, digest(w))), None)
+def hit(line: str, tables: list[array], allowed: list[str] = (), public: array = array("Q")) -> tuple[str, str] | None:
+    """("line", text) when a sent line is a whole line of an area's code or data, ("run", run) when
+    it holds a run of the area's prose, else None.
+
+    Phrases that are fine to send are taken out of the line first, so a run reaching one character
+    past an allowed phrase is not a hit either. A whole line all of whose runs are public text (a
+    license wrapped differently in each copy) is not the area's."""
+    for phrase in allowed:
+        line = normalize(line).replace(phrase, " ")
+    whole = line_print(line)
+    if whole is not None and any(present(t, whole) for t in tables):
+        # A comment marker is how a file holds the text, not the text: `# THIS SOFTWARE IS ...`
+        # is still the license.
+        runs = [digest(w) for w in windows(COMMENT_MARKS.sub("", normalize(line)))]
+        if not (runs and all(present(public, r) for r in runs)):
+            return "line", normalize(line)
+    run = next((w for w in windows(line) if any(present(t, digest(w)) for t in tables)), None)
+    return ("run", run) if run else None
+
+
+def keep_blocks(results: list, lines_in_a_row: int) -> list:
+    """Drop whole-line hits that are not part of `lines_in_a_row` consecutive hit lines of one
+    file or message: a single common line (an import, an idiom) is written by the same people in
+    every code base, while copied code arrives as a block."""
+    if lines_in_a_row <= 1:
+        return results
+    kept = list(results)
+    start = 0
+    while start < len(results):
+        end = start
+        while (end + 1 < len(results) and results[end + 1][0] == results[start][0]
+               and results[end + 1][3] and results[end + 1][3][0] == "line"
+               and results[end][3] and results[end][3][0] == "line"):
+            end += 1
+        if results[start][3] and results[start][3][0] == "line" and end - start + 1 < lines_in_a_row:
+            for i in range(start, end + 1):
+                kept[i] = (*results[i][:3], None)
+        start = end + 1
+    return kept
 
 
 def patterns(name: str) -> list[re.Pattern]:
@@ -498,7 +874,9 @@ def main(argv: list[str] | None = None) -> int:
         if summary:
             age = (time.time() - summary["built"]) / 3600
             say(f"fingerprints built {age:.1f}h ago (run {summary['run']}): " + ", ".join(
-                f"{n} {a['documents']} documents / {a['fingerprints']} runs" for n, a in summary["areas"].items()))
+                f"{n} {a['documents']} documents / {a['fingerprints']} prints" for n, a in summary["areas"].items()))
+            for path in summary.get("unreadable", []):
+                say(f"could not read (not checked): {path}")
         else:
             say("fingerprints not built yet")
         return 0
@@ -523,25 +901,30 @@ def main(argv: list[str] | None = None) -> int:
     if not checked:
         return 0
 
+    # (group, where, line): a group is one file of one commit, or one payload -- a block of copied
+    # code is consecutive lines of one group.
     if args.text:
-        lines = [(f"{args.text.name}:{n}", line) for n, line in enumerate(
+        lines = [(args.text.name, f"{args.text.name}:{n}", line) for n, line in enumerate(
             args.text.read_text(encoding="utf-8", errors="replace").splitlines(), start=1)]
     else:
-        lines = outgoing(args.span)
+        lines = [(where, where, line) for where, line in outgoing(args.span)]
 
     prints = load(areas, refresh=False)
+    allowed = [normalize(p) for p in read_lines(CONFIG / "allow.txt")]
+    public = background_prints()
     found = []
     for name in checked:
         shapes = patterns(name)
-        table = prints.get(name, array("Q"))
-        for where, line in lines:
+        tables = [t for t in prints.get(name, []) if len(t)]
+        results = []
+        for group, where, line in lines:
             match = next((m.group(0) for p in shapes if (m := p.search(line))), None)
-            what = f"shape {match!r}" if match else None
-            if not what and len(table):
-                span = hit_span(line, table)
-                what = f"text {span!r}" if span else None
+            found_here = ("shape", match) if match else (hit(line, tables, allowed, public) if tables else None)
+            results.append((group, where, line, found_here))
+        for _, where, line, what in keep_blocks(results, CODE_LINES):
             if what:
-                found.append(f"{where}: {name} {what} in {normalize(line)[:80]!r}")
+                label = "shape" if what[0] == "shape" else "text"
+                found.append(f"{where}: {name} {label} {what[1]!r} in {normalize(line)[:80]!r}")
     if found:
         say(f"this carries text from a private area that {here or 'the destination'} is outside of:")
         for line in found:
