@@ -472,6 +472,8 @@ print(c.join_wrapped(['採寸表の三段目は夜', '明けに読み直すこ�
     STATE="${BATS_TEST_TMPDIR}/state-tree"
     mkdir -p "${STATE}/projects/co"
     git -C "${BATS_TEST_TMPDIR}" init -q "${STATE}"
+    git -C "${STATE}" config user.email "${ALLOWED_EMAIL}"
+    git -C "${STATE}" config user.name "Fixture"
     printf 'the agent writes its own session notes in this very folder\n' > "${STATE}/projects/co/notes.md"
     git -C "${STATE}" add -A && git -C "${STATE}" -c core.hooksPath=/dev/null commit -q -m notes
     printf 'co %s/projects/co\n' "${STATE}" >> "${GUARD_CONFIG_DIR}/areas.txt"
