@@ -819,16 +819,16 @@ def hit(line: str, tables: list[array], allowed: list[str] = (), public: array =
     license wrapped differently in each copy) is not the area's."""
     for phrase in allowed:
         line = normalize(line).replace(phrase, " ")
-    row = line_print(line, "row")
-    if row is not None and any(present(t, row) for t in tables):
-        return "row", normalize(line)
-    whole = line_print(line)
-    if whole is not None and any(present(t, whole) for t in tables):
+    def is_public() -> bool:
         # A comment marker is how a file holds the text, not the text: `# THIS SOFTWARE IS ...`
         # is still the license.
         runs = [digest(w) for w in windows(COMMENT_MARKS.sub("", normalize(line)))]
-        if not (runs and all(present(public, r) for r in runs)):
-            return "line", normalize(line)
+        return bool(runs) and all(present(public, r) for r in runs)
+
+    for kind in ("row", "line"):
+        whole = line_print(line, kind)
+        if whole is not None and any(present(t, whole) for t in tables) and not is_public():
+            return kind, normalize(line)
     run = next((w for w in windows(line) if any(present(t, digest(w)) for t in tables)), None)
     return ("run", run) if run else None
 

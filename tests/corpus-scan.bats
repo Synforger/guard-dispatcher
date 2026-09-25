@@ -397,6 +397,17 @@ client_code() {
     [ "$status" -eq 0 ]
 }
 
+@test "corpus: a row that is public text (a license in a .txt) is not the area's" {
+    printf 'Permission is hereby granted, free of charge, to any person obtaining a copy\n' > "${CLIENT}/received/notices.txt"
+    mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
+    printf 'Permission is hereby granted, free of charge, to any\nperson obtaining a copy of this software\n' > "${BATS_TEST_TMPDIR}/public/lib/LICENSE"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line "Permission is hereby granted, free of charge, to any person obtaining a copy"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
 @test "corpus: one row of a CSV is caught on its own" {
     printf 'id,label,score\n4411,acme-left-sleeve-measurement-batch,0.8731\n' > "${CLIENT}/received/table.csv"
     mk_repo other
