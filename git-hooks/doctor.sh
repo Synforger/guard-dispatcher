@@ -65,6 +65,15 @@ check_global() {
         printf '  %s✗%s operator master missing (%s) — run bootstrap-machine.sh\n' "${RED}" "${NC}" "${truth}"
         findings=$((findings + 1))
     fi
+
+    # Private documents are optional: a machine without areas is told so, not failed.
+    local areas="${GUARD_CONFIG_DIR:-${HOME}/.config/guard}/areas.txt"
+    if [ -f "${areas}" ]; then
+        printf '  %s✓%s private areas defined (%s)\n' "${GRN}" "${NC}" "${areas}"
+        python3 "$(dispatcher::guard_root)/scanners/corpus-scan.py" --status 2>&1 | sed 's/^/    /'
+    else
+        printf '  %s-%s no private areas (%s) — text copied from documents is NOT checked\n' "${DIM}" "${NC}" "${areas}"
+    fi
 }
 
 check_repo() {

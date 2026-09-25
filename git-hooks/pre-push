@@ -184,6 +184,21 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         fi
     fi
 
+    # Text copied out of a private document is on no word list; compare the
+    # outgoing lines with the documents of every area this repo is outside of.
+    # GUARD_CORPUS_SKIP=1 is the audited escape hatch for a single push.
+    if [ "${GUARD_CORPUS_SKIP:-0}" != "1" ]; then
+        corpus="$(dispatcher::locate_scanner "corpus-scan.py" || true)"
+        if [ -z "${corpus}" ]; then
+            printf '[pre-push] corpus-scan.py could not be resolved — re-run install.sh from a healthy checkout\n' >&2
+            exit 1
+        fi
+        if ! python3 "${corpus}" --range "${revspec}"; then
+            any_leak=1
+            continue
+        fi
+    fi
+
     printf '[pre-push] anon-audit-deep --range %s (ref %s)\n' "${revspec}" "${local_ref}" >&2
     if ! bash "${scanner}" --range "${revspec}"; then
         # Try to self-heal only when the operator opted in — a silent

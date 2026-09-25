@@ -204,6 +204,19 @@ if ! ANON_SCAN_PATHS="${payload}" bash "${SCANNER}" >&2; then
     exit 1
 fi
 
+# Text copied out of a private document: judged by where this call is made from.
+CORPUS="${GUARD_ROOT}/scanners/corpus-scan.py"
+if [ "${GUARD_CORPUS_SKIP:-0}" != "1" ]; then
+    if [ ! -f "${CORPUS}" ]; then
+        printf '[gh-guard] corpus scanner not found at %s — refusing to send.\n' "${CORPUS}" >&2
+        exit 1
+    fi
+    if ! python3 "${CORPUS}" --text "${payload}"; then
+        printf '\n[gh-guard] refusing to send: this command carries text from a private area.\n' >&2
+        exit 1
+    fi
+fi
+
 if [ -n "${stdin_file}" ]; then
     exec "${REAL_GH}" "$@" < "${stdin_file}"
 fi

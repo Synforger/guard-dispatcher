@@ -133,6 +133,39 @@ Scanners resolve repo-local first (`.tooling/local-ci/`), then fall
 back to this checkout's `scanners/` — so individual repositories need
 no toolkit of their own, but can override it.
 
+### Private documents
+
+A word list only holds what someone thought to write down. Text copied out of a
+real document — a sentence from a slide, a row of a table — is on no list.
+`scanners/corpus-scan.py` compares what a push (or a `gh` call) sends with the
+documents themselves. Everything it reads is configured on this machine only:
+
+```
+~/.config/guard/areas.txt               <name> <path> [<path> ...]   one area per line
+                                        _exempt <path> ...           never scanned
+~/.config/guard/patterns/<name>.txt     regular expressions for identifiers of a shape
+                                        (product codes, client names), case-insensitive
+~/.config/guard/allow.txt               phrases that are fine to send
+~/.config/guard/background.txt          folders of public text, and `published <dir>`
+                                        for your own repositories as their remote has them
+```
+
+An area's documents are its Office files (`.pptx` `.docx` `.xlsx`, read from
+their XML, never their compressed bytes) and the Markdown that lives outside
+any git repository. A sent line is a hit when it holds a run of those
+documents: 12 characters of Japanese, or 40 characters without Japanese
+(twelve characters of English are two common words). Runs that also appear in
+the background text are not specific to any area and are dropped.
+
+**Where the sending repository lives decides what it may carry**: every area
+that does not contain it is checked. Areas nest — a client inside a company —
+so a client's repository may carry the company's text, a company repository
+may not carry the client's, and a repository outside both carries neither.
+
+The fingerprints are rebuilt at most every six hours (`corpus-scan.py
+--refresh` forces it; `--status` shows what is loaded). A machine with no
+`areas.txt` prints `NOT CHECKED` and passes.
+
 ## Scan guarantee
 
 The contract a machine-wide install provides, stated precisely — both
@@ -209,6 +242,9 @@ contract:
 - The scan folds case and Unicode width (NFKC) before matching, but is
   otherwise literal PCRE against your word list — it cannot flag an
   identifier whose base form the list does not contain.
+- The private-document scan catches copies, not paraphrase: a value retyped
+  on its own, or a sentence reworded, carries no run of the original. Numbers
+  are not compared at all — short numbers are not specific to anything.
 
 ## Escape hatches
 
@@ -216,6 +252,7 @@ contract:
   (hooks are a guardrail, not a prison — but see your own policies).
 - Per-repo bypass: set a local `core.hooksPath`.
 - One-off `gh` bypass: `GH_GUARD_SKIP=1 gh …`.
+- One-off private-document bypass: `GUARD_CORPUS_SKIP=1 git push …` (or `gh …`).
 - Full uninstall:
   `git config --global --unset core.hooksPath && rm -rf ~/.git-hooks`
   and `rm ~/.local/bin/gh`.
@@ -227,6 +264,7 @@ git-hooks/          pre-commit / commit-msg / pre-push dispatchers,
                     install.sh, doctor.sh, lib/dispatcher-common.sh
 scanners/           anon-scan, anon-audit-deep (11-source audit),
                     anon-fix (history scrub), anon-sync-truth,
+                    corpus-scan (private documents),
                     setup-lib, anon-words.example.txt
 scripts/            bootstrap-machine.sh, gh-guard.sh (PATH shim),
                     pr-create.sh, weekly-audit.sh, install-weekly-audit.sh

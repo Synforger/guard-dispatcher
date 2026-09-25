@@ -17,6 +17,10 @@ OTHER_URL="git@github.com:someone-else/fixture-repo.git"
 setup_words() {
     export ANON_WORDS_FILE="${BATS_TEST_TMPDIR}/words.txt"
     printf '%s\n' "${SENTINEL}" > "${ANON_WORDS_FILE}"
+    # The corpus scan reads the machine's private areas by default; a test must
+    # never depend on (or build fingerprints of) the operator's real documents.
+    export GUARD_CONFIG_DIR="${BATS_TEST_TMPDIR}/guard-config"
+    export GUARD_CORPUS_CACHE="${BATS_TEST_TMPDIR}/guard-cache"
 }
 
 # mk_repo <kind> — create a fixture repo and cd into it.
