@@ -63,6 +63,17 @@ run_pre_push() {
     run bash -c "printf '%s' \"\$1\" | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${SYNFORGER_URL}'" _ "${input}"
 }
 
+# run_pre_push_to <url> <stdin-line...> — the same, pushing to a given remote URL.
+run_pre_push_to() {
+    local url="$1" input="" line
+    shift
+    for line in "$@"; do
+        input="${input}${line}
+"
+    done
+    run bash -c "printf '%s' \"\$1\" | bash '${GUARD_ROOT}/git-hooks/pre-push' origin \"\$2\"" _ "${input}" "${url}"
+}
+
 ZERO_SHA="0000000000000000000000000000000000000000"
 
 # mk_office <path> <text> — a minimal Office document: a zip whose only XML part

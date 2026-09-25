@@ -195,7 +195,10 @@ contract:
 - On identity-enforced repositories (enforced org / no-remote /
   `guard.scope enforced`), additionally: the committer and every author
   in the outgoing range must be on the identity allow-list, and direct
-  pushes to protected branches are refused. Pinned in `tests/hooks.bats`.
+  pushes to protected branches of a pull-request host (GitHub, including
+  ssh host aliases) are refused. A remote without pull requests — a plain
+  ssh host holding a rail's history — has no review flow to bypass, so a
+  direct push there is allowed. Pinned in `tests/hooks.bats`.
 - PRs opened through `scripts/pr-create.sh` have their title and body
   scanned before `gh pr create` runs.
 - **Nothing the `gh` CLI sends leaves unscanned** while the PATH shim is

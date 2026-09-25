@@ -71,6 +71,7 @@ fi
 
 zero='0000000000000000000000000000000000000000'
 remote_name="${1:-origin}"
+push_url="${2:-}"
 default_branch="$(dispatcher::default_branch)"
 allowed_emails="$(dispatcher::allowed_emails)"
 any_leak=0
@@ -87,9 +88,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
     # Protected-branch guard: PR merges happen server-side, so a direct
     # local push to main/develop is a process violation. The initial push
-    # that creates the branch on the remote is the one legitimate case.
+    # that creates the branch on the remote is the one legitimate case, and a
+    # remote with no pull requests at all has no such flow to bypass.
     # GUARD_ALLOW_PROTECTED_PUSH=1 is the audited escape hatch.
     if [ "${enforce_identity}" = "1" ] \
+        && dispatcher::merges_through_prs "${push_url}" \
         && dispatcher::protected_branch "${remote_ref}" \
         && [ "${remote_sha}" != "${zero}" ] \
         && [ "${GUARD_ALLOW_PROTECTED_PUSH:-0}" != "1" ]; then

@@ -35,6 +35,16 @@ setup() {
     [ "$(dispatcher::detect_repo_kind)" = "no-remote" ]
 }
 
+@test "merges_through_prs: GitHub URLs and aliases, and an unknown URL, count as PR hosts" {
+    dispatcher::merges_through_prs "git@github.com:org/repo.git"
+    dispatcher::merges_through_prs "https://github.com/org/repo"
+    dispatcher::merges_through_prs "github-work:org/repo.git"
+    dispatcher::merges_through_prs "ssh://git@github.com/org/repo.git"
+    dispatcher::merges_through_prs ""
+    ! dispatcher::merges_through_prs "ssh://rail-host/~/pipeline"
+    ! dispatcher::merges_through_prs "/srv/git/pipeline.git"
+}
+
 @test "protected_branch: main and develop are protected, feature is not" {
     dispatcher::protected_branch "refs/heads/main"
     dispatcher::protected_branch "refs/heads/develop"

@@ -176,6 +176,25 @@ setup() {
     [[ "$output" == *"refused"* ]]
 }
 
+@test "pre-push: direct push to develop on a remote without pull requests is allowed" {
+    mk_repo synforger
+    base="$(git rev-parse HEAD)"
+    echo "more" > more.txt && git add more.txt && commit_bypassing_hooks "feat: clean"
+    head="$(git rev-parse HEAD)"
+    run_pre_push_to "ssh://rail-host/~/pipeline" "refs/heads/develop ${head} refs/heads/develop ${base}"
+    [ "$status" -eq 0 ]
+}
+
+@test "pre-push: direct push to develop on a GitHub host alias is still refused" {
+    mk_repo synforger
+    base="$(git rev-parse HEAD)"
+    echo "more" > more.txt && git add more.txt && commit_bypassing_hooks "feat: clean"
+    head="$(git rev-parse HEAD)"
+    run_pre_push_to "github-work:org/repo.git" "refs/heads/develop ${head} refs/heads/develop ${base}"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"refused"* ]]
+}
+
 @test "pre-push: initial branch-creating push to main is allowed" {
     mk_repo synforger
     head="$(git rev-parse HEAD)"
