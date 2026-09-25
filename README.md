@@ -163,11 +163,15 @@ An area's documents are everything under it that holds its words:
 | kind | files | a sent line is a hit when it |
 |---|---|---|
 | prose | Office (`.pptx` `.docx` `.xlsx`, read from their XML, never their compressed bytes), PDF (`pdftotext`, wrapped lines rejoined), Markdown | holds a run of 12 characters of Japanese, or 40 without (twelve characters of English are two common words) |
-| lines | CSV, TSV, plain text, and every file a git repository inside the area tracks — its code | is, once whitespace is folded, a whole line of the same length bar |
+| rows | CSV, TSV, plain text | is, once whitespace is folded, a whole row of the same length bar |
+| lines | every other file a git repository inside the area tracks — its code and its Markdown | is one of `GUARD_CORPUS_CODE_LINES` (default 2) consecutive sent lines that are each a whole line of the same length bar |
 
 Code is matched line by line because that is how it is copied, and because
 printing every run of every line of a code base would hold hundreds of
-millions of values. Inside a repository only what it tracks counts: untracked
+millions of values. It takes two consecutive lines because a lone common line
+(an import, an idiom) is written by the same people in every code base: on
+1,298 clean public commits one line blocked 14, two lines blocked 3. A row of
+data is specific on its own, so one copied row is a hit. Inside a repository only what it tracks counts: untracked
 output and vendored folders (`third_party/`, `vendor/`, ...) are someone
 else's. Runs and lines that also appear in the background text and code are
 not specific to any area and are dropped.

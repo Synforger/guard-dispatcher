@@ -29,11 +29,16 @@ An area's documents are everything under its paths that holds its words:
     prose  Office (.pptx .docx .xlsx, read from their XML), PDF (pdftotext),
            Markdown -- every run of RUN consecutive characters holding Japanese,
            or LATIN_RUN without, is a print
-    lines  CSV, TSV, plain text, and every file a git repository there tracks
-           (= its code) -- every whole line of at least that length is a print
+    rows   CSV, TSV, plain text -- every whole row of at least that length is a
+           print, and one copied row is a hit
+    lines  every other file a git repository there tracks (= its code and its
+           Markdown) -- every whole line of at least that length is a print, and
+           CODE_LINES consecutive copied lines are a hit (a lone common line --
+           an import, an idiom -- is written by the same people everywhere)
 
 Inside a repository only what it tracks counts (untracked output and vendored
 third-party folders do not). A sent line is a hit when it holds a prose run or
+is a whole printed row, and a block of CODE_LINES sent lines is a hit when each
 is a whole printed line. Prints are kept per document and reused while the
 document is unchanged; documents changed since the last look are found through
 Spotlight and added at once, and everything is walked again every MAX_AGE.
@@ -91,7 +96,7 @@ from pathlib import Path
 RUN = int(os.environ.get("GUARD_CORPUS_RUN", "12"))
 LATIN_RUN = int(os.environ.get("GUARD_CORPUS_LATIN_RUN", "40"))
 # How many consecutive whole lines of an area's code or data a sent file has to hold to be a hit.
-CODE_LINES = int(os.environ.get("GUARD_CORPUS_CODE_LINES", "1"))
+CODE_LINES = int(os.environ.get("GUARD_CORPUS_CODE_LINES", "2"))
 JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]")
 MAX_AGE = int(os.environ.get("GUARD_CORPUS_MAX_AGE", str(6 * 3600)))
 BACKGROUND_MAX_AGE = 7 * 24 * 3600
@@ -107,7 +112,7 @@ GENERATED = {".pbxproj", ".xcscheme", ".xcworkspacedata", ".storyboard", ".xib",
 # Folders of a repository that hold someone else's code: public text, not the area's.
 VENDORED = {"vendor", "vendors", "external", "extern", "third_party", "thirdparty", "third-party", "3rdparty"}
 # Raised whenever a change to reading or printing makes the kept prints of an unchanged document wrong.
-PRINT_FORMAT = 2
+PRINT_FORMAT = 3
 DOCS = CACHE / "docs"
 INDEX = DOCS / "index.json"
 # Past this many changed documents since the last full walk, walk again instead of growing the delta.
@@ -208,13 +213,14 @@ def fingerprints(text: str) -> set[int]:
     return {digest(w) for w in windows(text)}
 
 
-def line_print(line: str) -> int | None:
-    """One print for a whole line of code or data, long enough to mean something on its own
-    (the same bar as a run: 12 characters holding Japanese, 40 without). Code is copied line by
-    line, and printing every run of every line would hold hundreds of millions of values."""
+def line_print(line: str, kind: str = "line") -> int | None:
+    """One print for a whole line of code ("line") or a row of data ("row"), long enough to mean
+    something on its own (the same bar as a run: 12 characters holding Japanese, 40 without).
+    Code is copied line by line, and printing every run of every line would hold hundreds of
+    millions of values. The kinds are kept apart: a row is one hit, code takes CODE_LINES."""
     text = normalize(line)
     if len(text) >= LATIN_RUN or (len(text) >= RUN and len(JAPANESE.findall(text)) * 2 >= len(text)):
-        return digest("\0line\0" + text)
+        return digest(f"\0{kind}\0" + text)
     return None
 
 
@@ -265,8 +271,9 @@ def text_units(path: Path) -> list[str]:
 
 def unit_reader(path: Path, tracked: bool):
     """(kind, read) for a file, or None when it is not a document. kind "runs" prints every run
-    of prose (Office, PDF, Markdown); kind "lines" prints whole lines of code and data (CSV, TSV,
-    plain text, and every other file a repository tracks), which is what an agent most easily copies."""
+    of prose (Office, PDF, Markdown outside repositories); kind "rows" prints whole rows of data
+    (CSV, TSV, plain text); kind "lines" prints whole lines of code (every other file a repository
+    tracks, its Markdown included), which is what an agent most easily copies."""
     suffix, name = path.suffix.lower(), path.name
     if name.startswith("~$") or name in LOCKFILES or suffix in {".lock", ".map"} or name.endswith(".min.js"):
         return None
@@ -283,7 +290,9 @@ def unit_reader(path: Path, tracked: bool):
         return "runs", lambda: text_units(path)
     # Markdown a repository tracks documents its code, in the words its authors use everywhere:
     # it is matched by the line, like the code, not by the run like a slide.
-    if suffix in TEXT or tracked:
+    if suffix in TEXT - {".md"}:
+        return "rows", lambda: text_units(path)
+    if suffix == ".md" or tracked:
         return "lines", lambda: text_units(path)
     return None
 
@@ -457,7 +466,7 @@ def document_prints(path: Path, stamp: str, read, known: dict, index: dict, area
         for unit in units:
             if kind == "runs":
                 prints |= fingerprints(unit)
-            elif (value := line_print(unit)) is not None:
+            elif (value := line_print(unit, "row" if kind == "rows" else "line")) is not None:
                 prints.add(value)
         (DOCS / f"{fid}.bin").write_bytes(array("Q", sorted(prints)).tobytes())
     index[key] = [stamp, fid, area]
@@ -810,6 +819,9 @@ def hit(line: str, tables: list[array], allowed: list[str] = (), public: array =
     license wrapped differently in each copy) is not the area's."""
     for phrase in allowed:
         line = normalize(line).replace(phrase, " ")
+    row = line_print(line, "row")
+    if row is not None and any(present(t, row) for t in tables):
+        return "row", normalize(line)
     whole = line_print(line)
     if whole is not None and any(present(t, whole) for t in tables):
         # A comment marker is how a file holds the text, not the text: `# THIS SOFTWARE IS ...`

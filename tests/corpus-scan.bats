@@ -324,6 +324,7 @@ client_code() {
 }
 
 @test "corpus: a whole line of a client repository's code is caught, however it is indented" {
+    export GUARD_CORPUS_CODE_LINES=1
     client_code "${CODE_LINE}"
     mk_repo other
     commit_line "        calibrated = apply_offset_table(raw_frames, acme_offsets, window=17)"
@@ -341,6 +342,7 @@ client_code() {
 }
 
 @test "corpus: code in a vendored folder is someone else's, not the area's" {
+    export GUARD_CORPUS_CODE_LINES=1
     mk_repo_at "${CLIENT}/repos/pipeline"
     mkdir -p third_party/lib
     printf '%s\n' "${CODE_LINE}" > third_party/lib/x.py
@@ -353,6 +355,7 @@ client_code() {
 }
 
 @test "corpus: a line of code also found in public code is not the area's" {
+    export GUARD_CORPUS_CODE_LINES=1
     client_code "${CODE_LINE}"
     mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
     printf '%s\n' "${CODE_LINE}" > "${BATS_TEST_TMPDIR}/public/lib/same.py"
@@ -363,13 +366,12 @@ client_code() {
     [ "$status" -eq 0 ]
 }
 
-@test "corpus: with GUARD_CORPUS_CODE_LINES=2 a lone common line passes and a copied block is caught" {
+@test "corpus: by default a lone common line of code passes and a copied block is caught" {
     mk_repo_at "${CLIENT}/repos/pipeline"
     printf 'def run():\n%s\n    result = merge_panels(calibrated, seam_allowance=0.35)\n' "${CODE_LINE}" > pipeline.py
     git add pipeline.py
     commit_bypassing_hooks "add pipeline"
     mk_repo other
-    export GUARD_CORPUS_CODE_LINES=2
     commit_line "${CODE_LINE}"
     scan_last
     [ "$status" -eq 0 ]
@@ -381,6 +383,7 @@ client_code() {
 }
 
 @test "corpus: a license wrapped differently from its public copy is not the area's" {
+    export GUARD_CORPUS_CODE_LINES=1
     mk_repo_at "${CLIENT}/repos/pipeline"
     printf '# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY\n# EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED FOREVER AND EVER\n' > header.py
     git add header.py
@@ -394,7 +397,7 @@ client_code() {
     [ "$status" -eq 0 ]
 }
 
-@test "corpus: a row of a CSV is caught" {
+@test "corpus: one row of a CSV is caught on its own" {
     printf 'id,label,score\n4411,acme-left-sleeve-measurement-batch,0.8731\n' > "${CLIENT}/received/table.csv"
     mk_repo other
     commit_line "4411,acme-left-sleeve-measurement-batch,0.8731"
