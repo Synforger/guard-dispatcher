@@ -188,7 +188,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
 
     # Text copied out of a private document is on no word list; compare the
-    # outgoing lines with the documents of every area this repo is outside of.
+    # outgoing lines with the documents of every area the destination is
+    # outside of (= a public GitHub repo is outside all of them, wherever its
+    # clone lives).
     # GUARD_CORPUS_SKIP=1 is the audited escape hatch for a single push.
     if [ "${GUARD_CORPUS_SKIP:-0}" != "1" ]; then
         corpus="$(dispatcher::locate_scanner "corpus-scan.py" || true)"
@@ -196,7 +198,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             printf '[pre-push] corpus-scan.py could not be resolved — re-run install.sh from a healthy checkout\n' >&2
             exit 1
         fi
-        if ! python3 "${corpus}" --range "${revspec}"; then
+        if ! python3 "${corpus}" --range "${revspec}" --dest "${push_url}"; then
             any_leak=1
             continue
         fi

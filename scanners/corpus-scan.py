@@ -24,13 +24,26 @@ plus Markdown that lives outside any git repository. Every run of RUN
 consecutive characters in them becomes a fingerprint. A line that is sent and
 holds the same RUN characters is a hit.
 
-What is checked depends on where the sending repository lives: every area that
-does not contain it. A repository inside an area may carry that area's text,
-and an area nested inside another (a client inside a company) may carry the
-outer one's.
+What is checked depends on where the text is going: every area that does not
+contain the destination. A repository inside an area may carry that area's
+text, and an area nested inside another (a client inside a company) may carry
+the outer one's.
 
-    corpus-scan.py --range <from>..<to>   added lines and messages of a push
-    corpus-scan.py --text <file>          one payload (gh-guard)
+The destination is the GitHub repository being sent to, not the folder the
+command was typed in -- a pull request opened from inside a client folder onto
+a public repository leaves the client all the same:
+
+    public on GitHub                 outside every area, whatever folder its clone is in
+    private, with a local clone      where that clone lives
+    private, no clone on this machine, or visibility unknown
+                                     outside every area (fail-closed)
+    not on GitHub (a local path, another host)
+                                     where the sending repository lives
+
+    corpus-scan.py --range <from>..<to> [--dest <url>]   a push (pre-push passes the push URL)
+    corpus-scan.py --text <file> --gh-argv <file>        one gh payload (gh-guard)
+    corpus-scan.py --where [--dest <url> | --gh-argv <file>]
+                                          print where the destination lives, or OUTSIDE
     corpus-scan.py --refresh              rebuild the fingerprints now
     corpus-scan.py --status               what is configured and how fresh
 
@@ -51,6 +64,8 @@ import subprocess
 import sys
 import time
 import unicodedata
+import urllib.error
+import urllib.request
 import zipfile
 from array import array
 from pathlib import Path
@@ -72,6 +87,17 @@ SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "third_part
              "target", ".fetchcontent-cache", "DerivedData", "site-packages", ".gradle", "obj", "bin",
              "Intermediate", "Binaries"}
 MAX_FILE = 5_000_000
+# A repository turned public is caught within this many seconds of the change.
+VISIBILITY_TTL = int(os.environ.get("GUARD_VISIBILITY_TTL", "600"))
+CLONES_TTL = 3600
+OUTSIDE = "OUTSIDE"
+GITHUB_URL = [
+    re.compile(r"^(?:[a-z+]+://)?(?:[^@/]+@)?github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", re.I),
+    # an ssh host alias (`git@github-work:owner/repo`) still lands on github.com
+    re.compile(r"^(?:ssh://)?git@github[\w.-]*[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", re.I),
+    re.compile(r"^([\w.-]+)/([\w.-]+)$"),
+]
+GH_API_REPO = re.compile(r"^/?repos/([\w.-]+)/([\w.-]+)")
 
 
 def say(message: str) -> None:
@@ -272,6 +298,144 @@ def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, array]:
     return prints
 
 
+# --- where the text is going --------------------------------------------------
+
+def github_repo(url: str) -> str | None:
+    """owner/repo (lower case) of a GitHub remote URL or slug; None for anything else."""
+    url = url.strip()
+    if not url or url.startswith(("/", ".", "~", "file:")):
+        return None
+    for shape in GITHUB_URL:
+        m = shape.match(url)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}".lower()
+    return None
+
+
+def remote_repos(folder: Path) -> set[str]:
+    out = subprocess.run(["git", "-C", str(folder), "remote", "-v"], capture_output=True, text=True).stdout
+    return {slug for line in out.splitlines() if len(line.split()) >= 2
+            and (slug := github_repo(line.split()[1]))}
+
+
+def authenticated_visibility(slug: str) -> str:
+    """Ask as every account gh holds: a token in the environment (often scoped to a few
+    repositories) first, then the accounts in gh's own store."""
+    plain = {k: v for k, v in os.environ.items() if k not in ("GH_TOKEN", "GITHUB_TOKEN")}
+    for env in (dict(os.environ), plain):
+        try:
+            r = subprocess.run(["gh", "api", f"repos/{slug}", "--jq", ".private"], capture_output=True,
+                               text=True, timeout=15, env={**env, "GH_GUARD_SKIP": "1"})
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        seen = {"true": "private", "false": "public"}.get(r.stdout.strip())
+        if r.returncode == 0 and seen:
+            return seen
+    return "unknown"
+
+
+def visibility(slug: str) -> str:
+    """public / private / unknown. Asked without credentials first: only a public repository answers that."""
+    path = CACHE / "visibility.json"
+    try:
+        known = json.loads(path.read_text())
+    except (OSError, ValueError):
+        known = {}
+    hit = known.get(slug)
+    if hit and time.time() - hit[1] < VISIBILITY_TTL:
+        return hit[0]
+    request = urllib.request.Request(f"https://api.github.com/repos/{slug}",
+                                     headers={"Accept": "application/vnd.github+json", "User-Agent": "guard"})
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            answer = "private" if json.load(response).get("private") else "public"
+    except (OSError, ValueError):
+        # 404 = private or not there at all; anything else = no answer. Only credentials can tell.
+        answer = authenticated_visibility(slug)
+    if answer != "unknown":
+        known[slug] = [answer, time.time()]
+        CACHE.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(known))
+    return answer
+
+
+def clones(areas: dict[str, list[Path]]) -> dict[str, list[str]]:
+    """owner/repo -> the local clones under every area, rebuilt hourly."""
+    path = CACHE / "clones.json"
+    try:
+        cached = json.loads(path.read_text())
+        if time.time() - cached["built"] < CLONES_TTL:
+            return cached["map"]
+    except (OSError, ValueError, KeyError):
+        pass
+    found: dict[str, list[str]] = {}
+    for root in {r for rs in areas.values() for r in rs}:
+        for folder, dirs, _ in os.walk(root):
+            here = Path(folder)
+            if (here / ".git").is_dir():
+                for slug in remote_repos(here):
+                    found.setdefault(slug, []).append(str(here))
+            deep = len(here.parts) - len(root.parts) >= 5
+            dirs[:] = [] if deep else [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+    CACHE.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"built": time.time(), "map": found}))
+    return found
+
+
+def containing(place: Path, areas: dict[str, list[Path]]) -> frozenset[str]:
+    return frozenset(n for n, roots in areas.items() if contains(roots, place))
+
+
+def destination(slugs: set[str], sender: Path, areas: dict[str, list[Path]]) -> Path | None:
+    """Where the destination lives; None = outside every area."""
+    if not slugs:
+        say("destination could not be told -- checked against every area")
+        return None
+    places: set[Path] = set()
+    for slug in sorted(slugs):
+        seen = visibility(slug)
+        if seen != "private":
+            say(f"destination {slug} is {seen} on GitHub -- checked against every area")
+            return None
+        if slug in remote_repos(sender):
+            places.add(sender)
+            continue
+        local = [Path(p) for p in clones(areas).get(slug, [])]
+        if not local:
+            say(f"destination {slug} has no clone on this machine -- checked against every area")
+            return None
+        places.update(local)
+    # Clones that sit in different areas may carry different things: only agreement decides.
+    if len({containing(p, areas) for p in places}) != 1:
+        say(f"destination {', '.join(sorted(slugs))} has clones in different areas -- checked against every area")
+        return None
+    return sorted(places)[0]
+
+
+def gh_destinations(argv: list[str], cwd: Path) -> set[str]:
+    """owner/repo a gh call sends to, the way gh picks it; empty when it cannot be told."""
+    named = None
+    for i, arg in enumerate(argv):
+        if arg in ("-R", "--repo") and i + 1 < len(argv):
+            named = argv[i + 1]
+        elif arg.startswith("--repo="):
+            named = arg.split("=", 1)[1]
+        elif arg.startswith("-R") and len(arg) > 2:
+            named = arg[2:]
+    named = named or os.environ.get("GH_REPO")
+    if named:
+        slug = github_repo(named)
+        return {slug} if slug else set()
+    words = [a for a in argv if not a.startswith("-")]
+    if words[:1] == ["api"]:
+        slugs = {f"{m.group(1)}/{m.group(2)}".lower() for a in argv if (m := GH_API_REPO.match(a))}
+        return slugs
+    if words[:1] == ["gist"] or words[:2] == ["repo", "create"]:
+        return set()
+    # Otherwise gh sends to the repository of the folder it runs in.
+    return remote_repos(cwd)
+
+
 # --- what is being sent -------------------------------------------------------
 
 def git(*args: str) -> str:
@@ -314,6 +478,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--range", dest="span")
     parser.add_argument("--text", type=Path)
     parser.add_argument("--repo", type=Path, help="where the sending repository lives (default: here)")
+    parser.add_argument("--dest", help="the remote URL (or owner/repo) the text is sent to")
+    parser.add_argument("--gh-argv", type=Path, help="a file holding the NUL-separated arguments of a gh call")
+    parser.add_argument("--where", action="store_true", help=f"print where the destination lives, or {OUTSIDE}")
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--status", action="store_true")
     args = parser.parse_args(argv)
@@ -324,6 +491,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.refresh or args.status:
         if args.refresh:
+            for stale in ("visibility.json", "clones.json"):
+                (CACHE / stale).unlink(missing_ok=True)
             load(areas, refresh=True)
         summary = json.loads((CACHE / "summary.json").read_text()) if (CACHE / "summary.json").is_file() else None
         if summary:
@@ -333,15 +502,24 @@ def main(argv: list[str] | None = None) -> int:
         else:
             say("fingerprints not built yet")
         return 0
-    if not (args.span or args.text):
-        parser.error("give --range, --text, --refresh or --status")
+    if not (args.span or args.text or args.where):
+        parser.error("give --range, --text, --where, --refresh or --status")
 
-    here = args.repo or Path(git("rev-parse", "--show-toplevel").strip() if args.span else os.getcwd())
-    here = expand(str(here))
-    if contains(areas.get(EXEMPT, []), here) and not any(
+    sender = expand(str(args.repo or (git("rev-parse", "--show-toplevel").strip() if args.span else os.getcwd())))
+    here: Path | None = sender
+    if args.gh_argv:
+        gh_args = [a for a in args.gh_argv.read_bytes().decode("utf-8", "replace").split("\0")]
+        here = destination(gh_destinations(gh_args[:-1] if gh_args[-1:] == [""] else gh_args, sender),
+                           sender, areas)
+    elif args.dest and (slug := github_repo(args.dest)):
+        here = destination({slug}, sender, areas)
+    if args.where:
+        print(here or OUTSIDE)
+        return 0
+    if here is not None and contains(areas.get(EXEMPT, []), here) and not any(
             contains(rs, here) for n, rs in areas.items() if n != EXEMPT):
         return 0
-    checked = [n for n, roots in areas.items() if n != EXEMPT and not contains(roots, here)]
+    checked = [n for n, roots in areas.items() if n != EXEMPT and (here is None or not contains(roots, here))]
     if not checked:
         return 0
 
@@ -365,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
             if what:
                 found.append(f"{where}: {name} {what} in {normalize(line)[:80]!r}")
     if found:
-        say(f"this carries text from a private area that {here} is outside of:")
+        say(f"this carries text from a private area that {here or 'the destination'} is outside of:")
         for line in found:
             print(f"    {line}", file=sys.stderr)
         say(f"replace it with made-up text, or add a phrase that is fine to {CONFIG / 'allow.txt'}")

@@ -156,6 +156,133 @@ mk_repo_at() {
     [ "$status" -eq 0 ]
 }
 
+# --- the destination decides, not the folder ---------------------------------------
+
+# mk_clone_at <dir> <owner/repo> — a fixture repo at a place, with a GitHub origin.
+mk_clone_at() {
+    mk_repo_at "$1"
+    git remote add origin "git@github.com:$2.git"
+}
+
+@test "corpus: a public destination is outside every area, wherever its clone lives" {
+    seed_visibility acme/pipeline public
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    base="$(git rev-parse HEAD)"
+    commit_line "${CLIENT_TEXT}"
+    head="$(git rev-parse HEAD)"
+    run_pre_push_to "git@github.com:acme/pipeline.git" "refs/heads/feature/x ${head} refs/heads/feature/x ${base}"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"is public on GitHub"* ]]
+    [[ "$output" == *"client text"* ]]
+}
+
+@test "corpus: a public company repo inside the company folder may not carry company text" {
+    seed_visibility acme/sdk public
+    mk_clone_at "${WORK}/repos/sdk" acme/sdk
+    commit_line "${COMPANY_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/sdk.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a private destination cloned inside the client may carry client text" {
+    seed_visibility acme/pipeline private
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    commit_line "${CLIENT_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a private destination with no clone on this machine is outside every area" {
+    seed_visibility acme/elsewhere private
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    commit_line "${CLIENT_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/elsewhere.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no clone on this machine"* ]]
+}
+
+@test "corpus: a destination GitHub cannot be asked about is treated as public" {
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/unasked
+    commit_line "${CLIENT_TEXT}"
+    FAIL_DIR="${BATS_TEST_TMPDIR}/nogh"; mkdir -p "${FAIL_DIR}"
+    printf '#!/bin/sh\nexit 1\n' > "${FAIL_DIR}/gh"; chmod +x "${FAIL_DIR}/gh"
+    https_proxy=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 PATH="${FAIL_DIR}:${PATH}" \
+        run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/unasked.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"is unknown on GitHub"* ]]
+}
+
+@test "corpus: a token in the environment that cannot see the repo does not hide gh's own accounts" {
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/scoped
+    commit_line "${CLIENT_TEXT}"
+    # gh answers 404 while GH_TOKEN is set (a token scoped to other repos) and
+    # "private" from its own account store once it is not.
+    FAKE_DIR="${BATS_TEST_TMPDIR}/scopedgh"; mkdir -p "${FAKE_DIR}"
+    printf '#!/bin/sh\n[ -n "$GH_TOKEN" ] && exit 1\necho true\n' > "${FAKE_DIR}/gh"; chmod +x "${FAKE_DIR}/gh"
+    GH_TOKEN=scoped https_proxy=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 PATH="${FAKE_DIR}:${PATH}" \
+        run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/scoped.git
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: --where names the clone of a private destination, OUTSIDE for a public one" {
+    seed_visibility acme/pipeline private
+    seed_visibility acme/sdk public
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --where --dest git@github-work:acme/pipeline.git
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"clients/acme/repos/pipeline" ]]
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --where --dest https://github.com/acme/sdk
+    [[ "$output" == *"OUTSIDE" ]]
+}
+
+# gh_shim — put gh-guard in front of a fake gh that only records that it ran.
+gh_shim() {
+    SHIM_DIR="${BATS_TEST_TMPDIR}/shim"; REAL_DIR="${BATS_TEST_TMPDIR}/real"
+    mkdir -p "${SHIM_DIR}" "${REAL_DIR}"
+    ln -sf "${GUARD_ROOT}/scripts/gh-guard.sh" "${SHIM_DIR}/gh"
+    printf '#!/usr/bin/env bash\ntouch "%s/ran"\n' "${BATS_TEST_TMPDIR}" > "${REAL_DIR}/gh"
+    chmod +x "${REAL_DIR}/gh"
+    GH_PATH="${SHIM_DIR}:${REAL_DIR}:${PATH}"
+}
+
+@test "gh-guard: client text sent from inside the client folder to a public repo is refused" {
+    seed_visibility someone/public-tool public
+    gh_shim
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    PATH="${GH_PATH}" run gh pr create -R someone/public-tool --title t --body "see: ${CLIENT_TEXT}"
+    [ "$status" -ne 0 ]
+    [ ! -f "${BATS_TEST_TMPDIR}/ran" ]
+}
+
+@test "gh-guard: an api call naming a public repo is judged by that repo" {
+    seed_visibility someone/public-tool public
+    gh_shim
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    PATH="${GH_PATH}" run gh api -X POST repos/someone/public-tool/issues -f body="${CLIENT_TEXT}"
+    [ "$status" -ne 0 ]
+    [ ! -f "${BATS_TEST_TMPDIR}/ran" ]
+}
+
+@test "gh-guard: client text to the client's own private repo is sent" {
+    seed_visibility acme/pipeline private
+    gh_shim
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    cd "${BATS_TEST_TMPDIR}"
+    PATH="${GH_PATH}" run gh pr create -R acme/pipeline --title t --body "see: ${CLIENT_TEXT}"
+    [ "$status" -eq 0 ]
+    [ -f "${BATS_TEST_TMPDIR}/ran" ]
+}
+
+@test "gh-guard: a gist is outside every area" {
+    gh_shim
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    printf '%s\n' "${CLIENT_TEXT}" > note.txt
+    PATH="${GH_PATH}" run gh gist create note.txt
+    [ "$status" -ne 0 ]
+    [ ! -f "${BATS_TEST_TMPDIR}/ran" ]
+}
+
 # --- what is not specific to an area ---------------------------------------------
 
 @test "corpus: a phrase in allow.txt passes" {

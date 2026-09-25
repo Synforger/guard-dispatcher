@@ -157,10 +157,25 @@ documents: 12 characters of Japanese, or 40 characters without Japanese
 (twelve characters of English are two common words). Runs that also appear in
 the background text are not specific to any area and are dropped.
 
-**Where the sending repository lives decides what it may carry**: every area
-that does not contain it is checked. Areas nest — a client inside a company —
-so a client's repository may carry the company's text, a company repository
-may not carry the client's, and a repository outside both carries neither.
+**Where the text is going decides what it may carry**: every area that does
+not contain the destination is checked. Areas nest — a client inside a
+company — so a client's repository may carry the company's text, a company
+repository may not carry the client's, and a repository outside both carries
+neither.
+
+The destination is the GitHub repository being sent to — the push URL, or for
+`gh` the `-R` / `GH_REPO` / `api repos/<owner>/<repo>` target, falling back to
+the current folder's remote — never the folder the command was typed in:
+
+| destination | treated as |
+|---|---|
+| public on GitHub | outside every area, wherever its clone lives |
+| private, cloned on this machine | where that clone lives |
+| private with no local clone, visibility unknown, or not determinable (a gist, `gh repo create`) | outside every area (fail-closed) |
+| not on GitHub (a local path, another host) | where the sending repository lives |
+
+Visibility is asked without credentials first (only a public repository
+answers), then as each account `gh` holds, and remembered for ten minutes.
 
 The fingerprints are rebuilt at most every six hours (`corpus-scan.py
 --refresh` forces it; `--status` shows what is loaded). A machine with no

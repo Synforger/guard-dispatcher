@@ -54,6 +54,25 @@ ran() { [ -f "${RAN_MARKER}" ]; }
     ! ran
 }
 
+@test "gh-guard: a gist file carrying a flagged identifier is refused" {
+    printf 'notes\n%s\n' "${SENTINEL}" > "${BATS_TEST_TMPDIR}/notes.txt"
+    run gh gist create "${BATS_TEST_TMPDIR}/notes.txt"
+    [ "$status" -ne 0 ]
+    ! ran
+}
+
+@test "gh-guard: a gist read from stdin is scanned" {
+    run bash -c "printf '%s\n' '${SENTINEL}' | gh gist create -"
+    [ "$status" -ne 0 ]
+    ! ran
+}
+
+@test "gh-guard: gh search only reads and is passed through" {
+    run gh search commits --author "${SENTINEL}"
+    [ "$status" -eq 0 ]
+    ran
+}
+
 # An unrecognised subcommand must fail closed: the CLI gains commands faster
 # than any allow-list of "sending" verbs can be maintained.
 @test "gh-guard: an unknown subcommand is scanned, not waved through" {
