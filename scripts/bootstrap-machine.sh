@@ -22,7 +22,8 @@
 #   2 = operator master 不在 (= 手動配置が必要、 案内を表示済み)
 #
 # 使い方 (guard-dispatcher checkout から):
-#   bash scripts/bootstrap-machine.sh
+#   bash scripts/bootstrap-machine.sh [--claude-settings <settings.json>]...
+#   (引数は install.sh へそのまま渡す)
 # =============================================================================
 
 set -uo pipefail
@@ -38,7 +39,7 @@ TRUTH_PATH="${ANON_TRUTH_PATH:-${HOME}/.config/anon-words/master.txt}"
 echo "=== bootstrap-machine: arming this machine ==="
 
 # --- 1. dispatcher arm ------------------------------------------------------
-bash "${GUARD_ROOT}/scripts/install.sh"
+bash "${GUARD_ROOT}/scripts/install.sh" "$@" || exit 1
 
 # --- 2. gh command guard ------------------------------------------------------
 # The hooks only see what leaves through git. Everything the CLI sends —

@@ -81,6 +81,50 @@ check_global() {
     else
         printf '  %s-%s no private areas (%s) — text copied from documents is NOT checked\n' "${DIM}" "${NC}" "${areas}"
     fi
+
+    check_agent "${areas}"
+}
+
+# The agent-side entry guard: installed with the hooks, registered per Claude
+# Code config dir. Unregistered is a gap only where there are areas to leave.
+check_agent() {
+    local areas="$1"
+    local hook="${EXPECTED_HOOKS_DIR}/agent-hooks/claude-code/area-guard.py"
+    if [ -f "${hook}" ]; then
+        printf '  %s✓%s agent entry guard installed (%s)\n' "${GRN}" "${NC}" "${hook}"
+    else
+        printf '  %s✗%s agent entry guard missing (%s) — re-run install.sh\n' "${RED}" "${NC}" "${hook}"
+        findings=$((findings + 1))
+    fi
+
+    local settings found=0
+    for settings in ${CLAUDE_CONFIG_DIR:+"${CLAUDE_CONFIG_DIR}/settings.json"} "${HOME}"/.claude*/settings.json; do
+        [ -f "${settings}" ] || continue
+        found=1
+        if python3 - "${settings}" <<'PY'
+import json
+import sys
+
+try:
+    settings = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    sys.exit(1)
+commands = [h.get("command", "") for g in settings.get("hooks", {}).get("PreToolUse", [])
+            for h in g.get("hooks", [])]
+sys.exit(0 if any(".git-hooks/agent-hooks/claude-code/area-guard.py" in c for c in commands) else 1)
+PY
+        then
+            printf '  %s✓%s agent entry guard registered (%s)\n' "${GRN}" "${NC}" "${settings}"
+        elif [ -f "${areas}" ]; then
+            printf '  %s✗%s agent entry guard not registered (%s) — an agent can carry area text out; run install.sh --claude-settings %s\n' "${RED}" "${NC}" "${settings}" "${settings}"
+            findings=$((findings + 1))
+        else
+            printf '  %s-%s agent entry guard not registered (%s) — no areas to keep it inside\n' "${DIM}" "${NC}" "${settings}"
+        fi
+    done
+    if [ "${found}" -eq 0 ]; then
+        printf '  %s-%s no Claude Code settings found — agent entry guard not registered\n' "${DIM}" "${NC}"
+    fi
 }
 
 check_repo() {

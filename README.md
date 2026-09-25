@@ -26,6 +26,7 @@ identity permanently into public history.
 | push (refs) | `pre-push` | branch/tag names scanned; direct pushes to main/develop refused (initial branch-creating push exempt; `GUARD_ALLOW_PROTECTED_PUSH=1` overrides once) |
 | PR | `scripts/pr-create.sh` | PR title/body scanned before `gh pr create` |
 | any `gh` send | `gh-shim/gh-guard.sh` (PATH shim) | argument vector, body/notes/template files and stdin payloads scanned before the CLI runs; read-only subcommands pass through |
+| AI agent tool call | `agent-hooks/claude-code/area-guard.py` (Claude Code PreToolUse hook) | a session that read inside a private area cannot write a repository outside it, nor commit, push or send through `gh` there; no session can switch the guards off or around |
 | repair | `scanners/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
 | health | `scripts/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
 
@@ -42,11 +43,22 @@ cd guard-dispatcher
 bash scripts/bootstrap-machine.sh
 ```
 
-`bootstrap-machine.sh` symlinks the hooks (and the `scanners/` and
-`scripts/` directories, for stable Taskfile paths) into `~/.git-hooks/`,
-points
-git's global `core.hooksPath` there, verifies your word list and
-external tools, and finishes with a doctor pass. It is idempotent.
+`bootstrap-machine.sh` symlinks the hooks (and the `scanners/`,
+`scripts/` and `agent-hooks/` directories, for stable paths) into
+`~/.git-hooks/`, points git's global `core.hooksPath` there, installs the
+`gh` shim, verifies your word list and external tools, and finishes with a
+doctor pass. It is idempotent.
+
+To hold Claude Code to the same areas, name each of its settings files
+(one per config dir):
+
+```sh
+bash scripts/bootstrap-machine.sh --claude-settings ~/.claude/settings.json
+```
+
+The hook is registered as `python3 "$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py"`,
+so it keeps working whichever clone was installed last. Re-running leaves one
+entry.
 
 ### Word list
 
@@ -206,6 +218,35 @@ answers), then as each account `gh` holds, and remembered for ten minutes.
 loaded and what could not be read. A machine with no `areas.txt` prints
 `NOT CHECKED` and passes.
 
+### Agent entry guard
+
+The push-time scan catches copies. An AI agent can carry what it read without
+copying a single line, so `agent-hooks/claude-code/area-guard.py` stops it one
+step earlier, before each tool call, from the same `areas.txt`:
+
+- A session that reads inside an area (a `Read` / `Grep` / `Glob` target, an
+  area path named in a `Bash` command, a `Bash` working directory) is marked
+  with the area's name. Marks are kept per session under
+  `~/.cache/area-guard/`, so they outlive the agent compacting its context.
+- A marked session cannot `Edit` / `Write` a file inside a git repository
+  outside its marks, and cannot `git commit`, `git push` or send through `gh`
+  to a destination outside them. Destinations are judged exactly as the
+  push-time scan judges them (`corpus-scan.py --where`). Files outside any
+  repository and `_exempt` areas stay writable.
+- Areas nest as they do for the scan: a session that read only the company may
+  still write the client's repository inside it; one that read the client may
+  not write the company's.
+- On every machine, areas or not, a `Bash` command that switches the guards off
+  or around is refused: `--no-verify`, `git commit -n`, the skip variables,
+  `git -c core.hooksPath=…`, setting `core.hooksPath` / `guard.scope` /
+  `guard.exemptPrefix`, clearing the marks, or sending from a repository the
+  git hooks do not reach. The operator types those; the agent does not.
+
+A call that passes prints nothing, so nothing is added to the agent's context.
+A refusal is one line naming the area and the destination. `doctor.sh` reports
+whether the hook is installed and, per Claude Code config dir, registered; an
+unregistered config dir is a finding on a machine that defines areas.
+
 ## Scan guarantee
 
 The contract a machine-wide install provides, stated precisely — both
@@ -249,6 +290,12 @@ contract:
   legitimately name accounts and repositories. An unrecognised subcommand
   is scanned rather than assumed harmless, and an unresolvable scanner
   refuses the command. Pinned in `tests/gh-guard.bats`.
+- **A Claude Code session with the agent entry guard registered** does not
+  write a repository outside the areas it read, and does not commit, push or
+  send through `gh` outside them; with or without areas, it does not run a
+  command that switches the guards off or around. Pinned in
+  `tests/area-guard.bats`; installing and registering it in
+  `tests/install.bats`.
 - After the fact, `anon-audit-deep` sweeps 11 sources — tracked files,
   every history blob, commit messages, branch names, tag names +
   annotations, author/committer fields, GitHub PR + Issue title/body +
@@ -285,6 +332,10 @@ contract:
 - The scan folds case and Unicode width (NFKC) before matching, but is
   otherwise literal PCRE against your word list — it cannot flag an
   identifier whose base form the list does not contain.
+- The agent entry guard sees tool calls only: text the operator pastes into
+  the conversation marks nothing, other tools and hands are not held to it,
+  and a program that runs git for the agent (a script in another language)
+  is left to the git hooks.
 - The private-document scan catches copies, not paraphrase: a value retyped
   on its own, or a sentence reworded, carries no run of the original. Numbers
   are not compared at all — short numbers are not specific to anything.
@@ -300,11 +351,12 @@ contract:
   (run length for prose), `GUARD_CORPUS_CODE_LINES` (how many consecutive whole
   lines of an area's code a sent file must hold to be a hit),
   `GUARD_VISIBILITY_TTL` (seconds a repository's visibility is remembered).
-- An AI agent is better held to none of these: an agent-side hook can refuse
-  any command that carries them (the operator types them, the agent does not).
+- An AI agent is held to none of these: the agent entry guard refuses any
+  command that carries them (the operator types them, the agent does not).
 - Full uninstall:
-  `git config --global --unset core.hooksPath && rm -rf ~/.git-hooks`
-  and `rm ~/.local/bin/gh`.
+  `git config --global --unset core.hooksPath && rm -rf ~/.git-hooks`,
+  `rm ~/.local/bin/gh`, and the `area-guard.py` entry in each Claude Code
+  settings file.
 
 ## Repository layout
 
@@ -322,7 +374,7 @@ scripts/            setting up and checking a machine: bootstrap-machine.sh,
                     install.sh, doctor.sh, pr-create.sh, weekly-audit.sh,
                     install-weekly-audit.sh
 tests/              bats suite (dispatcher helpers, all three hooks,
-                    scanners, gh shim, agent hook)
+                    scanners, gh shim, agent hook, install and doctor)
 ```
 
 ## Tests

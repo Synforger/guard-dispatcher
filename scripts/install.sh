@@ -11,11 +11,35 @@
 # clone you ran it from. Use that to switch which clone is the source of
 # truth (`cd <other clone> && scripts/install.sh`).
 #
+# Usage:
+#   scripts/install.sh [--claude-settings <settings.json>]...
+#
+# --claude-settings registers the agent-side entry guard
+# (agent-hooks/claude-code/area-guard.py) as a PreToolUse hook in that Claude
+# Code settings file, creating the file if needed. Repeat it for every config
+# dir. Re-running leaves exactly one entry, and an entry pointing at another
+# copy of area-guard.py is replaced.
+#
 # Rollback:
 #   git config --global --unset core.hooksPath
 #   rm -rf ~/.git-hooks
 # =============================================================================
 set -euo pipefail
+
+claude_settings=()
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --claude-settings)
+            [ "$#" -ge 2 ] || { echo "error: --claude-settings needs a file" >&2; exit 2; }
+            claude_settings+=("$2")
+            shift 2
+            ;;
+        *)
+            echo "error: unknown argument: $1" >&2
+            exit 2
+            ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUARD_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -55,10 +79,11 @@ done
 # lost the +x bit if the user re-created files via editor.
 chmod +x "${HOOKS_SRC}/pre-commit" "${HOOKS_SRC}/commit-msg" "${HOOKS_SRC}/pre-push" "${SCRIPT_DIR}/doctor.sh"
 
-# Expose the scanners and helper scripts alongside the hooks so Taskfiles
-# and shells can invoke them via a stable path (git only executes known
-# hook names, so extra entries here are inert to git itself).
-for entry in scanners scripts; do
+# Expose the scanners, helper scripts and agent hooks alongside the git hooks
+# so Taskfiles, shells and agent settings can invoke them via a stable path
+# (git only executes known hook names, so extra entries here are inert to git
+# itself).
+for entry in scanners scripts agent-hooks; do
     dst="${TARGET_DIR}/${entry}"
     if [ -e "${dst}" ] || [ -L "${dst}" ]; then
         rm -rf "${dst}"
@@ -79,3 +104,27 @@ Next steps for repos that had a local core.hooksPath override:
 
 The dispatcher will still delegate to any repo-local .githooks/<name>.
 MSG
+
+# The agent hook is called through ~/.git-hooks, so the settings entry stays
+# valid whichever clone was installed last.
+AGENT_HOOK_COMMAND='python3 "$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py"'
+for settings in ${claude_settings[@]+"${claude_settings[@]}"}; do
+    python3 - "${settings}" "${AGENT_HOOK_COMMAND}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path, command = Path(sys.argv[1]).expanduser(), sys.argv[2]
+text = path.read_text() if path.is_file() else ""
+settings = json.loads(text) if text.strip() else {}
+pre = settings.setdefault("hooks", {}).setdefault("PreToolUse", [])
+for group in pre:
+    group["hooks"] = [h for h in group.get("hooks", []) if "area-guard.py" not in h.get("command", "")]
+pre[:] = [g for g in pre if g["hooks"]]
+pre.append({"matcher": "Read|Grep|Glob|Bash|Edit|Write|MultiEdit|NotebookEdit",
+            "hooks": [{"type": "command", "command": command}]})
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
+PY
+    echo "[global-hooks] agent entry guard registered in ${settings}"
+done
