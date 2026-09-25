@@ -46,7 +46,7 @@ JSON
     run agent_entries "${H}/.claude/settings.json"
     [ "${status}" -eq 0 ]
     [ "$(printf '%s\n' "${output}" | grep -c 'area-guard.py')" -eq 1 ]
-    [[ "${output}" == *'python3 "$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py"'* ]]
+    [[ "${output}" == *'f="$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py"'* ]]
     [[ "${output}" == *"notify-me"* ]]
     [[ "${output}" != *"/old/place/"* ]]
     [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["theme"])' "${H}/.claude/settings.json")" = "light" ]
@@ -80,4 +80,19 @@ JSON
     run bash "${H}/.git-hooks/doctor.sh"
     [ "${status}" -eq 0 ]
     [[ "${output}" == *"no areas to keep it inside"* ]]
+}
+
+@test "install: the registered command refuses through the hook, and passes when the hook is gone" {
+    bash "${GUARD_ROOT}/scripts/install.sh" --claude-settings "${H}/.claude/settings.json" >/dev/null
+    local command event
+    command="$(agent_entries "${H}/.claude/settings.json" | grep area-guard.py)"
+    event='{"session_id": "s1", "tool_name": "Bash", "tool_input": {"command": "git push --no-verify"}, "cwd": "/", "hook_event_name": "PreToolUse"}'
+    run bash -c "${command}" <<< "${event}"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *'"permissionDecision": "deny"'* ]]
+
+    rm "${H}/.git-hooks/agent-hooks"
+    run bash -c "${command}" <<< "${event}"
+    [ "${status}" -eq 0 ]
+    [ -z "${output}" ]
 }

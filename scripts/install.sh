@@ -106,8 +106,11 @@ The dispatcher will still delegate to any repo-local .githooks/<name>.
 MSG
 
 # The agent hook is called through ~/.git-hooks, so the settings entry stays
-# valid whichever clone was installed last.
-AGENT_HOOK_COMMAND='python3 "$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py"'
+# valid whichever clone was installed last. When the hook is missing (the
+# checkout was removed, or predates agent-hooks/) the entry passes silently:
+# Claude Code reads a failing hook's exit 2 as a refusal, which would stop
+# every tool call. doctor.sh reports the missing hook instead.
+AGENT_HOOK_COMMAND='f="$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py"; [ -f "$f" ] || exit 0; exec python3 "$f"'
 for settings in ${claude_settings[@]+"${claude_settings[@]}"}; do
     python3 - "${settings}" "${AGENT_HOOK_COMMAND}" <<'PY'
 import json

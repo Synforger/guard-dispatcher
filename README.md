@@ -56,9 +56,10 @@ To hold Claude Code to the same areas, name each of its settings files
 bash scripts/bootstrap-machine.sh --claude-settings ~/.claude/settings.json
 ```
 
-The hook is registered as `python3 "$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py"`,
+The hook is registered through `$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py`,
 so it keeps working whichever clone was installed last. Re-running leaves one
-entry.
+entry. If that file is missing the entry passes silently rather than refusing
+every tool call, and `doctor.sh` reports it missing.
 
 ### Word list
 
