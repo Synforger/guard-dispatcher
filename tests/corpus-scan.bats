@@ -578,6 +578,15 @@ SH
     [ "$status" -eq 1 ]
 }
 
+@test "corpus: a broken areas.txt line refuses instead of guessing" {
+    printf '_exempt = the text of a comment that lost its hash\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo other
+    commit_line "nothing private"
+    scan_last
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"REFUSED"* ]]
+}
+
 @test "corpus: no areas on this machine says NOT CHECKED and passes" {
     rm "${GUARD_CONFIG_DIR}/areas.txt"
     mk_repo other

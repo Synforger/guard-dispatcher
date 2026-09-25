@@ -157,6 +157,10 @@ def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
         parts = shlex.split(line, comments=True)
         if len(parts) < 2:
             continue
+        # A relative path would resolve against wherever the scan runs -- an `_exempt .` would
+        # exempt every folder. A line that is not a definition is a broken file, not a pass.
+        if bad := [p for p in parts[1:] if not p.startswith(("/", "~", "$"))]:
+            raise ValueError(f"areas.txt: {line!r} names {bad[0]!r}, not an absolute or ~ path")
         if "*" in parts[0]:
             templates.append((parts[0], [expand(p[:-2]) for p in parts[1:] if p.endswith("/*")]))
         else:
@@ -861,7 +865,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--status", action="store_true")
     args = parser.parse_args(argv)
 
-    areas = load_areas()
+    try:
+        areas = load_areas()
+    except ValueError as error:
+        say(f"REFUSED — {error} (fix {CONFIG / 'areas.txt'})")
+        return 2
     if not areas:
         say(f"NOT CHECKED — no areas defined in {CONFIG / 'areas.txt'} on this machine")
         return 0
