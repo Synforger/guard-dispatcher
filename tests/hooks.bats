@@ -346,6 +346,37 @@ stranger_commit() {
     [[ "${output}" == *"push range mode (${joined} ^"*", 2 commits)"* ]]
 }
 
+@test "pre-push: a push from a bare repository is scanned, not refused by a crash" {
+    mk_repo synforger
+    echo "clean" > clean.txt && git add clean.txt && commit_bypassing_hooks "feat: clean"
+    git clone -q --bare . "${BATS_TEST_TMPDIR}/clean.git"
+    cd "${BATS_TEST_TMPDIR}/clean.git"
+    run_pre_push "refs/heads/main $(git rev-parse HEAD) refs/heads/main ${ZERO_SHA}"
+    [ "$status" -eq 0 ]
+    [[ "${output}" != *"Traceback"* ]]
+}
+
+@test "pre-push: a leak pushed from a bare repository is still caught" {
+    mk_repo synforger
+    echo "${SENTINEL}" > leak.txt && git add leak.txt && commit_bypassing_hooks "feat: sneaky"
+    git clone -q --bare . "${BATS_TEST_TMPDIR}/leak.git"
+    cd "${BATS_TEST_TMPDIR}/leak.git"
+    run_pre_push "refs/heads/main $(git rev-parse HEAD) refs/heads/main ${ZERO_SHA}"
+    [ "$status" -eq 1 ]
+    [[ "${output}" != *"Traceback"* ]]
+    [[ "${output}" != *"not inside a git repository"* ]]
+    [[ "${output}" == *"${SENTINEL}"* ]]
+}
+
+@test "deep audit: a bare repository refuses the full audit instead of calling it clean" {
+    mk_repo synforger
+    git clone -q --bare . "${BATS_TEST_TMPDIR}/full.git"
+    cd "${BATS_TEST_TMPDIR}/full.git"
+    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    [ "$status" -eq 2 ]
+    [[ "${output}" == *"use --range"* ]]
+}
+
 @test "pre-push: an unexpected author is caught in a range with several bases" {
     mk_repo synforger
     mk_joined stranger_commit

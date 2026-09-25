@@ -83,6 +83,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # checkout this script lives in. Hooks invoke scanners with cwd already at
 # the target repo root; direct callers may be anywhere inside the repo.
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "${PROJECT_ROOT}" ] && [ "$(git rev-parse --is-bare-repository 2>/dev/null)" = "true" ]; then
+    # A bare repository has history but no files: a push range can be scanned,
+    # the full audit (which reads the tracked files) cannot be called clean.
+    if [ -z "${RANGE}" ]; then
+        echo "error: a bare repository has no tracked files to audit; use --range" >&2
+        exit 2
+    fi
+    PROJECT_ROOT="$(git rev-parse --absolute-git-dir)"
+fi
 if [ -z "${PROJECT_ROOT}" ]; then
     echo "error: not inside a git repository" >&2
     exit 2

@@ -799,6 +799,14 @@ def git(*args: str) -> str:
                           check=True).stdout
 
 
+def sending_repo() -> str:
+    """Where the pushing repository lives: its work tree, or for a bare repository its git dir."""
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if top.returncode == 0 and top.stdout.strip():
+        return top.stdout.strip()
+    return git("rev-parse", "--absolute-git-dir").strip()
+
+
 def outgoing(span: str) -> list[tuple[str, str]]:
     """(where, line) for every added line and message line in a push range
     (`<from>..<to>`, or `<to> ^<from> [^<from>...]` when it has several bases)."""
@@ -917,7 +925,7 @@ def main(argv: list[str] | None = None) -> int:
     if not (args.span or args.text or args.where):
         parser.error("give --range, --text, --where, --refresh or --status")
 
-    sender = expand(str(args.repo or (git("rev-parse", "--show-toplevel").strip() if args.span else os.getcwd())))
+    sender = expand(str(args.repo or (sending_repo() if args.span else os.getcwd())))
     here: Path | None = sender
     if args.gh_argv:
         gh_args = [a for a in args.gh_argv.read_bytes().decode("utf-8", "replace").split("\0")]

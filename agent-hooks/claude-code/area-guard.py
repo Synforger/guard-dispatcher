@@ -267,6 +267,53 @@ GIT_VALUE_FLAGS = {"-m", "-F", "-c", "-C", "--message", "--file", "--author", "-
                    "--reuse-message", "--reedit-message", "-t", "--template", "--cleanup", "--trailer"}
 
 
+# `git config` reads with one of these, or with a key alone; it writes with one of the others,
+# or with a key and a value. The options in CONFIG_TAKES_VALUE consume the next word.
+CONFIG_READS = {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-color", "--get-colorbool",
+                "--list", "-l", "get", "list"}
+CONFIG_WRITES = {"--unset", "--unset-all", "--add", "--replace-all", "--rename-section", "--remove-section",
+                 "--edit", "-e", "set", "unset", "rename-section", "remove-section", "edit"}
+CONFIG_TAKES_VALUE = {"-f", "--file", "--blob", "--type", "--default", "--comment", "--value"}
+
+
+def config_writes_guard_key(command: str) -> bool:
+    """True when any `git config` in the command writes core.hooksPath, guard.scope or
+    guard.exemptPrefix. Each invocation is judged on its own words, so a read beside a write
+    does not excuse the write."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = command.split()
+    start = 0
+    for i, w in enumerate(words):
+        if w in SHELL_BREAK:
+            start = i + 1
+            continue
+        if w != "config" or "git" not in words[start:i]:
+            continue
+        args = upto_break(words[i + 1:])
+        if not any(GUARD_KEYS.search(a) for a in args):
+            continue
+        flags, positional, skip = set(), [], False
+        for a in args:
+            if skip:
+                skip = False
+            elif a in CONFIG_TAKES_VALUE:
+                skip = True
+            elif a.startswith("-"):
+                flags.add(a.split("=", 1)[0])
+            else:
+                positional.append(a)
+        verb = positional[:1]
+        if flags & CONFIG_WRITES or set(verb) & CONFIG_WRITES:
+            return True
+        if flags & CONFIG_READS or set(verb) & CONFIG_READS:
+            continue
+        if len(positional) >= 2:
+            return True
+    return False
+
+
 def git_config(repo: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(repo), "config", *args], capture_output=True, text=True).stdout.strip()
 
@@ -294,8 +341,7 @@ def bypass(command: str, cwd: str, areas) -> str | None:
     expanded = spell_home(command)
     if re.search(r"\b(rm|mv|cp|truncate|tee|touch|ln)\b[^|;&]*\.cache/area-guard|>\s*\S*\.cache/area-guard", expanded):
         return "removes or rewrites the entry guard's marks"
-    if (re.search(r"\bgit\b[^|;&]*\bconfig\b", command) and GUARD_KEYS.search(command)
-            and not re.search(r"(^|\s)(--get|--get-all|--get-regexp|--list|-l)(\s|$)", command)):
+    if config_writes_guard_key(command):
         return "a git config that switches the hooks off"
     sends = sends_of(command, cwd)
     if not sends:

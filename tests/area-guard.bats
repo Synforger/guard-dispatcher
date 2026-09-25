@@ -185,6 +185,29 @@ origin() { git -C "$1" remote add origin "git@github.com:$2.git"; }
     bash_in "${PERSONAL}" "git config --get core.hooksPath"; passed
 }
 
+@test "area-guard: reading a guard key passes, however it is spelled" {
+    for command in "git config core.hooksPath" "git config --global core.hooksPath" \
+                   "git config get core.hooksPath" "git config --show-origin guard.scope" \
+                   "git -C ${PERSONAL} config --list" "git config --get-regexp 'guard\\..*'" \
+                   "git config --file .gitmodules core.hooksPath"; do
+        bash_in "${PERSONAL}" "${command}"
+        passed || { echo "refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: writing a guard key is refused, even beside a read" {
+    for command in "git config set core.hooksPath .husky" "git config --unset core.hooksPath" \
+                   "git config --replace-all guard.scope exempt" "git config --add guard.exemptPrefix ~/x" \
+                   "git config --file .git/config core.hooksPath /dev/null" \
+                   "git config --type=path core.hooksPath /dev/null" \
+                   "git config --list; git config core.hooksPath /dev/null" \
+                   "git config --get core.hooksPath && git config --global core.hooksPath /dev/null" \
+                   "git -C ${PERSONAL} config guard.scope exempt"; do
+        bash_in "${PERSONAL}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
 @test "area-guard: clearing the marks is refused" {
     bash_in "${H}" "rm -f ~/.cache/area-guard/s1.json"; denied
     write_to "${H}/.cache/area-guard/s1.json"; denied
