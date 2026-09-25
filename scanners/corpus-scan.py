@@ -59,7 +59,8 @@ a public repository leaves the client all the same:
     not on GitHub (a local path, another host)
                                      where the sending repository lives
 
-    corpus-scan.py --range <from>..<to> [--dest <url>]   a push (pre-push passes the push URL)
+    corpus-scan.py --range <from>..<to> [--dest <url>]   a push (pre-push passes the push URL;
+                                          several bases come as "<to> ^<from> ^<from>")
     corpus-scan.py --text <file> --gh-argv <file>        one gh payload (gh-guard)
     corpus-scan.py --where [--dest <url> | --gh-argv <file>]
                                           print where the destination lives, or OUTSIDE
@@ -796,9 +797,10 @@ def git(*args: str) -> str:
 
 
 def outgoing(span: str) -> list[tuple[str, str]]:
-    """(where, line) for every added line and message line in a push range."""
+    """(where, line) for every added line and message line in a push range
+    (`<from>..<to>`, or `<to> ^<from> [^<from>...]` when it has several bases)."""
     lines = []
-    for sha in git("rev-list", span).split():
+    for sha in git("rev-list", *span.split()).split():
         for line in git("log", "-1", "--format=%B", sha).splitlines():
             lines.append((f"{sha[:7]} message", line))
         current = "?"

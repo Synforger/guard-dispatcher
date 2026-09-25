@@ -283,3 +283,73 @@ setup() {
     run_pre_push "refs/heads/feature/x ${head} refs/heads/feature/x ${ZERO_SHA}"
     [ "$status" -eq 1 ]
 }
+
+@test "pre-push: tags on a history already scanned in the same push are not scanned again" {
+    mk_repo synforger
+    echo "a" > a.txt && git add a.txt && commit_bypassing_hooks "feat: a"
+    git tag v1
+    echo "b" > b.txt && git add b.txt && commit_bypassing_hooks "feat: b"
+    git tag v2
+    head="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/main ${head} refs/heads/main ${ZERO_SHA}" \
+                 "refs/tags/v1 $(git rev-parse v1) refs/tags/v1 ${ZERO_SHA}" \
+                 "refs/tags/v2 $(git rev-parse v2) refs/tags/v2 ${ZERO_SHA}"
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s\n' "${output}" | grep -c 'anon-audit-deep --range')" -eq 1 ]
+}
+
+@test "pre-push: a ref beyond what the push already scanned is scanned for its own commits" {
+    mk_repo synforger
+    main="$(git rev-parse HEAD)"
+    git switch -q -c side
+    echo "${SENTINEL}" > leak.txt && git add leak.txt && commit_bypassing_hooks "feat: sneaky"
+    side="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/main ${main} refs/heads/main ${ZERO_SHA}" \
+                 "refs/heads/side ${side} refs/heads/side ${ZERO_SHA}"
+    [ "$status" -eq 1 ]
+    [[ "${output}" == *"anon-audit-deep --range ${main}..${side}"* ]]
+}
+
+# mk_joined <last-commit-command...> — lines a and b off the seed, a merge of
+# them, and one more commit made by the given command. Sets a, b, joined.
+mk_joined() {
+    local seed
+    seed="$(git rev-parse HEAD)"
+    echo "a" > a.txt && git add a.txt && commit_bypassing_hooks "feat: a"
+    a="$(git rev-parse HEAD)"
+    git switch -q -c side "${seed}"
+    echo "b" > b.txt && git add b.txt && commit_bypassing_hooks "feat: b"
+    b="$(git rev-parse HEAD)"
+    git switch -q -c joined "${a}"
+    git merge -q --no-edit side
+    "$@"
+    joined="$(git rev-parse HEAD)"
+}
+
+push_joined() {
+    run_pre_push "refs/heads/main ${a} refs/heads/main ${ZERO_SHA}" \
+                 "refs/heads/side ${b} refs/heads/side ${ZERO_SHA}" \
+                 "refs/heads/joined ${joined} refs/heads/joined ${ZERO_SHA}"
+}
+
+leak_commit() { echo "${SENTINEL}" > leak.txt && git add leak.txt && commit_bypassing_hooks "feat: sneaky"; }
+stranger_commit() {
+    echo "c" > c.txt && git add c.txt
+    GIT_AUTHOR_EMAIL=stranger@example.com commit_bypassing_hooks "feat: c"
+}
+
+@test "pre-push: a ref joining several scanned lines is scanned for exactly its own commits" {
+    mk_repo synforger
+    mk_joined leak_commit
+    push_joined
+    [ "$status" -eq 1 ]
+    [[ "${output}" == *"push range mode (${joined} ^"*", 2 commits)"* ]]
+}
+
+@test "pre-push: an unexpected author is caught in a range with several bases" {
+    mk_repo synforger
+    mk_joined stranger_commit
+    push_joined
+    [ "$status" -eq 1 ]
+    [[ "${output}" == *"stranger@example.com"* ]]
+}
