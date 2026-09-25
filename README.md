@@ -25,9 +25,10 @@ identity permanently into public history.
 | push | `pre-push` | outgoing commit range deep-scanned (blobs, messages, authors); every author/committer must be an allowed identity, or a GitHub bot account |
 | push (refs) | `pre-push` | branch/tag names scanned; direct pushes to main/develop refused (initial branch-creating push exempt; `GUARD_ALLOW_PROTECTED_PUSH=1` overrides once) |
 | PR | `scripts/pr-create.sh` | PR title/body scanned before `gh pr create` |
-| any `gh` send | `scripts/gh-guard.sh` (PATH shim) | argument vector, body/notes/template files and stdin payloads scanned before the CLI runs; read-only subcommands pass through |
+| any `gh` send | `gh-shim/gh-guard.sh` (PATH shim) | argument vector, body/notes/template files and stdin payloads scanned before the CLI runs; read-only subcommands pass through |
+| AI agent tool call | `agent-hooks/claude-code/area-guard.py` (Claude Code PreToolUse hook) | a session that read inside a private area cannot write a repository outside it, nor commit, push or send through `gh` there; no session can switch the guards off or around |
 | repair | `scanners/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
-| health | `git-hooks/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
+| health | `scripts/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
 
 Content scanning is **default-on for every repository** — the only way
 out is an explicit `exempt` opt-out. Identity and branch-flow
@@ -42,11 +43,23 @@ cd guard-dispatcher
 bash scripts/bootstrap-machine.sh
 ```
 
-`bootstrap-machine.sh` symlinks the hooks (and the `scanners/` and
-`scripts/` directories, for stable Taskfile paths) into `~/.git-hooks/`,
-points
-git's global `core.hooksPath` there, verifies your word list and
-external tools, and finishes with a doctor pass. It is idempotent.
+`bootstrap-machine.sh` symlinks the hooks (and the `scanners/`,
+`scripts/` and `agent-hooks/` directories, for stable paths) into
+`~/.git-hooks/`, points git's global `core.hooksPath` there, installs the
+`gh` shim, verifies your word list and external tools, and finishes with a
+doctor pass. It is idempotent.
+
+To hold Claude Code to the same areas, name each of its settings files
+(one per config dir):
+
+```sh
+bash scripts/bootstrap-machine.sh --claude-settings ~/.claude/settings.json
+```
+
+The hook is registered through `$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py`,
+so it keeps working whichever clone was installed last. Re-running leaves one
+entry. If that file is missing the entry passes silently rather than refusing
+every tool call, and `doctor.sh` reports it missing.
 
 ### Word list
 
@@ -142,29 +155,102 @@ documents themselves. Everything it reads is configured on this machine only:
 
 ```
 ~/.config/guard/areas.txt               <name> <path> [<path> ...]   one area per line
+                                        <prefix>* <path>/* ...       one area per sub-folder
                                         _exempt <path> ...           never scanned
 ~/.config/guard/patterns/<name>.txt     regular expressions for identifiers of a shape
                                         (product codes, client names), case-insensitive
 ~/.config/guard/allow.txt               phrases that are fine to send
-~/.config/guard/background.txt          folders of public text, and `published <dir>`
+~/.config/guard/ignore.txt              folders inside an area that hold none of its
+                                        documents (an external corpus, build logs)
+~/.config/guard/background.txt          folders of public text and code, and `published <dir>`
                                         for your own repositories as their remote has them
 ```
 
-An area's documents are its Office files (`.pptx` `.docx` `.xlsx`, read from
-their XML, never their compressed bytes) and the Markdown that lives outside
-any git repository. A sent line is a hit when it holds a run of those
-documents: 12 characters of Japanese, or 40 characters without Japanese
-(twelve characters of English are two common words). Runs that also appear in
-the background text are not specific to any area and are dropped.
+`client-* /srv/company/clients/*` makes every sub-folder of `clients/` its own area
+(`client-acme`, `client-beta`, ...), so a client folder created tomorrow is
+guarded from the moment it exists. A folder already named on an explicit line
+keeps that name.
 
-**Where the sending repository lives decides what it may carry**: every area
-that does not contain it is checked. Areas nest — a client inside a company —
-so a client's repository may carry the company's text, a company repository
-may not carry the client's, and a repository outside both carries neither.
+An area's documents are everything under it that holds its words:
 
-The fingerprints are rebuilt at most every six hours (`corpus-scan.py
---refresh` forces it; `--status` shows what is loaded). A machine with no
-`areas.txt` prints `NOT CHECKED` and passes.
+| kind | files | a sent line is a hit when it |
+|---|---|---|
+| prose | Office (`.pptx` `.docx` `.xlsx`, read from their XML, never their compressed bytes), PDF (`pdftotext`, wrapped lines rejoined), Markdown | holds a run of 12 characters of Japanese, or 40 without (twelve characters of English are two common words) |
+| rows | CSV, TSV, plain text | is, once whitespace is folded, a whole row of the same length bar |
+| lines | every other file a git repository inside the area tracks — its code and its Markdown | is one of `GUARD_CORPUS_CODE_LINES` (default 2) consecutive sent lines that are each a whole line of the same length bar |
+
+Code is matched line by line because that is how it is copied, and because
+printing every run of every line of a code base would hold hundreds of
+millions of values. It takes two consecutive lines because a lone common line
+(an import, an idiom) is written by the same people in every code base: on
+1,298 clean public commits one line blocked 14, two lines blocked 3. A row of
+data is specific on its own, so one copied row is a hit. Inside a repository only what it tracks counts: untracked
+output and vendored folders (`third_party/`, `vendor/`, ...) are someone
+else's. Runs and lines that also appear in the background text and code are
+not specific to any area and are dropped.
+
+Prints are kept per document and reused while a document is unchanged.
+Documents changed since the last scan are found through Spotlight and added at
+once; when Spotlight cannot answer (indexing off, an area it does not index,
+not macOS) everything is walked again, and a full walk happens at least every
+six hours. A document that could not be read is listed by `--status`.
+
+**Where the text is going decides what it may carry**: every area that does
+not contain the destination is checked. Areas nest — a client inside a
+company — so a client's repository may carry the company's text, a company
+repository may not carry the client's, and a repository outside both carries
+neither.
+
+The destination is the GitHub repository being sent to — the push URL, or for
+`gh` the `-R` / `GH_REPO` / `api repos/<owner>/<repo>` target, falling back to
+the current folder's remote — never the folder the command was typed in:
+
+| destination | treated as |
+|---|---|
+| public on GitHub | outside every area, wherever its clone lives |
+| private, cloned on this machine | where that clone lives |
+| private with no local clone, visibility unknown, or not determinable (a gist, `gh repo create`) | outside every area (fail-closed) |
+| not on GitHub (a local path, another host) | where the sending repository lives |
+
+Visibility is asked without credentials first (only a public repository
+answers), then as each account `gh` holds, and remembered for ten minutes.
+
+`corpus-scan.py --refresh` walks everything now; `--status` shows what is
+loaded and what could not be read. A machine with no `areas.txt` prints
+`NOT CHECKED` and passes.
+
+### Agent entry guard
+
+The push-time scan catches copies. An AI agent can carry what it read without
+copying a single line, so `agent-hooks/claude-code/area-guard.py` stops it one
+step earlier, before each tool call, from the same `areas.txt`:
+
+- A session that reads inside an area (a `Read` / `Grep` / `Glob` target, an
+  area path named in a `Bash` command, a `Bash` working directory) is marked
+  with the area's name. A command that only checks the paths it names marks
+  nothing: `test`, `[ … ]`, `stat`, `realpath`, `readlink` or `ls -d` run on
+  its own, every argument literal (no second command, pipe, redirect,
+  substitution, glob or variable other than `$HOME`). Anything else is taken
+  to read what it names. Marks are kept per session under
+  `~/.cache/area-guard/`, so they outlive the agent compacting its context.
+- A marked session cannot `Edit` / `Write` a file inside a git repository
+  outside its marks, and cannot `git commit`, `git push` or send through `gh`
+  to a destination outside them. Destinations are judged exactly as the
+  push-time scan judges them (`corpus-scan.py --where`). Files outside any
+  repository and `_exempt` areas stay writable.
+- Areas nest as they do for the scan: a session that read only the company may
+  still write the client's repository inside it; one that read the client may
+  not write the company's.
+- On every machine, areas or not, a `Bash` command that switches the guards off
+  or around is refused: `--no-verify`, `git commit -n`, the skip variables,
+  `git -c core.hooksPath=…`, setting `core.hooksPath` / `guard.scope` /
+  `guard.exemptPrefix`, clearing the marks, or sending from a repository the
+  git hooks do not reach. The operator types those; the agent does not.
+
+A call that passes prints nothing, so nothing is added to the agent's context.
+A refusal is one line naming the area and the destination. `doctor.sh` reports
+whether the hook is installed and, per Claude Code config dir, registered; an
+unregistered config dir is a finding on a machine that defines areas.
 
 ## Scan guarantee
 
@@ -209,6 +295,12 @@ contract:
   legitimately name accounts and repositories. An unrecognised subcommand
   is scanned rather than assumed harmless, and an unresolvable scanner
   refuses the command. Pinned in `tests/gh-guard.bats`.
+- **A Claude Code session with the agent entry guard registered** does not
+  write a repository outside the areas it read, and does not commit, push or
+  send through `gh` outside them; with or without areas, it does not run a
+  command that switches the guards off or around. Pinned in
+  `tests/area-guard.bats`; installing and registering it in
+  `tests/install.bats`.
 - After the fact, `anon-audit-deep` sweeps 11 sources — tracked files,
   every history blob, commit messages, branch names, tag names +
   annotations, author/committer fields, GitHub PR + Issue title/body +
@@ -245,6 +337,10 @@ contract:
 - The scan folds case and Unicode width (NFKC) before matching, but is
   otherwise literal PCRE against your word list — it cannot flag an
   identifier whose base form the list does not contain.
+- The agent entry guard sees tool calls only: text the operator pastes into
+  the conversation marks nothing, other tools and hands are not held to it,
+  and a program that runs git for the agent (a script in another language)
+  is left to the git hooks.
 - The private-document scan catches copies, not paraphrase: a value retyped
   on its own, or a sentence reworded, carries no run of the original. Numbers
   are not compared at all — short numbers are not specific to anything.
@@ -256,23 +352,34 @@ contract:
 - Per-repo bypass: set a local `core.hooksPath`.
 - One-off `gh` bypass: `GH_GUARD_SKIP=1 gh …`.
 - One-off private-document bypass: `GUARD_CORPUS_SKIP=1 git push …` (or `gh …`).
+- Tuning the private-document scan: `GUARD_CORPUS_RUN` / `GUARD_CORPUS_LATIN_RUN`
+  (run length for prose), `GUARD_CORPUS_CODE_LINES` (how many consecutive whole
+  lines of an area's code a sent file must hold to be a hit),
+  `GUARD_VISIBILITY_TTL` (seconds a repository's visibility is remembered).
+- An AI agent is held to none of these: the agent entry guard refuses any
+  command that carries them (the operator types them, the agent does not).
 - Full uninstall:
-  `git config --global --unset core.hooksPath && rm -rf ~/.git-hooks`
-  and `rm ~/.local/bin/gh`.
+  `git config --global --unset core.hooksPath && rm -rf ~/.git-hooks`,
+  `rm ~/.local/bin/gh`, and the `area-guard.py` entry in each Claude Code
+  settings file.
 
 ## Repository layout
 
 ```
-git-hooks/          pre-commit / commit-msg / pre-push dispatchers,
-                    install.sh, doctor.sh, lib/dispatcher-common.sh
-scanners/           anon-scan, anon-audit-deep (11-source audit),
-                    anon-fix (history scrub), anon-sync-truth,
-                    corpus-scan (private documents),
+git-hooks/          entry points git calls: pre-commit / commit-msg / pre-push
+                    dispatchers, lib/dispatcher-common.sh
+gh-shim/            entry point PATH resolves as `gh`: gh-guard.sh
+agent-hooks/        entry points an AI agent calls before each tool:
+                    claude-code/area-guard.py
+scanners/           the judgement the entry points call: anon-scan,
+                    anon-audit-deep (11-source audit), anon-fix (history
+                    scrub), anon-sync-truth, corpus-scan (private documents),
                     setup-lib, anon-words.example.txt
-scripts/            bootstrap-machine.sh, gh-guard.sh (PATH shim),
-                    pr-create.sh, weekly-audit.sh, install-weekly-audit.sh
+scripts/            setting up and checking a machine: bootstrap-machine.sh,
+                    install.sh, doctor.sh, pr-create.sh, weekly-audit.sh,
+                    install-weekly-audit.sh
 tests/              bats suite (dispatcher helpers, all three hooks,
-                    scanners, gh shim)
+                    scanners, gh shim, agent hook, install and doctor)
 ```
 
 ## Tests

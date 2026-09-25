@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0   # the bats suite resolves references against history
-      - name: Install bats
-        run: sudo apt-get update -q && sudo apt-get install -y -q bats
+      - name: Install bats and pdftotext
+        run: sudo apt-get update -q && sudo apt-get install -y -q bats poppler-utils
       - name: Dispatcher bats suite
         run: bats tests/

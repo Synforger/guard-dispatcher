@@ -15,8 +15,8 @@
 # GitHub" is a single choke point.
 #
 # Scanned: the whole argument vector, the contents of any file passed as a
-# body / notes / template / request payload, and stdin when the command asks
-# to read the payload from it.
+# body / notes / template / request payload or as a gist, and stdin when the
+# command asks to read the payload from it.
 #
 # Passed straight through: read-only subcommands. `gh repo view <owner>/<repo>`
 # legitimately names accounts, and blocking it would make the guard something
@@ -71,8 +71,9 @@ done
 
 needs_scan=1
 case "${cmd}" in
-    "")
-        # Bare `gh` prints help.
+    ""|search)
+        # Bare `gh` prints help; `gh search` only reads. Refusing a read makes
+        # the guard something to skip, and a skip habit is how sends get through.
         needs_scan=0
         ;;
     api)
@@ -162,6 +163,8 @@ for arg in "$@"; do
     case "${arg}" in
         --body-file=-|--notes-file=-|--input=-) wants_stdin=1 ;;
     esac
+    # `gh gist create -` reads the gist itself from stdin.
+    [ "${cmd}" = "gist" ] && [ "${arg}" = "-" ] && wants_stdin=1
     prev="${arg}"
 done
 
@@ -193,6 +196,13 @@ for arg in "$@"; do
             [ "${value}" = "-" ] || add_file "${value}"
             ;;
     esac
+    # A gist is its files: `gh gist create|edit <file>...` sends their contents.
+    if [ "${cmd}" = "gist" ]; then
+        case "${arg}" in
+            -*) ;;
+            *) add_file "${arg}" ;;
+        esac
+    fi
     prev="${arg}"
 done
 
@@ -204,14 +214,20 @@ if ! ANON_SCAN_PATHS="${payload}" bash "${SCANNER}" >&2; then
     exit 1
 fi
 
-# Text copied out of a private document: judged by where this call is made from.
+# Text copied out of a private document: judged by the repository this call
+# sends to (= -R / GH_REPO / the api path / the folder's remote), never by the
+# folder it is typed in — a PR opened from inside a client folder onto a public
+# repository leaves the client all the same.
 CORPUS="${GUARD_ROOT}/scanners/corpus-scan.py"
 if [ "${GUARD_CORPUS_SKIP:-0}" != "1" ]; then
     if [ ! -f "${CORPUS}" ]; then
         printf '[gh-guard] corpus scanner not found at %s — refusing to send.\n' "${CORPUS}" >&2
         exit 1
     fi
-    if ! python3 "${CORPUS}" --text "${payload}"; then
+    argv_file="$(mktemp)"
+    trap 'cleanup; rm -f "${argv_file}"' EXIT
+    printf '%s\0' "$@" > "${argv_file}"
+    if ! python3 "${CORPUS}" --text "${payload}" --gh-argv "${argv_file}"; then
         printf '\n[gh-guard] refusing to send: this command carries text from a private area.\n' >&2
         exit 1
     fi

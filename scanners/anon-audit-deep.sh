@@ -21,8 +21,9 @@
 # gh CLI 未 install / 未認証なら 7-11 を skip 警告。 git 履歴系 1-6 は git
 # だけで実行可能。
 #
-# --range <A>..<B> (= pre-push mode):
+# --range <A>..<B> | "<tip> ^<base> [^<base>...]" (= pre-push mode):
 #   push 境界の壁として毎 push で走らせる用途。 range 内 commit だけを対象に
+#   (= 送り先に届く所が複数ある時は、 除く tip を ^ で並べた形で受ける)
 #   source 2/3/6 を走らせ、 それ以外 (1/4/5/7-11) は skip する:
 #     - 1 (tracked files) は pre-commit 段階で staged 単位に scan 済で二重
 #     - 4/5 は push 境界と別軸 (= 週次 belt-and-suspenders で拾う)
@@ -82,6 +83,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # checkout this script lives in. Hooks invoke scanners with cwd already at
 # the target repo root; direct callers may be anywhere inside the repo.
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "${PROJECT_ROOT}" ] && [ "$(git rev-parse --is-bare-repository 2>/dev/null)" = "true" ]; then
+    # A bare repository has history but no files: a push range can be scanned,
+    # the full audit (which reads the tracked files) cannot be called clean.
+    if [ -z "${RANGE}" ]; then
+        echo "error: a bare repository has no tracked files to audit; use --range" >&2
+        exit 2
+    fi
+    PROJECT_ROOT="$(git rev-parse --absolute-git-dir)"
+fi
 if [ -z "${PROJECT_ROOT}" ]; then
     echo "error: not inside a git repository" >&2
     exit 2
@@ -139,12 +149,14 @@ fi
 
 # range mode の検証: revspec を git rev-list に食わせて合法か確認。 空 range
 # (= push 対象 commit ゼロ) は clean 扱いで即 exit 0。
+RANGE_REVS=()
 if [ -n "${RANGE}" ]; then
-    if ! git rev-list "${RANGE}" >/dev/null 2>&1; then
+    read -ra RANGE_REVS <<< "${RANGE}"
+    if ! git rev-list "${RANGE_REVS[@]}" >/dev/null 2>&1; then
         echo "error: invalid --range revspec: ${RANGE}" >&2
         exit 2
     fi
-    n_commits="$(git rev-list --count "${RANGE}" 2>/dev/null || echo 0)"
+    n_commits="$(git rev-list --count "${RANGE_REVS[@]}" 2>/dev/null || echo 0)"
     if [ "${n_commits}" -eq 0 ]; then
         printf '(deep audit: push range %s has no commits, skipping)\n' "${RANGE}" >&2
         exit 0
@@ -195,7 +207,7 @@ printf '
 === source 2/11: git history blob (all diffs of all commits) ===
 ' >&2
 if [ -n "${RANGE}" ]; then
-    hits=$(git log "${RANGE}" -p 2>/dev/null | grep -E '^\+' | scan_perl)
+    hits=$(git log "${RANGE_REVS[@]}" -p 2>/dev/null | grep -E '^\+' | scan_perl)
 else
     hits=$(git log --all -p 2>/dev/null | scan_perl)
 fi
@@ -205,7 +217,7 @@ total=$((total + n))
 # --- source 3: commit message ---
 printf '\n=== source 3/11: commit messages ===\n' >&2
 if [ -n "${RANGE}" ]; then
-    hits=$(git log "${RANGE}" --pretty='format:%H %s%n%b' 2>/dev/null | scan_perl)
+    hits=$(git log "${RANGE_REVS[@]}" --pretty='format:%H %s%n%b' 2>/dev/null | scan_perl)
 else
     hits=$(git log --all --pretty='format:%H %s%n%b' 2>/dev/null | scan_perl)
 fi
@@ -234,7 +246,7 @@ fi
 # --- source 6: author + committer ---
 printf '\n=== source 6/11: author + committer email / name ===\n' >&2
 if [ -n "${RANGE}" ]; then
-    hits=$(git log "${RANGE}" --pretty='format:%an <%ae> / %cn <%ce>' 2>/dev/null | scan_perl)
+    hits=$(git log "${RANGE_REVS[@]}" --pretty='format:%an <%ae> / %cn <%ce>' 2>/dev/null | scan_perl)
 else
     hits=$(git log --all --pretty='format:%an <%ae> / %cn <%ce>' 2>/dev/null | scan_perl)
 fi

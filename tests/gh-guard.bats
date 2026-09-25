@@ -14,7 +14,7 @@ setup() {
     REAL_DIR="${BATS_TEST_TMPDIR}/real"
     RAN_MARKER="${BATS_TEST_TMPDIR}/real-gh-ran"
     mkdir -p "${SHIM_DIR}" "${REAL_DIR}"
-    ln -sf "${GUARD_ROOT}/scripts/gh-guard.sh" "${SHIM_DIR}/gh"
+    ln -sf "${GUARD_ROOT}/gh-shim/gh-guard.sh" "${SHIM_DIR}/gh"
     cat > "${REAL_DIR}/gh" <<STUB
 #!/usr/bin/env bash
 printf '%s\n' "\$@" > "${RAN_MARKER}"
@@ -52,6 +52,25 @@ ran() { [ -f "${RAN_MARKER}" ]; }
     run gh api repos/owner/name/issues -f body="${SENTINEL}"
     [ "$status" -ne 0 ]
     ! ran
+}
+
+@test "gh-guard: a gist file carrying a flagged identifier is refused" {
+    printf 'notes\n%s\n' "${SENTINEL}" > "${BATS_TEST_TMPDIR}/notes.txt"
+    run gh gist create "${BATS_TEST_TMPDIR}/notes.txt"
+    [ "$status" -ne 0 ]
+    ! ran
+}
+
+@test "gh-guard: a gist read from stdin is scanned" {
+    run bash -c "printf '%s\n' '${SENTINEL}' | gh gist create -"
+    [ "$status" -ne 0 ]
+    ! ran
+}
+
+@test "gh-guard: gh search only reads and is passed through" {
+    run gh search commits --author "${SENTINEL}"
+    [ "$status" -eq 0 ]
+    ran
 }
 
 # An unrecognised subcommand must fail closed: the CLI gains commands faster

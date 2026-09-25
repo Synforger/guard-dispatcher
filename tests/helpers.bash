@@ -21,6 +21,26 @@ setup_words() {
     # never depend on (or build fingerprints of) the operator's real documents.
     export GUARD_CONFIG_DIR="${BATS_TEST_TMPDIR}/guard-config"
     export GUARD_CORPUS_CACHE="${BATS_TEST_TMPDIR}/guard-cache"
+    # The corpus scan asks GitHub whether a destination is public. The fixture
+    # remotes are answered from the cache so no test depends on the network.
+    seed_visibility synforger/fixture-repo private
+    seed_visibility someone-else/fixture-repo private
+}
+
+# seed_visibility <owner/repo> <public|private> — answer the corpus scan's
+# visibility question for one repo without asking GitHub.
+seed_visibility() {
+    mkdir -p "${GUARD_CORPUS_CACHE}"
+    python3 - "${GUARD_CORPUS_CACHE}/visibility.json" "$1" "$2" <<'PY'
+import json, sys, time
+path, slug, seen = sys.argv[1:]
+try:
+    known = json.load(open(path))
+except (OSError, ValueError):
+    known = {}
+known[slug] = [seen, time.time()]
+json.dump(known, open(path, "w"))
+PY
 }
 
 # mk_repo <kind> — create a fixture repo and cd into it.
