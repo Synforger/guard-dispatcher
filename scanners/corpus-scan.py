@@ -558,7 +558,10 @@ def spotlight_changes(roots: list[Path], since: float, known: dict) -> list[Path
             asks.append(("state", None, subprocess.Popen(["mdutil", "-s", str(mount)], stdout=subprocess.PIPE,
                                                          stderr=subprocess.DEVNULL, text=True)))
         for root in tops:
-            probe = next((Path(k) for k in known if root in Path(k).parents and Path(k).is_file()), None)
+            # Known paths and roots are both absolute and normalised, so a prefix is the parent test
+            # (building a Path per known document costs a second on tens of thousands of them).
+            inside = f"{root}{os.sep}"
+            probe = next((Path(k) for k in known if k.startswith(inside) and os.path.isfile(k)), None)
             if probe is not None:
                 asks.append(("probe", probe, subprocess.Popen(
                     ["mdfind", "-onlyin", str(probe.parent), "-name", probe.name],
@@ -799,12 +802,16 @@ def git(*args: str) -> str:
 def outgoing(span: str) -> list[tuple[str, str]]:
     """(where, line) for every added line and message line in a push range
     (`<from>..<to>`, or `<to> ^<from> [^<from>...]` when it has several bases)."""
+    # One git call for the whole range: each commit comes as \0<sha>\0<message>\0<patch>.
+    # --cc gives a merge the same patch `git show` would.
+    log = git("log", "--format=%x00%H%x00%B%x00", "-p", "--cc", "--no-color", "--no-ext-diff", *span.split())
+    parts = log.split("\0")
     lines = []
-    for sha in git("rev-list", *span.split()).split():
-        for line in git("log", "-1", "--format=%B", sha).splitlines():
+    for sha, message, patch in zip(parts[1::3], parts[2::3], parts[3::3]):
+        for line in (message + "\n").splitlines():
             lines.append((f"{sha[:7]} message", line))
         current = "?"
-        for line in git("show", "--format=", "-p", "--no-color", "--no-ext-diff", sha).splitlines():
+        for line in patch.splitlines():
             if line.startswith("+++ "):
                 current = line[6:] if line.startswith("+++ b/") else line[4:]
             elif line.startswith("+"):
@@ -819,8 +826,13 @@ def hit(line: str, tables: list[array], allowed: list[str] = (), public: array =
     Phrases that are fine to send are taken out of the line first, so a run reaching one character
     past an allowed phrase is not a hit either. A whole line all of whose runs are public text (a
     license wrapped differently in each copy) is not the area's."""
+    # normalize() is idempotent, so the line is folded again only after a phrase came out of it.
+    folded = False
     for phrase in allowed:
-        line = normalize(line).replace(phrase, " ")
+        if not folded:
+            line, folded = normalize(line), True
+        if phrase in line:
+            line, folded = line.replace(phrase, " "), False
     def is_public() -> bool:
         # A comment marker is how a file holds the text, not the text: `# THIS SOFTWARE IS ...`
         # is still the license.
