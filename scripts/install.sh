@@ -9,7 +9,7 @@
 #
 # Idempotent: re-running the installer just re-points the symlinks at the
 # clone you ran it from. Use that to switch which clone is the source of
-# truth (`cd <other clone> && git-hooks/install.sh`).
+# truth (`cd <other clone> && scripts/install.sh`).
 #
 # Rollback:
 #   git config --global --unset core.hooksPath
@@ -18,10 +18,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+HOOKS_SRC="${GUARD_ROOT}/git-hooks"
 TARGET_DIR="${HOME}/.git-hooks"
 
-if [ ! -d "${SCRIPT_DIR}/lib" ]; then
-    echo "error: expected dispatcher source at ${SCRIPT_DIR}, but lib/ is missing." >&2
+if [ ! -d "${HOOKS_SRC}/lib" ]; then
+    echo "error: expected dispatcher source at ${HOOKS_SRC}, but lib/ is missing." >&2
     exit 1
 fi
 
@@ -32,7 +34,8 @@ mkdir -p "${TARGET_DIR}"
 # script. doctor.sh is not a git hook but symlinking it here lets it be
 # invoked as `~/.git-hooks/doctor.sh` from anywhere.
 for entry in pre-commit commit-msg pre-push lib doctor.sh; do
-    src="${SCRIPT_DIR}/${entry}"
+    src="${HOOKS_SRC}/${entry}"
+    [ "${entry}" = "doctor.sh" ] && src="${SCRIPT_DIR}/${entry}"
     dst="${TARGET_DIR}/${entry}"
 
     if [ ! -e "${src}" ]; then
@@ -50,12 +53,11 @@ done
 # Ensure hook executables are, in fact, executable in the source tree —
 # ln -s does not fix mode bits, and a freshly cloned checkout may have
 # lost the +x bit if the user re-created files via editor.
-chmod +x "${SCRIPT_DIR}/pre-commit" "${SCRIPT_DIR}/commit-msg" "${SCRIPT_DIR}/pre-push" "${SCRIPT_DIR}/doctor.sh"
+chmod +x "${HOOKS_SRC}/pre-commit" "${HOOKS_SRC}/commit-msg" "${HOOKS_SRC}/pre-push" "${SCRIPT_DIR}/doctor.sh"
 
 # Expose the scanners and helper scripts alongside the hooks so Taskfiles
 # and shells can invoke them via a stable path (git only executes known
 # hook names, so extra entries here are inert to git itself).
-GUARD_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 for entry in scanners scripts; do
     dst="${TARGET_DIR}/${entry}"
     if [ -e "${dst}" ] || [ -L "${dst}" ]; then
@@ -68,7 +70,7 @@ git config --global core.hooksPath "${TARGET_DIR}"
 
 cat <<MSG
 [global-hooks] installed
-  source : ${SCRIPT_DIR}
+  source : ${HOOKS_SRC}
   target : ${TARGET_DIR}
   git    : core.hooksPath (global) = ${TARGET_DIR}
 

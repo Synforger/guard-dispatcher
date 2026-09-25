@@ -240,7 +240,7 @@ mk_clone_at() {
 gh_shim() {
     SHIM_DIR="${BATS_TEST_TMPDIR}/shim"; REAL_DIR="${BATS_TEST_TMPDIR}/real"
     mkdir -p "${SHIM_DIR}" "${REAL_DIR}"
-    ln -sf "${GUARD_ROOT}/scripts/gh-guard.sh" "${SHIM_DIR}/gh"
+    ln -sf "${GUARD_ROOT}/gh-shim/gh-guard.sh" "${SHIM_DIR}/gh"
     printf '#!/usr/bin/env bash\ntouch "%s/ran"\n' "${BATS_TEST_TMPDIR}" > "${REAL_DIR}/gh"
     chmod +x "${REAL_DIR}/gh"
     GH_PATH="${SHIM_DIR}:${REAL_DIR}:${PATH}"
@@ -634,7 +634,7 @@ SH
 @test "gh-guard: a body carrying client text is refused and never sent" {
     SHIM_DIR="${BATS_TEST_TMPDIR}/shim"; REAL_DIR="${BATS_TEST_TMPDIR}/real"
     mkdir -p "${SHIM_DIR}" "${REAL_DIR}"
-    ln -sf "${GUARD_ROOT}/scripts/gh-guard.sh" "${SHIM_DIR}/gh"
+    ln -sf "${GUARD_ROOT}/gh-shim/gh-guard.sh" "${SHIM_DIR}/gh"
     printf '#!/usr/bin/env bash\ntouch "%s/ran"\n' "${BATS_TEST_TMPDIR}" > "${REAL_DIR}/gh"
     chmod +x "${REAL_DIR}/gh"
     mk_repo other

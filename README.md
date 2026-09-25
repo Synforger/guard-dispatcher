@@ -25,9 +25,9 @@ identity permanently into public history.
 | push | `pre-push` | outgoing commit range deep-scanned (blobs, messages, authors); every author/committer must be an allowed identity, or a GitHub bot account |
 | push (refs) | `pre-push` | branch/tag names scanned; direct pushes to main/develop refused (initial branch-creating push exempt; `GUARD_ALLOW_PROTECTED_PUSH=1` overrides once) |
 | PR | `scripts/pr-create.sh` | PR title/body scanned before `gh pr create` |
-| any `gh` send | `scripts/gh-guard.sh` (PATH shim) | argument vector, body/notes/template files and stdin payloads scanned before the CLI runs; read-only subcommands pass through |
+| any `gh` send | `gh-shim/gh-guard.sh` (PATH shim) | argument vector, body/notes/template files and stdin payloads scanned before the CLI runs; read-only subcommands pass through |
 | repair | `scanners/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
-| health | `git-hooks/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
+| health | `scripts/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
 
 Content scanning is **default-on for every repository** — the only way
 out is an explicit `exempt` opt-out. Identity and branch-flow
@@ -309,14 +309,16 @@ contract:
 ## Repository layout
 
 ```
-git-hooks/          pre-commit / commit-msg / pre-push dispatchers,
-                    install.sh, doctor.sh, lib/dispatcher-common.sh
-scanners/           anon-scan, anon-audit-deep (11-source audit),
-                    anon-fix (history scrub), anon-sync-truth,
-                    corpus-scan (private documents),
+git-hooks/          entry points git calls: pre-commit / commit-msg / pre-push
+                    dispatchers, lib/dispatcher-common.sh
+gh-shim/            entry point PATH resolves as `gh`: gh-guard.sh
+scanners/           the judgement the entry points call: anon-scan,
+                    anon-audit-deep (11-source audit), anon-fix (history
+                    scrub), anon-sync-truth, corpus-scan (private documents),
                     setup-lib, anon-words.example.txt
-scripts/            bootstrap-machine.sh, gh-guard.sh (PATH shim),
-                    pr-create.sh, weekly-audit.sh, install-weekly-audit.sh
+scripts/            setting up and checking a machine: bootstrap-machine.sh,
+                    install.sh, doctor.sh, pr-create.sh, weekly-audit.sh,
+                    install-weekly-audit.sh
 tests/              bats suite (dispatcher helpers, all three hooks,
                     scanners, gh shim)
 ```

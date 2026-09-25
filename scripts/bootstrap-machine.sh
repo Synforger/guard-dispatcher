@@ -7,7 +7,7 @@
 # 数週間運用され、 その間の commit が一切 scan されていなかった。
 #
 # やること (= 冪等、 何度実行しても安全):
-#   1. global hooks dispatcher の arm (= git-hooks/install.sh)
+#   1. global hooks dispatcher の arm (= scripts/install.sh)
 #   2. gh command guard の設置 (= ~/.local/bin/gh を shim に、 CLI が送る
 #      本文 / コメント / payload を hook の外側で scan)
 #   3. operator master word list の存在確認 (= 不在なら配置手順を案内、
@@ -38,7 +38,7 @@ TRUTH_PATH="${ANON_TRUTH_PATH:-${HOME}/.config/anon-words/master.txt}"
 echo "=== bootstrap-machine: arming this machine ==="
 
 # --- 1. dispatcher arm ------------------------------------------------------
-bash "${GUARD_ROOT}/git-hooks/install.sh"
+bash "${GUARD_ROOT}/scripts/install.sh"
 
 # --- 2. gh command guard ------------------------------------------------------
 # The hooks only see what leaves through git. Everything the CLI sends —
@@ -51,10 +51,10 @@ GH_SHIM="${GH_SHIM_DIR}/gh"
 mkdir -p "${GH_SHIM_DIR}"
 if [ -e "${GH_SHIM}" ] && [ ! -L "${GH_SHIM}" ]; then
     log_warn "${GH_SHIM} exists and is not a symlink — left alone, so gh calls stay unscanned"
-elif [ "$(readlink "${GH_SHIM}" 2>/dev/null || true)" = "${GUARD_ROOT}/scripts/gh-guard.sh" ]; then
+elif [ "$(readlink "${GH_SHIM}" 2>/dev/null || true)" = "${GUARD_ROOT}/gh-shim/gh-guard.sh" ]; then
     log_ok "gh command guard already installed (${GH_SHIM})"
 else
-    ln -sf "${GUARD_ROOT}/scripts/gh-guard.sh" "${GH_SHIM}"
+    ln -sf "${GUARD_ROOT}/gh-shim/gh-guard.sh" "${GH_SHIM}"
     log_ok "gh command guard installed (${GH_SHIM})"
 fi
 
@@ -129,4 +129,4 @@ fi
 
 # --- 5. final diagnosis -------------------------------------------------------
 echo ""
-bash "${GUARD_ROOT}/git-hooks/doctor.sh" "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+bash "${GUARD_ROOT}/scripts/doctor.sh" "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"

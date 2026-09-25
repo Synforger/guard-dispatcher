@@ -10,9 +10,9 @@
 # is quietly skipped.
 #
 # Usage:
-#   git-hooks/doctor.sh                       # scan ~/.git-hooks + CWD
-#   git-hooks/doctor.sh <repo>... [<repo>...] # scan the given repos
-#   git-hooks/doctor.sh --glob '<projects-root>/*'     # shell glob
+#   scripts/doctor.sh                       # scan ~/.git-hooks + CWD
+#   scripts/doctor.sh <repo>... [<repo>...] # scan the given repos
+#   scripts/doctor.sh --glob '<projects-root>/*'     # shell glob
 #
 # Exit code:
 #   0 — nothing wrong (dispatcher installed globally + every scanned repo is
@@ -23,11 +23,18 @@
 
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Installed as ~/.git-hooks/doctor.sh (a symlink), so resolve through it to
+# find the checkout this copy belongs to.
+src="${BASH_SOURCE[0]}"
+while [ -L "${src}" ]; do
+    link="$(readlink "${src}")"
+    case "${link}" in /*) src="${link}" ;; *) src="$(dirname "${src}")/${link}" ;; esac
+done
+GUARD_ROOT="$(cd -P "$(dirname "${src}")/.." && pwd)"
 EXPECTED_HOOKS_DIR="${HOME}/.git-hooks"
 
-# shellcheck source=lib/dispatcher-common.sh
-. "${SCRIPT_DIR}/lib/dispatcher-common.sh"
+# shellcheck source=../git-hooks/lib/dispatcher-common.sh
+. "${GUARD_ROOT}/git-hooks/lib/dispatcher-common.sh"
 
 RED=$'\033[0;31m'
 YEL=$'\033[0;33m'

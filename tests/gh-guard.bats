@@ -14,7 +14,7 @@ setup() {
     REAL_DIR="${BATS_TEST_TMPDIR}/real"
     RAN_MARKER="${BATS_TEST_TMPDIR}/real-gh-ran"
     mkdir -p "${SHIM_DIR}" "${REAL_DIR}"
-    ln -sf "${GUARD_ROOT}/scripts/gh-guard.sh" "${SHIM_DIR}/gh"
+    ln -sf "${GUARD_ROOT}/gh-shim/gh-guard.sh" "${SHIM_DIR}/gh"
     cat > "${REAL_DIR}/gh" <<STUB
 #!/usr/bin/env bash
 printf '%s\n' "\$@" > "${RAN_MARKER}"
