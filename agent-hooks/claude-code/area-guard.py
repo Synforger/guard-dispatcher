@@ -7,7 +7,9 @@ that reads inside an area is marked with the area's name. A marked session may n
 git repository outside its marks, nor commit, push or send through `gh` to a destination outside
 them.
 
-- Marking: the target of Read / Grep / Glob, an area path named in a Bash command, a Bash cwd
+- Marking: the target of Read / Grep / Glob, a Bash cwd, an area path named in a Bash command
+           (unless the command only checks it: a lone test / [ / stat / realpath / readlink /
+           ls -d with every argument literal)
 - Refused: Edit / Write / NotebookEdit on a file inside a git repository outside the marks;
            a Bash `git commit` / `git push` / sending `gh` call (reads pass) whose destination is
            outside the marks
@@ -98,11 +100,16 @@ def repo_root(path: Path) -> Path | None:
     return real(r.stdout.strip()) if r.returncode == 0 else None
 
 
+def spell_home(command: str) -> str:
+    """The command with ~/, $HOME and ${HOME} written out as the home folder."""
+    home = str(Path.home())
+    text = command.replace("${HOME}", home).replace("$HOME", home)
+    return re.sub(r"(?<![\w/])~(?=/)", home, text)
+
+
 def mentioned_paths(command: str, areas) -> list[Path]:
     """Area paths named in a Bash command (spelled with ~, $HOME, or absolute)."""
-    home = str(Path.home())
-    text = command.replace("$HOME", home).replace("${HOME}", home)
-    text = re.sub(r"(?<![\w/])~(?=/)", home, text)
+    text = spell_home(command)
     found = []
     for _, root in areas:
         for spelling in {str(root), os.path.normpath(str(root))}:
@@ -117,6 +124,48 @@ def mentioned_paths(command: str, areas) -> list[Path]:
         if area_of(p, areas):
             found.append(p)
     return found
+
+
+# A command that says whether a path exists and what it is, never what it holds, reads
+# nothing when it runs alone: one command, each argument taken literally.
+JOINS = re.compile(r"[;&|<>()`\n\r]")      # a second command, pipe, redirect, subshell, substitution
+EXPANDS = re.compile(r"[*?\[\]{}$]")       # a glob, brace expansion or variable turns into other paths
+ATTRIBUTES_ONLY = {"test", "stat", "realpath", "readlink"}
+LS_FLAGS = re.compile(r"-[dlaAhFG1]+|--directory")
+
+
+def ls_names_only(args: list[str]) -> bool:
+    """`ls` prints what a folder holds unless -d makes it print the named paths themselves."""
+    flags = [a for a in args if a.startswith("-")]
+    return (all(LS_FLAGS.fullmatch(f) for f in flags)
+            and any(f == "--directory" or (not f.startswith("--") and "d" in f) for f in flags))
+
+
+def path_only(command: str) -> bool:
+    """True when the command only checks the paths it names (see ATTRIBUTES_ONLY and ls -d).
+    Any doubt is False, and then a named area path marks the session."""
+    text = spell_home(command)
+    if JOINS.search(text):
+        return False
+    try:
+        words = shlex.split(text)
+    except ValueError:
+        return False
+    if words[:1] == ["["]:                     # `[ ... ]` is `test ...`
+        if words[-1] != "]":
+            return False
+        words = ["test", *words[1:-1]]
+    if not words or any(EXPANDS.search(a) for a in words[1:]):
+        return False
+    name, args = words[0], words[1:]
+    return name in ATTRIBUTES_ONLY or (name == "ls" and ls_names_only(args))
+
+
+def bash_marks(command: str, cwd: str, areas) -> list[Path]:
+    """What a Bash command reads from: its folder always, and the area paths it names unless
+    it only checks them."""
+    named = [] if path_only(command) else mentioned_paths(command, areas)
+    return [*named, real(cwd)]
 
 
 def upto_break(words: list[str]) -> list[str]:
@@ -242,8 +291,7 @@ def unguarded(repo: Path) -> str | None:
 
 def bypass(command: str, cwd: str, areas) -> str | None:
     """Why a command switches the guards off or around, or None. The operator may; the agent may not."""
-    home = str(Path.home())
-    expanded = re.sub(r"(?<![\w/])~(?=/)", home, command.replace("$HOME", home).replace("${HOME}", home))
+    expanded = spell_home(command)
     if re.search(r"\b(rm|mv|cp|truncate|tee|touch|ln)\b[^|;&]*\.cache/area-guard|>\s*\S*\.cache/area-guard", expanded):
         return "removes or rewrites the entry guard's marks"
     if (re.search(r"\bgit\b[^|;&]*\bconfig\b", command) and GUARD_KEYS.search(command)
@@ -306,7 +354,7 @@ def main() -> int:
                 touched.append(real(args[key], cwd))
     elif tool == "Bash":
         command = args.get("command", "")
-        touched += mentioned_paths(command, areas) + [real(cwd)]
+        touched += bash_marks(command, cwd, areas)
         for send in sends_of(command, cwd) if marks else []:
             place = destination(*send)
             if place is None or not allowed(place, marks, areas):

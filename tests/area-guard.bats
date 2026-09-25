@@ -256,3 +256,45 @@ origin() { git -C "$1" remote add origin "git@github.com:$2.git"; }
     agent Read file_path "${NOTES}/README.md"
     write_to "${PERSONAL}/a.py"; passed
 }
+
+# --- naming an area path without reading it ---------------------------------
+
+@test "area-guard: a lone existence or attribute check on an area path marks nothing" {
+    local c="~/org/clients/acme" n=0 command
+    for command in "test -d ${c}" "test -f ${c}/received/memo.md" "[ -d ${c} ]" \
+                   "stat ${c}/received/memo.md" "stat -f %z ${c}/received/memo.md" \
+                   "realpath ${c}" "readlink ${H}/org/acme-link" \
+                   "ls -d ${c}" "ls -ld ${c}" "ls -l -d ${c}" "ls --directory ${c}" \
+                   "test -d \$HOME/org/clients/acme" "test -d \${HOME}/org/clients/acme" \
+                   "stat -f %N ${c}/received/memo.md" "test -d '${H}/org/clients/acme'"; do
+        n=$((n + 1))
+        bash_in "${H}" "${command}" "p${n}"
+        passed
+        write_to "${PERSONAL}/a.py" "p${n}"
+        passed || { echo "marked by: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: anything more than a lone check on an area path still marks" {
+    local c="~/org/clients/acme" n=0 command
+    for command in "ls ${c}" "ls -l ${c}" "ls -dR ${c}" "ls -d ${c}/*" "ls -d ${c}/re?eived" \
+                   "cat ${c}/received/memo.md" "test -d ${c} && cat ${c}/received/memo.md" \
+                   "test -d ${c}; cat ${c}/received/memo.md" "stat ${c}/received/memo.md | head" \
+                   "stat \$(cat ${c}/received/memo.md)" "test -n \`cat ${c}/received/memo.md\`" \
+                   "stat ${c}/received/memo.md > out.txt" "test -d ${c} || cat ${c}/received/memo.md" \
+                   "FOO=1 test -d ${c}" "test -d ${c}
+cat ${c}/received/memo.md" "[ -d ${c} ] && cat ${c}/received/memo.md" "stat ${c}/{received,x}" \
+                   "[ -d ${c}" "realpath ${c}/[r]eceived" "cd ${c}" "file ${c}/received/memo.md" \
+                   "stat ${c}/received/\$NAME" "test -d ${c} -a -n \$X" "/bin/ls -d ${c}" \
+                   "ls -d ${c} --color" "ls -d -R ${c}" "head ${c}/received/memo.md"; do
+        n=$((n + 1))
+        bash_in "${H}" "${command}" "m${n}"
+        write_to "${PERSONAL}/a.py" "m${n}"
+        denied || { echo "not marked by: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: a lone check run from inside an area still marks by its folder" {
+    bash_in "${CASE}" "test -d received"
+    write_to "${PERSONAL}/a.py"; denied
+}

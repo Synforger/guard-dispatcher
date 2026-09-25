@@ -227,7 +227,11 @@ step earlier, before each tool call, from the same `areas.txt`:
 
 - A session that reads inside an area (a `Read` / `Grep` / `Glob` target, an
   area path named in a `Bash` command, a `Bash` working directory) is marked
-  with the area's name. Marks are kept per session under
+  with the area's name. A command that only checks the paths it names marks
+  nothing: `test`, `[ … ]`, `stat`, `realpath`, `readlink` or `ls -d` run on
+  its own, every argument literal (no second command, pipe, redirect,
+  substitution, glob or variable other than `$HOME`). Anything else is taken
+  to read what it names. Marks are kept per session under
   `~/.cache/area-guard/`, so they outlive the agent compacting its context.
 - A marked session cannot `Edit` / `Write` a file inside a git repository
   outside its marks, and cannot `git commit`, `git push` or send through `gh`
