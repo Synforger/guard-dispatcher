@@ -117,7 +117,7 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     lists denyWrite "${H}/.claude/debug"
 }
 
-@test "no cage writes the guards: their install, the hooks directory, the global git config, the areas" {
+@test "no cage writes the guards: their install, the hooks directory, the global git config, the areas, Claude Code's settings" {
     for cage in personal company client; do
         build "${cage}"
         lists denyWrite "${H}/.local/share/guard-dispatcher"
@@ -125,6 +125,7 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
         lists denyWrite "${H}/.config/git"
         lists denyWrite "${H}/.git-hooks"
         lists denyWrite "${GUARD_CONFIG_DIR}"
+        lists denyWrite "${H}/**/.claude*/settings*.json"
     done
 }
 
@@ -225,4 +226,26 @@ AREAS
     printf 'company org\n' > "${GUARD_CONFIG_DIR}/areas.txt"
     run python3 "${CAGE}" --of "${H}/org"
     [ "${status}" -ne 0 ]
+}
+
+@test "--record: a past conversation's cage and account come from where its record lives" {
+    mkdir -p "${H}/.claude/projects/-w" "${H}/.claude-work@client/projects/-w" "${H}/.claude@company/projects/-w"
+    touch "${H}/.claude/projects/-w/plain.jsonl" "${H}/.claude-work@client/projects/-w/caged.jsonl"
+    run python3 "${CAGE}" --record caged
+    [ "${status}" -eq 0 ]
+    [ "$(jq -r .cage <<< "${output}")" = "client" ]
+    [ "$(jq -r .account_dir <<< "${output}")" = "${H}/.claude-work" ]
+    [ "$(jq -r .config_dir <<< "${output}")" = "${H}/.claude-work@client" ]
+    run python3 "${CAGE}" --record plain
+    [ "$(jq -r .cage <<< "${output}")" = "personal" ]
+    [ "$(jq -r .account_dir <<< "${output}")" = "${H}/.claude" ]
+    run python3 "${CAGE}" --record nowhere
+    [ "${status}" -eq 1 ]
+}
+
+@test "--config-dirs: every account's cage directories that exist, and only those" {
+    mkdir -p "${H}/.claude@company" "${H}/.claude-work@client" "${H}/.claude-work"
+    touch "${H}/.claude@stray-file"
+    run python3 "${CAGE}" --config-dirs
+    [ "${output}" = "$(printf '%s\n%s' "${H}/.claude-work@client" "${H}/.claude@company")" ]
 }

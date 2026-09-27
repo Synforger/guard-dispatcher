@@ -141,7 +141,7 @@ def marks_of(session: str) -> set[str]:
 
 
 def cage_dir(account: Path, cage: str) -> Path:
-    return account.with_name(account.name + cage_config.CAGE_MARK + cage)
+    return cage_config.config_dir(cage, account)
 
 
 def plan(account: Path, areas: Areas) -> dict:

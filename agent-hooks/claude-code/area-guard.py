@@ -20,6 +20,11 @@ them.
 - Several marks allow writing only inside all of them (company > client means inside the client)
 - `_exempt` is never refused (the operator's own notes; their commits are scanned by the hooks)
 
+What a call sends out -- a tool that sends to a service, a `curl` / `wget` with a body -- is
+found by `outgoing.py` (next to this file) and judged like a push by `scanners/send-scan.py`: its
+payload is scanned against the areas its destination (declared in `destinations.txt`) is outside
+of, on every machine.
+
 Separately, and on every machine, a Bash command that switches the guards off or around
 (skip variables, `--no-verify`, a hooksPath / exempt setting, clearing the marks, sending from a
 repository the hooks do not reach) is refused: the operator types those, the agent does not.
@@ -44,6 +49,7 @@ CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
 AREAS = CONFIG / "areas.txt"
 STATE = Path(os.environ.get("AREA_GUARD_STATE", Path.home() / ".cache/area-guard"))
 CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus-scan.py"
+SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/send-scan.py"
 EXEMPT = "_exempt"
 READS = {"Read", "Grep", "Glob"}
 WRITES = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
@@ -63,6 +69,13 @@ def corpus_module():
     """The private-document scan as a module: areas are parsed in that one place
     (including the `<prefix>* <path>/*` form that makes every client folder an area)."""
     spec = importlib.util.spec_from_file_location("corpus_scan", CORPUS)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def outgoing_module():
+    spec = importlib.util.spec_from_file_location("outgoing", Path(__file__).with_name("outgoing.py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -387,6 +400,9 @@ def main() -> int:
         return 0
     if tool in WRITES and ".cache/area-guard" in str(real(args.get("file_path") or args.get("notebook_path") or "", cwd)):
         deny("area-guard: an agent does not rewrite the entry guard's marks")
+        return 0
+    if reason := outgoing_module().check(tool, args, cwd, SEND_SCAN):
+        deny(reason)
         return 0
     if not areas:
         return 0

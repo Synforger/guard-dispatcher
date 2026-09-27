@@ -30,6 +30,10 @@ Usage:
     cage-config.py --list                       print the cages this machine has
     cage-config.py --of PATH                    print the cage PATH belongs to: the innermost
                                                 area holding it, else personal
+    cage-config.py --record SESSION             print, as JSON, the cage and account a past
+                                                conversation's record lives under (to resume it
+                                                in the same cage); exit 1 when there is none
+    cage-config.py --config-dirs                print the cages' config directories that exist
 """
 
 from __future__ import annotations
@@ -57,6 +61,9 @@ TMP_ROOT = TMP / "claude-cage"
 # Temp folders every session would share: Claude Code's own when no cage names one, and the
 # one sandbox-runtime keeps writable in every sandbox. A cage writes its own instead.
 SHARED_TMP = [TMP / f"claude-{os.getuid()}", TMP / "claude"]
+# Claude Code settings files anywhere under HOME: `~/.claude/settings.json`, `~/.claude@<cage>/...`,
+# a project's `.claude/settings.local.json` (`**/` matches no folder too).
+SETTINGS_GLOB = "{home}/**/.claude*/settings*.json"
 # Machine-wide caches a session writes whichever cage it is in.
 CACHES = ["~/.cache", "~/.npm", "~/Library/Caches", "~/.local/share/claude", "~/.local/state/claude"]
 
@@ -93,6 +100,33 @@ def carve(root: Path, holding: list[Path]) -> list[Path]:
     return out
 
 
+def config_dir(cage: str, account_dir: Path) -> Path:
+    """A cage's Claude Code config directory: the account's own for personal, else `<account>@<cage>`."""
+    return account_dir if cage == PERSONAL else Path(f"{account_dir}{CAGE_MARK}{cage}")
+
+
+def split_config_dir(directory: Path) -> tuple[Path, str]:
+    """A config directory -> (the account's directory, the cage)."""
+    account, mark, cage = directory.name.partition(CAGE_MARK)
+    return (directory.with_name(account), cage) if mark else (directory, PERSONAL)
+
+
+def config_dirs() -> list[Path]:
+    """The cages' config directories that exist, for every account (`~/.claude*@*`)."""
+    return sorted(p for p in expand("~").glob(f".claude*{CAGE_MARK}*") if p.is_dir())
+
+
+def record_of(session: str) -> dict | None:
+    """Where a conversation's record lives: {cage, account_dir, config_dir}, the newest when
+    the same session is found twice; None when there is none."""
+    found = [p for p in expand("~").glob(f".claude*/projects/*/{session}.jsonl") if p.is_file()]
+    if not found:
+        return None
+    directory = max(found, key=lambda p: p.stat().st_mtime).parents[2]
+    account, cage = split_config_dir(directory)
+    return {"cage": cage, "account_dir": str(account), "config_dir": str(directory)}
+
+
 def cage_of(path: Path) -> str:
     areas = load_areas()
     areas.pop(EXEMPT, None)
@@ -119,7 +153,7 @@ def build(cage: str, account_dir: Path) -> dict:
 
     home = expand("~")
     default_config = expand("~/.claude")
-    config_dir = account_dir if cage == PERSONAL else Path(f"{account_dir}{CAGE_MARK}{cage}")
+    own_config = config_dir(cage, account_dir)
     tmp_dir = TMP_ROOT / cage
     cage_configs = str(home / f".claude*{CAGE_MARK}*")
     other_tmp = [TMP_ROOT / n for n in [PERSONAL, *areas] if n != cage]
@@ -128,10 +162,10 @@ def build(cage: str, account_dir: Path) -> dict:
         writable = [home]
     else:
         opened = [*exempt, *(expand(c) for c in CACHES)]
-        writable = [*own, *(p for r in opened for p in carve(r, holding)), config_dir]
+        writable = [*own, *(p for r in opened for p in carve(r, holding)), own_config]
     writable.append(tmp_dir)
     # With no CLAUDE_CONFIG_DIR, Claude Code keeps its state next to the default directory.
-    if config_dir == default_config:
+    if own_config == default_config:
         writable.append(home / ".claude.json")
 
     sandbox = {
@@ -141,7 +175,7 @@ def build(cage: str, account_dir: Path) -> dict:
         "network": {"deniedDomains": [], "allowMachLookup": ["com.apple.trustd.agent"]},
         "filesystem": {
             "denyRead": [*map(str, hidden), cage_configs, *map(str, other_tmp), *map(str, SHARED_TMP)],
-            "allowRead": [str(config_dir)] if cage != PERSONAL else [],
+            "allowRead": [str(own_config)] if cage != PERSONAL else [],
             "allowWrite": list(dict.fromkeys(map(str, writable))),
             "denyWrite": [
                 *(str(r) for r in others if r not in holding),
@@ -150,6 +184,10 @@ def build(cage: str, account_dir: Path) -> dict:
                 str(home / ".config/git"),
                 str(home / ".git-hooks"),
                 str(CONFIG),
+                # Claude Code's settings, of every config dir and every project: the entry guard is
+                # registered there, and a `disableAllHooks` or a dropped hook would switch it off from
+                # inside. The launcher writes them before the cage starts. (A glob: macOS only.)
+                SETTINGS_GLOB.format(home=home),
                 # sandbox-runtime keeps this one writable in every sandbox; it is the personal
                 # account's, so only the personal cage writes it.
                 *([cage_configs] if cage == PERSONAL else [str(home / ".claude/debug")]),
@@ -159,9 +197,9 @@ def build(cage: str, account_dir: Path) -> dict:
         "allowPty": True,
     }
     env = {"CLAUDE_CODE_TMPDIR": str(tmp_dir), "TMPDIR": str(tmp_dir)}
-    if config_dir != default_config:
-        env["CLAUDE_CONFIG_DIR"] = str(config_dir)
-    if config_dir != account_dir:
+    if own_config != default_config:
+        env["CLAUDE_CONFIG_DIR"] = str(own_config)
+    if own_config != account_dir:
         # The login stays the account's: Claude Code names the stored credentials after this
         # directory, and after none at all (empty) for the default one.
         env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = "" if account_dir == default_config else str(account_dir)
@@ -175,7 +213,20 @@ def main() -> int:
                         help="the Claude Code config directory of the account (default ~/.claude)")
     parser.add_argument("--list", action="store_true", help="print the cages this machine has")
     parser.add_argument("--of", metavar="PATH", help="print the cage PATH belongs to")
+    parser.add_argument("--record", metavar="SESSION", help="print where a conversation's record lives")
+    parser.add_argument("--config-dirs", action="store_true", help="print the cages' config directories")
     args = parser.parse_args()
+    if args.record:
+        found = record_of(args.record)
+        if found is None:
+            print(f"cage-config: no record of {args.record} under ~/.claude*/projects", file=sys.stderr)
+            return 1
+        json.dump(found, sys.stdout)
+        sys.stdout.write("\n")
+        return 0
+    if args.config_dirs:
+        print("\n".join(map(str, config_dirs())))
+        return 0
     if args.of:
         print(cage_of(expand(args.of)))
         return 0

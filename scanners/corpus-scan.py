@@ -970,6 +970,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", type=Path, help="where the sending repository lives (default: here)")
     parser.add_argument("--dest", help="the remote URL (or owner/repo) the text is sent to")
     parser.add_argument("--gh-argv", type=Path, help="a file holding the NUL-separated arguments of a gh call")
+    parser.add_argument("--dest-area", help=f"the area the text is sent into, or {OUTSIDE} "
+                        "(a service a tool sends to, declared in destinations.txt)")
     parser.add_argument("--where", action="store_true", help=f"print where the destination lives, or {OUTSIDE}")
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--update", action="store_true")
@@ -1032,6 +1034,15 @@ def main(argv: list[str] | None = None) -> int:
                            sender, areas)
     elif args.dest and (slug := github_repo(args.dest)):
         here = destination({slug}, sender, areas)
+    elif args.dest_area:
+        # A service has no folder: the area it sits in is declared, and stands in by its first root.
+        if args.dest_area == OUTSIDE:
+            here = None
+        elif args.dest_area in areas and areas[args.dest_area]:
+            here = areas[args.dest_area][0]
+        else:
+            say(f"REFUSED — no area named {args.dest_area!r} (areas.txt)")
+            return 2
     if args.where:
         print(here or OUTSIDE)
         return 0
