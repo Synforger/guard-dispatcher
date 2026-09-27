@@ -61,7 +61,7 @@ if [ ! -f "${SCANNER}" ]; then
 fi
 
 # title + body を 1 つの一時ファイルに束ねて scan (= tmpdir は shell が掃除)
-tmp="$(mktemp)"
+tmp="$(mktemp "${TMPDIR:-/tmp}/pr-create.XXXXXX")"
 trap 'rm -f "${tmp}"' EXIT
 {
     printf '%s\n\n' "${TITLE}"

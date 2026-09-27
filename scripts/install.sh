@@ -2,14 +2,22 @@
 # =============================================================================
 # Global hooks dispatcher — installer
 # =============================================================================
-# Symlinks this repo's `git-hooks/` into `~/.git-hooks/` and points
-# git's global `core.hooksPath` at it. Every git repo on this machine will
-# then route hook execution through the dispatcher; non-Synforger repos are
-# a no-op (see pre-commit dispatcher for classification logic).
+# Installs the clone it is run from into `$GUARD_HOME` (default
+# `~/.local/share/guard-dispatcher`), symlinks the installed `git-hooks/`
+# into `~/.git-hooks/` and points git's global `core.hooksPath` at it. Every
+# git repo on this machine will then route hook execution through the
+# dispatcher; non-Synforger repos are a no-op (see pre-commit dispatcher for
+# classification logic).
 #
-# Idempotent: re-running the installer just re-points the symlinks at the
-# clone you ran it from. Use that to switch which clone is the source of
-# truth (`cd <other clone> && scripts/install.sh`).
+# The guards run from that install, not from the clone: the clone stays free
+# to edit, and an agent session caged by sandbox/ can write the clone but
+# never the install. Installing copies the clone's tracked files as they are
+# on disk; the operator's word lists the install already holds (gitignored,
+# never in the clone's history) are kept. Set GUARD_HOME to the clone itself
+# to run the guards from it in place, as before.
+#
+# Idempotent: re-running the installer replaces the install with the clone
+# you ran it from.
 #
 # Usage:
 #   scripts/install.sh [--claude-settings <settings.json>]...
@@ -22,7 +30,7 @@
 #
 # Rollback:
 #   git config --global --unset core.hooksPath
-#   rm -rf ~/.git-hooks
+#   rm -rf ~/.git-hooks ~/.local/share/guard-dispatcher
 # =============================================================================
 set -euo pipefail
 
@@ -41,15 +49,44 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GUARD_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-HOOKS_SRC="${GUARD_ROOT}/git-hooks"
+CLONE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GUARD_HOME="${GUARD_HOME:-${HOME}/.local/share/guard-dispatcher}"
 TARGET_DIR="${HOME}/.git-hooks"
+# Gitignored operator data an install may hold (see scanners/anon-sync-truth.sh).
+KEEP=(scanners/anon-words.txt anon-words.local.txt scanners/anon-words.local.txt)
 
-if [ ! -d "${HOOKS_SRC}/lib" ]; then
-    echo "error: expected dispatcher source at ${HOOKS_SRC}, but lib/ is missing." >&2
+if [ ! -d "${CLONE}/git-hooks/lib" ]; then
+    echo "error: expected dispatcher source at ${CLONE}/git-hooks, but lib/ is missing." >&2
     exit 1
 fi
+
+mkdir -p "$(dirname "${GUARD_HOME}")"
+GUARD_HOME="$(cd -P "$(dirname "${GUARD_HOME}")" && pwd)/$(basename "${GUARD_HOME}")"
+if [ "${GUARD_HOME}" != "${CLONE}" ]; then
+    if ! git -C "${CLONE}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "error: ${CLONE} is not a git clone; install from a clone (git clone …)." >&2
+        exit 1
+    fi
+    staging="$(mktemp -d "${GUARD_HOME}.new.XXXXXX")"
+    trap 'rm -rf "${staging}"' EXIT
+    ( cd "${CLONE}" && git ls-files -z | tar --null -T - -cf - ) | tar -xf - -C "${staging}"
+    for keep in "${KEEP[@]}"; do
+        for from in "${GUARD_HOME}/${keep}" "${CLONE}/${keep}"; do
+            if [ -f "${from}" ]; then
+                mkdir -p "$(dirname "${staging}/${keep}")"
+                cp -p "${from}" "${staging}/${keep}"
+                break
+            fi
+        done
+    done
+    rm -rf "${GUARD_HOME}"
+    mv "${staging}" "${GUARD_HOME}"
+    trap - EXIT
+    chmod 755 "${GUARD_HOME}"
+fi
+GUARD_ROOT="${GUARD_HOME}"
+SCRIPT_DIR="${GUARD_ROOT}/scripts"
+HOOKS_SRC="${GUARD_ROOT}/git-hooks"
 
 mkdir -p "${TARGET_DIR}"
 
@@ -79,11 +116,11 @@ done
 # lost the +x bit if the user re-created files via editor.
 chmod +x "${HOOKS_SRC}/pre-commit" "${HOOKS_SRC}/commit-msg" "${HOOKS_SRC}/pre-push" "${SCRIPT_DIR}/doctor.sh"
 
-# Expose the scanners, helper scripts and agent hooks alongside the git hooks
+# Expose the scanners, helper scripts, agent hooks and session cage alongside the git hooks
 # so Taskfiles, shells and agent settings can invoke them via a stable path
 # (git only executes known hook names, so extra entries here are inert to git
 # itself).
-for entry in scanners scripts agent-hooks; do
+for entry in scanners scripts agent-hooks sandbox; do
     dst="${TARGET_DIR}/${entry}"
     if [ -e "${dst}" ] || [ -L "${dst}" ]; then
         rm -rf "${dst}"
@@ -95,6 +132,7 @@ git config --global core.hooksPath "${TARGET_DIR}"
 
 cat <<MSG
 [global-hooks] installed
+  from   : ${CLONE}
   source : ${HOOKS_SRC}
   target : ${TARGET_DIR}
   git    : core.hooksPath (global) = ${TARGET_DIR}
@@ -106,7 +144,7 @@ The dispatcher will still delegate to any repo-local .githooks/<name>.
 MSG
 
 # The agent hook is called through ~/.git-hooks, so the settings entry stays
-# valid whichever clone was installed last. When the hook is missing (the
+# valid whatever was installed last. When the hook is missing (the
 # checkout was removed, or predates agent-hooks/) the entry passes silently:
 # Claude Code reads a failing hook's exit 2 as a refusal, which would stop
 # every tool call. doctor.sh reports the missing hook instead.

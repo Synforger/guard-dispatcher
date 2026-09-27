@@ -145,7 +145,7 @@ scan_office() {
         echo "${path}: could not be opened as an Office document; NOT scanned" >&2
         return 1
     fi
-    unpacked="$(mktemp -t anon-office.XXXXXX)" || return 0
+    unpacked="$(mktemp "${TMPDIR:-/tmp}/anon-office.XXXXXX")" || return 0
     # Only the text-bearing parts. Media is skipped: it is the same binary
     # problem one level down, and an image carries no word-list hit.
     # One element per line. An Office part is a single line of XML thousands of

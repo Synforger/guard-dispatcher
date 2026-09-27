@@ -27,6 +27,7 @@ identity permanently into public history.
 | PR | `scripts/pr-create.sh` | PR title/body scanned before `gh pr create` |
 | any `gh` send | `gh-shim/gh-guard.sh` (PATH shim) | argument vector, body/notes/template files and stdin payloads scanned before the CLI runs; read-only subcommands pass through |
 | AI agent tool call | `agent-hooks/claude-code/area-guard.py` (Claude Code PreToolUse hook) | a session that read inside a private area cannot write a repository outside it, nor commit, push or send through `gh` there; no session can switch the guards off or around |
+| AI agent session | `sandbox/run.mjs` + `sandbox/cage-config.py` (OS sandbox around Claude Code) | a session started in one area's cage cannot read the other areas nor write outside its own, whatever program tries — tool call, shell redirection or a script's own file I/O |
 | repair | `scanners/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
 | health | `scripts/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
 
@@ -43,11 +44,19 @@ cd guard-dispatcher
 bash scripts/bootstrap-machine.sh
 ```
 
-`bootstrap-machine.sh` symlinks the hooks (and the `scanners/`,
-`scripts/` and `agent-hooks/` directories, for stable paths) into
+`bootstrap-machine.sh` installs the clone into `~/.local/share/guard-dispatcher`
+(`$GUARD_HOME`), symlinks the installed hooks (and the `scanners/`, `scripts/`,
+`agent-hooks/` and `sandbox/` directories, for stable paths) into
 `~/.git-hooks/`, points git's global `core.hooksPath` there, installs the
-`gh` shim, verifies your word list and external tools, and finishes with a
-doctor pass. It is idempotent.
+`gh` shim and the session sandbox runtime, verifies your word list and
+external tools, and finishes with a doctor pass. It is idempotent.
+
+The guards run from the install, never from the clone: edit the clone freely,
+then re-run the script to install what you changed. An agent session caged by
+`sandbox/` may write the clone but not the install, so it cannot edit the
+guards that judge it. Installing copies the clone's tracked files as they are
+on disk and keeps the word lists the install already holds. To run the guards
+from the clone in place instead, set `GUARD_HOME` to the clone.
 
 To hold Claude Code to the same areas, name each of its settings files
 (one per config dir):
@@ -57,7 +66,7 @@ bash scripts/bootstrap-machine.sh --claude-settings ~/.claude/settings.json
 ```
 
 The hook is registered through `$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py`,
-so it keeps working whichever clone was installed last. Re-running leaves one
+so it keeps working whatever was installed last. Re-running leaves one
 entry. If that file is missing the entry passes silently rather than refusing
 every tool call, and `doctor.sh` reports it missing.
 
@@ -143,7 +152,7 @@ exemption is push-only: `pre-commit` still requires `user.email` to be on the
 allowed list, because the operator is never a bot.
 
 Scanners resolve repo-local first (`.tooling/local-ci/`), then fall
-back to this checkout's `scanners/` — so individual repositories need
+back to the install's `scanners/` — so individual repositories need
 no toolkit of their own, but can override it.
 
 ### Private documents
@@ -215,9 +224,19 @@ the current folder's remote — never the folder the command was typed in:
 Visibility is asked without credentials first (only a public repository
 answers), then as each account `gh` holds, and remembered for ten minutes.
 
-`corpus-scan.py --refresh` walks everything now; `--status` shows what is
-loaded and what could not be read. A machine with no `areas.txt` prints
+`corpus-scan.py --refresh` walks everything now; `--update` brings the prints
+up to date (the changed documents, everything when a full walk is due) and
+says only how many documents could not be read; `--status` shows what is
+loaded and names what could not be read. A machine with no `areas.txt` prints
 `NOT CHECKED` and passes.
+
+Inside a sandbox that cannot open some area — a session caged by `sandbox/` —
+the scan compares with the prints last built outside and says when they were
+built. It walks nothing there and rewrites nothing cached: a walk from inside
+would build the areas it cannot open empty. An area whose folder cannot be
+listed is taken from the areas those prints were built for, and an area with
+no prints at all is a refusal. `sandbox/start.sh` runs `--update` before it
+enters a cage, so the prints are those of the moment the session started.
 
 ### Agent entry guard
 
@@ -251,6 +270,52 @@ A call that passes prints nothing, so nothing is added to the agent's context.
 A refusal is one line naming the area and the destination. `doctor.sh` reports
 whether the hook is installed and, per Claude Code config dir, registered; an
 unregistered config dir is a finding on a machine that defines areas.
+
+### Session cage
+
+The entry guard reads commands; a program that opens a file itself (a Python
+one-liner, a build script) says nothing in the command about where it writes.
+`sandbox/` closes that at the OS instead: a Claude Code session is started
+inside one cage and the kernel refuses what the cage does not allow
+([sandbox-runtime](https://github.com/anthropics/sandbox-runtime):
+Seatbelt on macOS), for the session and every process it starts.
+
+```sh
+python3 sandbox/cage-config.py --list               # personal, then one cage per area
+bash sandbox/start.sh company                       # Claude Code inside the company's cage
+bash sandbox/start.sh personal -- git push          # any command inside a cage
+```
+
+`start.sh` builds the cage (`cage-config.py <cage>` prints it as
+sandbox-runtime config and environment), brings the private-document prints up
+to date outside it, and runs the command inside it (`run.mjs`). Through
+`~/.git-hooks/sandbox/start.sh` it always runs the installed guards.
+
+A cage is `personal` or the name of an area in `areas.txt`:
+
+- `personal` reads everything but the areas and writes anywhere in `$HOME`
+  but the areas.
+- An area reads everything but the other areas — the areas around it stay
+  readable, so a client session still reads the company notes it sits in —
+  and writes only inside itself, `_exempt`, a few machine caches and its own
+  directories. An area around it is left out of the writable set (a write-deny
+  would also cover the area inside it); where it sits inside `_exempt`, that
+  folder is opened entry by entry around it, so a new file directly beside
+  such an area cannot be created from the inner cage.
+- Every cage has its own Claude Code config directory (`<account dir>@<cage>`,
+  e.g. `~/.claude@company`, logged in as the account; `personal` keeps the
+  account's own) and temp
+  directory (`/tmp/claude-cage/<cage>`), and cannot read another
+  cage's — nor the temp folders sessions would otherwise share, where one
+  cage's conversation would be readable from the next.
+- No cage writes the guards themselves: the install the hooks run from,
+  `~/.git-hooks`, the global git config or the guard's config directory.
+- The network is left open. What leaves the machine is judged by the git and
+  `gh` guards, by content, not by destination.
+
+`run.mjs` never falls back: a cage it cannot build is a refusal and the
+command does not run. `bootstrap-machine.sh` installs the runtime from
+`sandbox/package-lock.json`.
 
 ## Scan guarantee
 
@@ -341,6 +406,9 @@ contract:
   the conversation marks nothing, other tools and hands are not held to it,
   and a program that runs git for the agent (a script in another language)
   is left to the git hooks.
+- The session cage holds only sessions started through `sandbox/run.mjs`: a
+  plain `claude` runs uncaged. It is exercised on macOS; the Linux path
+  (bubblewrap) is untested here.
 - The private-document scan catches copies, not paraphrase: a value retyped
   on its own, or a sentence reworded, carries no run of the original. Numbers
   are not compared at all — short numbers are not specific to anything.
@@ -371,6 +439,9 @@ git-hooks/          entry points git calls: pre-commit / commit-msg / pre-push
 gh-shim/            entry point PATH resolves as `gh`: gh-guard.sh
 agent-hooks/        entry points an AI agent calls before each tool:
                     claude-code/area-guard.py
+sandbox/            the OS cage an agent session runs in: start.sh (the entry
+                    point), cage-config.py (the cage from areas.txt), run.mjs
+                    (runs a command in it)
 scanners/           the judgement the entry points call: anon-scan,
                     anon-audit-deep (11-source audit), anon-fix (history
                     scrub), anon-sync-truth, corpus-scan (private documents),
@@ -379,7 +450,8 @@ scripts/            setting up and checking a machine: bootstrap-machine.sh,
                     install.sh, doctor.sh, pr-create.sh, weekly-audit.sh,
                     install-weekly-audit.sh
 tests/              bats suite (dispatcher helpers, all three hooks,
-                    scanners, gh shim, agent hook, install and doctor)
+                    scanners, gh shim, agent hook, session cage, install and
+                    doctor)
 ```
 
 ## Tests

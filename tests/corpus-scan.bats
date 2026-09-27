@@ -644,3 +644,97 @@ SH
     [ "$status" -ne 0 ]
     [ ! -f "${BATS_TEST_TMPDIR}/ran" ]
 }
+
+# --- inside a sandbox that cannot open an area -------------------------------------
+# A session caged by sandbox/ cannot open the areas outside its cage. A folder made
+# unreadable here stands in for that: the scan must compare with the prints built
+# outside, never walk (and so never rebuild the shut area empty), and refuse when
+# there is nothing built to compare with.
+
+# shut <dir> — make a folder unopenable for the rest of the test.
+shut() {
+    chmod 000 "$1"
+    SHUT+=("$1")
+}
+
+teardown() {
+    local d
+    for d in "${SHUT[@]}"; do chmod 755 "${d}"; done
+}
+
+update_prints() {
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --update
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: an area that cannot be opened is compared with the prints built outside" {
+    update_prints
+    shut "${CLIENT}"
+    mk_repo other
+    commit_line "expected: ${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client cannot be opened here -- compared with the prints built outside"* ]]
+    [[ "$output" == *"client text"* ]]
+}
+
+@test "corpus: nothing is walked or rewritten from inside, however old the prints are" {
+    update_prints
+    local before
+    before="$(cd "${GUARD_CORPUS_CACHE}" && cat summary.json client.bin company.bin | shasum)"
+    shut "${CLIENT}"
+    mk_repo other
+    commit_line "${COMPANY_TEXT}"
+    scan_last                              # GUARD_CORPUS_MAX_AGE=0: outside, this would rebuild
+    [ "$status" -eq 1 ]
+    [ "$(cd "${GUARD_CORPUS_CACHE}" && cat summary.json client.bin company.bin | shasum)" = "${before}" ]
+}
+
+@test "corpus: with no prints built outside, a shut area is a refusal, not a pass" {
+    shut "${CLIENT}"
+    mk_repo other
+    commit_line "nothing copied here"
+    scan_last
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"REFUSED"*"run corpus-scan.py --update outside the sandbox"* ]]
+}
+
+@test "corpus: the prints are neither refreshed nor updated from inside" {
+    update_prints
+    shut "${CLIENT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --refresh
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"cannot be rebuilt from inside"* ]]
+    [ -f "${GUARD_CORPUS_CACHE}/client.bin" ]
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --update
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"compared with the prints built outside"* ]]
+}
+
+@test "corpus: client folders that cannot be listed are the ones the prints were built for" {
+    sed -i.bak '/^client /d' "${GUARD_CONFIG_DIR}/areas.txt"
+    printf 'client-* %s/clients/*\n' "${WORK}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    update_prints
+    [[ "$(cat "${GUARD_CORPUS_CACHE}/summary.json")" == *'"client-acme"'* ]]
+    shut "${WORK}/clients"
+    mk_repo other
+    commit_line "expected: ${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client-acme text"* ]]
+    # With nothing built, a folder that cannot be listed is a refusal.
+    rm "${GUARD_CORPUS_CACHE}/summary.json"
+    scan_last
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"cannot list"* ]]
+}
+
+@test "corpus: --update names no file it could not read; --status does" {
+    printf 'broken' > "${CLIENT}/received/broken.pptx"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --update
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"1 documents could not be read (see --status)"* ]]
+    [[ "$output" != *"broken.pptx"* ]]
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --status
+    [[ "$output" == *"could not read (not checked): "*"/received/broken.pptx"* ]]
+}

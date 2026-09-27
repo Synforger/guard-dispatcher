@@ -76,7 +76,7 @@ fi
 # content is clean. Each index blob is materialised under a temp mirror
 # that preserves the repo-relative path, so the scanner's basename /
 # extension exclusions keep working and findings print a recognisable path.
-staging_dir="$(mktemp -d -t guard-staged.XXXXXX)"
+staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/guard-staged.XXXXXX")"
 trap 'rm -rf "${staging_dir}"' EXIT
 
 abs_paths=""

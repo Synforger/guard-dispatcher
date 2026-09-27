@@ -1,0 +1,9 @@
+{
+  "name": "guard-dispatcher-sandbox",
+  "private": true,
+  "type": "module",
+  "description": "Runs a Claude Code session inside the cage of one area",
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.77"
+  }
+}

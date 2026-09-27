@@ -4,3 +4,6 @@ anon-words.local.txt
 
 # Python bytecode written when the scanners are imported (tests, other guards).
 __pycache__/
+
+# The sandbox launcher's dependencies (installed by bootstrap-machine.sh from package-lock.json).
+sandbox/node_modules/
