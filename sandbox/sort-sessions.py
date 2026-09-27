@@ -275,8 +275,10 @@ def main() -> int:
             raise SystemExit(f"sort-sessions: {account} is a cage's directory, not an account's")
         p = plan(account, areas)
         per_cage = Counter(cage for _, cage in p["moves"].values())
-        print(f"{account}: {p['stay']} stay, " + ", ".join(f"{n} to {c}" for c, n in sorted(per_cage.items()))
-              + (f", {len(p['skipped'])} running (skipped)" if p["skipped"] else ""))
+        parts = [f"{p['stay']} stay", *(f"{n} to {c}" for c, n in sorted(per_cage.items()))]
+        if p["skipped"]:
+            parts.append(f"{len(p['skipped'])} running (skipped)")
+        print(f"{account}: " + ", ".join(parts))
         for session, touched in sorted(p["conflicts"].items()):
             print(f"  left in place (areas do not nest: {', '.join(sorted(touched))}): {session}")
         targets = [t for record, cage in p["moves"].values() for t in session_targets(account, record, cage)]
