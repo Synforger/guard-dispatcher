@@ -111,12 +111,19 @@ try:
     settings = json.load(open(sys.argv[1]))
 except (OSError, ValueError):
     sys.exit(1)
-commands = [h.get("command", "") for g in settings.get("hooks", {}).get("PreToolUse", [])
-            for h in g.get("hooks", [])]
-sys.exit(0 if any(".git-hooks/agent-hooks/claude-code/area-guard.py" in c for c in commands) else 1)
+groups = [g for g in settings.get("hooks", {}).get("PreToolUse", [])
+          if any(".git-hooks/agent-hooks/claude-code/area-guard.py" in h.get("command", "")
+                 for h in g.get("hooks", []))]
+if not groups:
+    sys.exit(1)
+# Registered for a list of tools only: a send through any other tool is never asked about.
+sys.exit(0 if any(g.get("matcher") in ("*", "", None) for g in groups) else 3)
 PY
         then
             printf '  %s✓%s agent entry guard registered (%s)\n' "${GRN}" "${NC}" "${settings}"
+        elif [ "$?" -eq 3 ]; then
+            printf '  %s✗%s agent entry guard registered for some tools only (%s) — sends through the others are not judged; run install.sh --claude-settings %s\n' "${RED}" "${NC}" "${settings}" "${settings}"
+            findings=$((findings + 1))
         elif [ -f "${areas}" ]; then
             printf '  %s✗%s agent entry guard not registered (%s) — an agent can carry area text out; run install.sh --claude-settings %s\n' "${RED}" "${NC}" "${settings}" "${settings}"
             findings=$((findings + 1))

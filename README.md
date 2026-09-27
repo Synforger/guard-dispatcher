@@ -275,7 +275,8 @@ step earlier, before each tool call, from the same `areas.txt`:
   `guard.exemptPrefix`, clearing the marks, or sending from a repository the
   git hooks do not reach. The operator types those; the agent does not.
 
-A call that passes prints nothing, so nothing is added to the agent's context.
+The hook is registered for every tool (`matcher: "*"`): a send can go through any tool, and a call the
+guard is not asked about is one it cannot judge. A call that passes prints nothing, so nothing is added to the agent's context.
 A refusal is one line naming the area and the destination. `doctor.sh` reports
 whether the hook is installed and, per Claude Code config dir, registered; an
 unregistered config dir is a finding on a machine that defines areas.

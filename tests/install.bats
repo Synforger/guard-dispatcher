@@ -127,6 +127,32 @@ JSON
     [[ "${output}" == *"agent entry guard registered (${H}/.claude-work/settings.json)"* ]]
 }
 
+@test "install: the guard is asked about every tool, not only the file and shell tools" {
+    mkdir -p "${H}/.claude"
+    printf '{}\n' > "${H}/.claude/settings.json"
+    bash "${GUARD_ROOT}/scripts/install.sh" --claude-settings "${H}/.claude/settings.json" >/dev/null
+    run python3 -c 'import json, sys
+groups = json.load(open(sys.argv[1]))["hooks"]["PreToolUse"]
+print([g["matcher"] for g in groups if any("area-guard.py" in h["command"] for h in g["hooks"])])' "${H}/.claude/settings.json"
+    [ "${output}" = "['*']" ]
+}
+
+@test "doctor: a guard registered for some tools only is a finding" {
+    mkdir -p "${H}/org" "${H}/.config/guard" "${H}/.claude-work"
+    printf 'company %s\n' "${H}/org" > "${H}/.config/guard/areas.txt"
+    bash "${GUARD_ROOT}/scripts/install.sh" >/dev/null
+    cat > "${H}/.claude-work/settings.json" <<'JSON'
+{"hooks": {"PreToolUse": [{"matcher": "Read|Grep|Glob|Bash|Edit|Write|MultiEdit|NotebookEdit",
+  "hooks": [{"type": "command", "command": "f=\"$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py\"; exec python3 \"$f\""}]}]}}
+JSON
+    run bash "${H}/.git-hooks/doctor.sh"
+    [ "${status}" -eq 1 ]
+    [[ "${output}" == *"agent entry guard registered for some tools only (${H}/.claude-work/settings.json)"* ]]
+    bash "${GUARD_ROOT}/scripts/install.sh" --claude-settings "${H}/.claude-work/settings.json" >/dev/null
+    run bash "${H}/.git-hooks/doctor.sh"
+    [[ "${output}" == *"agent entry guard registered (${H}/.claude-work/settings.json)"* ]]
+}
+
 @test "doctor: without areas, an unregistered agent guard is only noted" {
     mkdir -p "${H}/.claude"
     printf '{}\n' > "${H}/.claude/settings.json"
