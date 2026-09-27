@@ -227,14 +227,16 @@ answers), then as each account `gh` holds, and remembered for ten minutes.
 `corpus-scan.py --refresh` walks everything now; `--update` brings the prints
 up to date (the changed documents, everything when a full walk is due) and
 says only how many documents could not be read; `--status` shows what is
-loaded and names what could not be read. A machine with no `areas.txt` prints
+loaded and names what could not be read; `--summary` (what `doctor.sh` runs)
+shows the same in counts. A machine with no `areas.txt` prints
 `NOT CHECKED` and passes.
 
-The lines a scan prints on its way through (clean, rebuilt, compared with the
-prints built outside) count areas and documents and name none: they land in
-whatever reads the output — an agent's conversation, a CI log — and an area's
-name says what it holds. A refusal names the area, for the operator to act on;
-`--status` names everything.
+Every line printed without being asked — a clean scan, a rebuild, the notice
+inside a sandbox, `--update`, `--summary`, `doctor.sh` and so bootstrap —
+counts areas and documents and names none: it lands in whatever reads the
+output — an agent's conversation, a CI log — and an area's name or a
+document's path says what the area holds. A refusal names the area, for the
+operator to act on; `--status`, typed by the operator, names everything.
 
 Inside a sandbox that cannot open some area — a session caged by `sandbox/` —
 the scan compares with the prints last built outside and says when they were

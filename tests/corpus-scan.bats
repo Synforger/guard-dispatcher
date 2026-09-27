@@ -742,6 +742,31 @@ update_prints() {
     [[ "$output" == *"cannot list"* ]]
 }
 
+@test "corpus: only --status names an area, its folder or a document; every other output counts" {
+    printf 'broken' > "${CLIENT}/received/broken.pptx"
+    # named <output> — the output carries an area's name, its folder or a document of it.
+    named() { [[ "$1" == *company* || "$1" == *client* || "$1" == *acme* || "$1" == *"${WORK}"* || "$1" == *broken.pptx* ]]; }
+    for mode in --refresh --update --summary; do
+        run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" "${mode}"
+        [ "$status" -eq 0 ]
+        [[ "$output" == *"documents / "*" prints in 2 areas"* ]]
+        [[ "$output" == *"1 documents could not be read (see --status)"* ]]
+        if named "$output"; then echo "${mode} named: $output"; return 1; fi
+    done
+    mk_repo other
+    commit_line "nothing from any document"
+    scan_last
+    [ "$status" -eq 0 ]
+    if named "$output"; then echo "scan named: $output"; return 1; fi
+    run bash "${GUARD_ROOT}/scripts/doctor.sh"
+    [[ "$output" == *"prints in 2 areas"* ]]
+    if named "$output"; then echo "doctor named: $output"; return 1; fi
+    # The operator's own look names everything.
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --status
+    [[ "$output" == *"company "*" documents / "*"client "*" documents / "* ]]
+    [[ "$output" == *"/received/broken.pptx"* ]]
+}
+
 @test "corpus: --update names no file it could not read; --status does" {
     printf 'broken' > "${CLIENT}/received/broken.pptx"
     run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --update
