@@ -126,6 +126,7 @@ at() { [ -f "$1/projects/-work/$2.jsonl" ]; }
     [[ "${output}" == *"2 stay"* ]]
     [[ "${output}" != *" to company"* ]]
     [[ "${output}" != *" to client-acme"* ]]
+    [[ "${output}" == *"2 stay, 1 running (skipped)"* ]]
 }
 
 @test "sort: a destination already taken moves nothing at all" {
