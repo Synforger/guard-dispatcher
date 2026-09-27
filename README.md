@@ -27,6 +27,7 @@ identity permanently into public history.
 | PR | `scripts/pr-create.sh` | PR title/body scanned before `gh pr create` |
 | any `gh` send | `gh-shim/gh-guard.sh` (PATH shim) | argument vector, body/notes/template files and stdin payloads scanned before the CLI runs; read-only subcommands pass through |
 | AI agent tool call | `agent-hooks/claude-code/area-guard.py` (Claude Code PreToolUse hook) | a session that read inside a private area cannot write a repository outside it, nor commit, push or send through `gh` there; no session can switch the guards off or around |
+| AI agent send (tool, network) | `agent-hooks/claude-code/outgoing.py` (called by the same hook) finds the send, `scanners/send-scan.py` judges it | what a tool sends to a service (MCP tools, Artifact) or a `curl` / `wget` sends with a body is scanned like a push, against the areas its declared destination is outside of; a destination can be blocked for sending outright |
 | AI agent session | `sandbox/run.mjs` + `sandbox/cage-config.py` (OS sandbox around Claude Code) | a session started in one area's cage cannot read the other areas nor write outside its own, whatever program tries — tool call, shell redirection or a script's own file I/O |
 | repair | `scanners/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
 | health | `scripts/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
@@ -279,6 +280,39 @@ A refusal is one line naming the area and the destination. `doctor.sh` reports
 whether the hook is installed and, per Claude Code config dir, registered; an
 unregistered config dir is a finding on a machine that defines areas.
 
+#### What an agent sends out
+
+git and `gh` are not the only ways out: a tool can upload to a service (an MCP
+tool, the Artifact tools) and a command can post over the network. The same
+hook finds those sends (`agent-hooks/claude-code/outgoing.py`, which reads
+Claude Code's calls) and has each judged the way a push is judged, whatever the
+session read (`scanners/send-scan.py`, which any other entry point can call:
+`send-scan.py --dest NAME --text FILE`, or `--where NAME`):
+
+- **What is scanned**: every string of the tool call and the contents of the
+  local files it uploads; for `curl` / `wget`, the body and the files it sends
+  (`-d`, `--data*`, `--json`, `-F`, `-T`, `--post-*`, or `-X POST|PUT|PATCH`).
+  Reading calls pass unscanned: a tool whose name says it reads (get, list,
+  search, read, fetch, query, view, find, export, ...), a fetch without a body,
+  and anything sent to the loopback host.
+- **Against what**: the private-document scan compares the payload with the
+  areas its destination sits outside of, exactly as for a push; a destination
+  outside every area also gets the word-list scan, as a public repository does.
+- **Where a destination sits** is declared per machine in
+  `$GUARD_CONFIG_DIR/destinations.txt`, first match winning:
+
+  ```
+  # pattern                 area | outside | block
+  mcp__*drive*              company     # company text may go there, a client's may not
+  host:*.corp.example.com   company
+  *slack*                   block       # sending refused outright; reading still works
+  ```
+
+  The pattern is a glob over the tool name, or over `host:<name>` for a
+  network command. A destination no line names is outside every area, so a new
+  service carries nothing private until it is declared. A line naming an
+  unknown area stops every send until it is fixed.
+
 ### Session cage
 
 The entry guard reads commands; a program that opens a file itself (a Python
@@ -291,6 +325,8 @@ Seatbelt on macOS), for the session and every process it starts.
 ```sh
 python3 sandbox/cage-config.py --list               # personal, then one cage per area
 python3 sandbox/cage-config.py --of ~/org/clients/acme   # the cage a path belongs to
+python3 sandbox/cage-config.py --record <session-id>     # the cage and account a past conversation lives under
+python3 sandbox/cage-config.py --config-dirs             # the cages' config directories that exist
 bash sandbox/start.sh company                       # Claude Code inside the company's cage
 bash sandbox/start.sh personal -- git push          # any command inside a cage
 ```
@@ -331,7 +367,11 @@ A cage is `personal` or the name of an area in `areas.txt`:
   cage's — nor the temp folders sessions would otherwise share, where one
   cage's conversation would be readable from the next.
 - No cage writes the guards themselves: the install the hooks run from,
-  `~/.git-hooks`, the global git config or the guard's config directory.
+  `~/.git-hooks`, the global git config, the guard's config directory, or
+  Claude Code's settings files (`~/**/.claude*/settings*.json`: every config
+  dir's and every project's), where the entry guard is registered and where a
+  `disableAllHooks` would switch it off. `start.sh` writes them before the cage
+  starts. The settings glob is a macOS-only rule.
 - The network is left open. What leaves the machine is judged by the git and
   `gh` guards, by content, not by destination.
 
@@ -442,6 +482,10 @@ contract:
 - The scan folds case and Unicode width (NFKC) before matching, but is
   otherwise literal PCRE against your word list — it cannot flag an
   identifier whose base form the list does not contain.
+- The send guard sees the call, not what runs after it: a script or a
+  program that posts over the network on its own is not read, a file that is
+  not text (an image, an archive) is not compared, and a tool whose name says
+  it reads is trusted to only read.
 - The agent entry guard sees tool calls only: text the operator pastes into
   the conversation marks nothing, other tools and hands are not held to it,
   and a program that runs git for the agent (a script in another language)
@@ -478,7 +522,7 @@ git-hooks/          entry points git calls: pre-commit / commit-msg / pre-push
                     dispatchers, lib/dispatcher-common.sh
 gh-shim/            entry point PATH resolves as `gh`: gh-guard.sh
 agent-hooks/        entry points an AI agent calls before each tool:
-                    claude-code/area-guard.py
+                    claude-code/area-guard.py (with outgoing.py, the send guard)
 sandbox/            the OS cage an agent session runs in: start.sh (the entry
                     point), cage-config.py (the cage from areas.txt),
                     seed-config.py (the cage's config directory from the
@@ -487,6 +531,7 @@ sandbox/            the OS cage an agent session runs in: start.sh (the entry
 scanners/           the judgement the entry points call: anon-scan,
                     anon-audit-deep (11-source audit), anon-fix (history
                     scrub), anon-sync-truth, corpus-scan (private documents),
+                    send-scan (a payload bound for a declared destination),
                     setup-lib, anon-words.example.txt
 scripts/            setting up and checking a machine: bootstrap-machine.sh,
                     install.sh, doctor.sh, pr-create.sh, weekly-audit.sh,
