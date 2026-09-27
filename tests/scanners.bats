@@ -230,6 +230,43 @@ STUB
     [[ "$output" == *"UNREACHABLE"* ]]
 }
 
+# --- what a credential helper says is not what GitHub holds -------------------
+# A successful call can still write to stderr: direnv announces the .envrc it
+# loads (a path under the operator's home), gh announces a new release. Mixing
+# that into the scanned text turned every repository reached through direnv
+# into a leak of the operator's own path.
+
+# Every call succeeds with clean output and prints $STUB_SENTINEL on stderr.
+setup_gh_stub_noisy_stderr() {
+    local bindir="${BATS_TEST_TMPDIR}/stub-bin"
+    mkdir -p "${bindir}"
+    cat > "${bindir}/gh" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi
+printf 'loading %s\n' "${STUB_SENTINEL}" >&2
+if [ "$1" = "repo" ] && [ "$2" = "view" ]; then echo '{}'; fi
+exit 0
+STUB
+    chmod +x "${bindir}/gh"
+    export PATH="${bindir}:${PATH}"
+}
+
+@test "deep audit: stderr of a successful GitHub call is not scanned as content" {
+    mk_repo synforger
+    export STUB_SENTINEL="${SENTINEL}"
+    setup_gh_stub_noisy_stderr
+    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    [ "$status" -eq 0 ]
+}
+
+@test "deep audit: a failing GitHub call still shows why it failed" {
+    mk_repo synforger
+    setup_gh_stub_api_error
+    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"HTTP 403"* ]]
+}
+
 # --- Office documents ---------------------------------------------------------
 # A .pptx is a zip. Scanning its bytes reads compressed data, so the words
 # inside were never looked at while the file still reported clean.
