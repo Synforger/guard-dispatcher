@@ -300,19 +300,27 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
             fi
 
             # Thin wrapper that propagates the API call's exit status instead
-            # of letting an error collapse into empty output.
+            # of letting an error collapse into empty output. Only stdout is
+            # what GitHub holds: stderr carries what the credential path says
+            # on the way (direnv names the .envrc it loads), so it is shown on
+            # failure and never scanned.
             gh_capture() {
-                local out rc
+                local out rc err
+                local -a run
                 case "${GH_MODE}" in
-                    default) out="$(gh "$@" 2>&1)"; rc=$? ;;
-                    keyring) out="$(env -u GH_TOKEN -u GITHUB_TOKEN gh "$@" 2>&1)"; rc=$? ;;
-                    direnv)  out="$(direnv exec "${PROJECT_ROOT}" gh "$@" 2>&1)"; rc=$? ;;
+                    default) run=(gh) ;;
+                    keyring) run=(env -u GH_TOKEN -u GITHUB_TOKEN gh) ;;
+                    direnv)  run=(direnv exec "${PROJECT_ROOT}" gh) ;;
                     *)       return 1 ;;
                 esac
+                err="$(mktemp "${TMPDIR:-/tmp}/anon-audit-gh.XXXXXX")"
+                out="$("${run[@]}" "$@" 2>"${err}")"; rc=$?
                 if [ "${rc}" -ne 0 ]; then
-                    printf '%s\n' "${out}" | sed 's/^/      /' >&2
+                    sed 's/^/      /' "${err}" >&2
+                    rm -f "${err}"
                     return 1
                 fi
+                rm -f "${err}"
                 printf '%s\n' "${out}"
             }
 
