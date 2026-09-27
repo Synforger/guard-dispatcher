@@ -15,3 +15,12 @@ load helpers
         | grep -v 'mktemp -d \"\${GUARD_HOME}' | grep -v 'mktemp \(-d \)\?\"\${TMPDIR:-/tmp}/'"
     [ -z "${output}" ]
 }
+
+# The suite is run inside a cage too, so a fixture that asks mktemp for a
+# default location fails there the same way and turns unrelated tests red.
+@test "temp files: every mktemp in the tests names its template under the test's temp dir" {
+    run bash -c "cd '${GUARD_ROOT}' && git ls-files -z -- tests/ ':!tests/temp-files.bats' \
+        | xargs -0 grep -n 'mktemp' -- 2>/dev/null | grep -v '^[^:]*:[0-9]*:\s*#' \
+        | grep -v 'mktemp \(-d \)\?\"\${BATS_TEST_TMPDIR}/'"
+    [ -z "${output}" ]
+}
