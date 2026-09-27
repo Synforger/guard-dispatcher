@@ -300,19 +300,27 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
             fi
 
             # Thin wrapper that propagates the API call's exit status instead
-            # of letting an error collapse into empty output.
+            # of letting an error collapse into empty output. Only stdout is
+            # the API's answer: stderr carries what the runner says around it
+            # (direnv's "loading <path>" line, gh's notices), so it is shown
+            # on failure and never handed to the scan.
             gh_capture() {
-                local out rc
+                local out rc errf
+                local -a runner
                 case "${GH_MODE}" in
-                    default) out="$(gh "$@" 2>&1)"; rc=$? ;;
-                    keyring) out="$(env -u GH_TOKEN -u GITHUB_TOKEN gh "$@" 2>&1)"; rc=$? ;;
-                    direnv)  out="$(direnv exec "${PROJECT_ROOT}" gh "$@" 2>&1)"; rc=$? ;;
+                    default) runner=(gh) ;;
+                    keyring) runner=(env -u GH_TOKEN -u GITHUB_TOKEN gh) ;;
+                    direnv)  runner=(direnv exec "${PROJECT_ROOT}" gh) ;;
                     *)       return 1 ;;
                 esac
+                errf="$(mktemp "${TMPDIR:-/tmp}/anon-audit-gh.XXXXXX")" || return 1
+                out="$("${runner[@]}" "$@" 2>"${errf}")"; rc=$?
                 if [ "${rc}" -ne 0 ]; then
-                    printf '%s\n' "${out}" | sed 's/^/      /' >&2
+                    { printf '%s\n' "${out}"; cat "${errf}"; } | sed 's/^/      /' >&2
+                    rm -f "${errf}"
                     return 1
                 fi
+                rm -f "${errf}"
                 printf '%s\n' "${out}"
             }
 
