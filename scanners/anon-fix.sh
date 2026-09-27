@@ -147,7 +147,7 @@ fi
 # Build a filter-repo expressions file. Each active anon-words line becomes
 # one `regex:<pat>==>[REDACTED]` rule. filter-repo applies it to both blob
 # contents and, via --replace-message, to commit messages.
-expressions_file="$(mktemp -t anon-fix-expressions.XXXXXX)"
+expressions_file="$(mktemp "${TMPDIR:-/tmp}/anon-fix-expressions.XXXXXX")"
 trap 'rm -f "${expressions_file}"' EXIT
 
 grep -v '^[[:space:]]*#' "${WORDS_FILE}" \

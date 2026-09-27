@@ -128,23 +128,28 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     done
 }
 
-@test "the session starts with its cage's temp directory, and an area with its own config directory" {
+@test "the session starts with its cage's temp directory; an area with its own config directory and the account's login" {
     build personal
     [ "$(env_of CLAUDE_CODE_TMPDIR)" = "${T}/claude-cage/personal" ]
     [ "$(env_of TMPDIR)" = "${T}/claude-cage/personal" ]
     [ -z "$(env_of CLAUDE_CONFIG_DIR)" ]
+    jq -e '.env | has("CLAUDE_SECURESTORAGE_CONFIG_DIR") | not' <<< "${output}" > /dev/null
     build company
     [ "$(env_of CLAUDE_CONFIG_DIR)" = "${H}/.claude@company" ]
+    jq -e '.env.CLAUDE_SECURESTORAGE_CONFIG_DIR == ""' <<< "${output}" > /dev/null
     mkdir -p "${H}/.claude-work"
     build company --account-dir "${H}/.claude-work"
     [ "$(env_of CLAUDE_CONFIG_DIR)" = "${H}/.claude-work@company" ]
+    [ "$(env_of CLAUDE_SECURESTORAGE_CONFIG_DIR)" = "${H}/.claude-work" ]
     build personal --account-dir "${H}/.claude-work"
     [ "$(env_of CLAUDE_CONFIG_DIR)" = "${H}/.claude-work" ]
+    jq -e '.env | has("CLAUDE_SECURESTORAGE_CONFIG_DIR") | not' <<< "${output}" > /dev/null
 }
 
 @test "the network is left open (no allowlist) and the session keeps a terminal" {
     build company
     jq -e '.sandbox.network | has("allowedDomains") | not' <<< "${output}" > /dev/null
+    jq -e '.sandbox.network.allowMachLookup == ["com.apple.trustd.agent"]' <<< "${output}" > /dev/null
     jq -e '.sandbox.allowPty == true' <<< "${output}" > /dev/null
 }
 

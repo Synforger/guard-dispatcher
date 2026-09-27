@@ -126,8 +126,10 @@ def build(cage: str, account_dir: Path) -> dict:
         writable.append(home / ".claude.json")
 
     sandbox = {
-        # No allowedDomains: sandbox-runtime then leaves the network unrestricted.
-        "network": {"deniedDomains": []},
+        # No allowedDomains: sandbox-runtime then leaves the network unrestricted. Go programs
+        # (gh) verify TLS through trustd, which the sandbox otherwise blocks; with the network
+        # open it is no further way out.
+        "network": {"deniedDomains": [], "allowMachLookup": ["com.apple.trustd.agent"]},
         "filesystem": {
             "denyRead": [*map(str, hidden), cage_configs, *map(str, other_tmp), *map(str, SHARED_TMP)],
             "allowRead": [str(config_dir)] if cage != PERSONAL else [],
@@ -150,6 +152,10 @@ def build(cage: str, account_dir: Path) -> dict:
     env = {"CLAUDE_CODE_TMPDIR": str(tmp_dir), "TMPDIR": str(tmp_dir)}
     if config_dir != default_config:
         env["CLAUDE_CONFIG_DIR"] = str(config_dir)
+    if config_dir != account_dir:
+        # The login stays the account's: Claude Code names the stored credentials after this
+        # directory, and after none at all (empty) for the default one.
+        env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = "" if account_dir == default_config else str(account_dir)
     return {"cage": cage, "sandbox": sandbox, "env": env}
 
 
