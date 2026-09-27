@@ -335,6 +335,20 @@ A cage is `personal` or the name of an area in `areas.txt`:
 - The network is left open. What leaves the machine is judged by the git and
   `gh` guards, by content, not by destination.
 
+Conversations from before the cages all live in the account's own config
+directory, which the personal cage reads. `sandbox/sort-sessions.py` moves each
+one that worked inside an area — the entry guard marked it there, or its record
+(or a subagent's) names a working directory or a tool call's path inside the
+area — into that area's cage directory, with its edit backups, environment,
+prompt-history lines and the pastes only those lines cite; folders inside an
+area leave the account's state file too. A path only printed in a tool's
+output does not count, conversations across areas that do not nest are listed
+and left, and running ones are skipped. It prints the plan; `--apply` moves.
+
+```sh
+python3 sandbox/sort-sessions.py --account-dir ~/.claude --account-dir ~/.claude-work
+```
+
 `run.mjs` never falls back: a cage it cannot build is a refusal and the
 command does not run. `bootstrap-machine.sh` installs the runtime from
 `sandbox/package-lock.json`.
@@ -468,7 +482,8 @@ agent-hooks/        entry points an AI agent calls before each tool:
 sandbox/            the OS cage an agent session runs in: start.sh (the entry
                     point), cage-config.py (the cage from areas.txt),
                     seed-config.py (the cage's config directory from the
-                    account's), run.mjs (runs a command in it)
+                    account's), run.mjs (runs a command in it),
+                    sort-sessions.py (moves past conversations into cages)
 scanners/           the judgement the entry points call: anon-scan,
                     anon-audit-deep (11-source audit), anon-fix (history
                     scrub), anon-sync-truth, corpus-scan (private documents),
