@@ -65,7 +65,14 @@ a public repository leaves the client all the same:
     corpus-scan.py --where [--dest <url> | --gh-argv <file>]
                                           print where the destination lives, or OUTSIDE
     corpus-scan.py --refresh              rebuild the fingerprints now
+    corpus-scan.py --update               bring the fingerprints up to date (the changed documents,
+                                          everything when a full walk is due)
     corpus-scan.py --status               what is configured and how fresh
+
+Inside a sandbox that cannot open some area (a session caged by sandbox/), nothing is walked
+and nothing cached is rewritten: the text is compared with the prints last built outside, an
+area whose folder cannot be listed is taken from the areas those prints were built for, and an
+area with no prints at all is a refusal. Run --update outside before entering the sandbox.
 
 Exit: 0 clean or not configured, 1 hit, 2 usage / configuration error.
 """
@@ -175,12 +182,53 @@ def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
     named = {r for roots in explicit.values() for r in roots}
     for template, parents in templates:
         for parent in parents:
-            children = sorted(parent.iterdir()) if parent.is_dir() else []
+            try:
+                children = [c for c in sorted(parent.iterdir()) if c.is_dir() and not c.name.startswith(".")]
+            except (FileNotFoundError, NotADirectoryError):
+                children = []
+            except OSError:
+                children = built_children(template, parent)
             for child in children:
                 child = expand(str(child))
-                if child.is_dir() and not child.name.startswith(".") and child not in named:
+                if child not in named:
                     areas.setdefault(template.replace("*", child.name), []).append(child)
     return areas
+
+
+def built_children(template: str, parent: Path) -> list[Path]:
+    """The sub-folders of `parent` the prints were built for, when this process cannot list it."""
+    prefix, suffix = template.split("*", 1)
+    summary = built_summary()
+    if summary is None:
+        raise ValueError(f"cannot list {parent} here and no prints were built where it can be "
+                         f"read: run corpus-scan.py --update outside the sandbox")
+    return sorted(parent / n[len(prefix):len(n) - len(suffix)] for n in summary["areas"]
+                  if n.startswith(prefix) and n.endswith(suffix) and len(n) > len(prefix) + len(suffix))
+
+
+def built_summary() -> dict | None:
+    try:
+        return json.loads((CACHE / "summary.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def sealed(areas: dict[str, list[Path]]) -> list[str]:
+    """Areas this process cannot open: it runs in a sandbox, and may only use what was built outside."""
+    shut = []
+    for name, roots in areas.items():
+        if name == EXEMPT:
+            continue
+        for root in roots:
+            try:
+                with os.scandir(root):
+                    pass
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError:
+                shut.append(name)
+                break
+    return shut
 
 
 def contains(roots: list[Path], path: Path) -> bool:
@@ -632,6 +680,19 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
 
 def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
     """Per area, the tables a sent line is looked up in: the full build and what changed since."""
+    if shut := sealed(areas):
+        # A walk from in here would build the shut areas empty and overwrite their prints.
+        summary = built_summary()
+        missing = [n for n in areas if n != EXEMPT and (summary is None or n not in summary["areas"])]
+        if refresh or summary is None or summary["run"] != [RUN, LATIN_RUN] or missing:
+            raise ValueError(f"{', '.join(shut)} cannot be opened here and "
+                             + ("the prints cannot be rebuilt from inside" if refresh else
+                                f"no prints were built for {', '.join(missing) or 'these settings'}")
+                             + ": run corpus-scan.py --update outside the sandbox")
+        built = time.strftime("%Y-%m-%d %H:%M", time.localtime(summary["checked"] or summary["built"]))
+        say(f"{', '.join(shut)} cannot be opened here -- compared with the prints built outside at {built}")
+        return {name: [read_table(CACHE / f"{name}.bin"), read_table(CACHE / f"{name}.delta.bin")]
+                for name in summary["areas"]}
     summary_path = CACHE / "summary.json"
     summary, full = None, True
     if summary_path.is_file() and not refresh:
@@ -718,9 +779,11 @@ def visibility(slug: str) -> str:
 def clones(areas: dict[str, list[Path]]) -> dict[str, list[str]]:
     """owner/repo -> the local clones under every area, rebuilt hourly."""
     path = CACHE / "clones.json"
+    shut = sealed(areas)
     try:
         cached = json.loads(path.read_text())
-        if time.time() - cached["built"] < CLONES_TTL:
+        # Inside a sandbox a walk misses the shut areas: the map built outside is the better one.
+        if shut or time.time() - cached["built"] < CLONES_TTL:
             return cached["map"]
     except (OSError, ValueError, KeyError):
         pass
@@ -733,8 +796,9 @@ def clones(areas: dict[str, list[Path]]) -> dict[str, list[str]]:
                     found.setdefault(slug, []).append(str(here))
             deep = len(here.parts) - len(root.parts) >= 5
             dirs[:] = [] if deep else [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
-    CACHE.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"built": time.time(), "map": found}))
+    if not shut:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"built": time.time(), "map": found}))
     return found
 
 
@@ -896,6 +960,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gh-argv", type=Path, help="a file holding the NUL-separated arguments of a gh call")
     parser.add_argument("--where", action="store_true", help=f"print where the destination lives, or {OUTSIDE}")
     parser.add_argument("--refresh", action="store_true")
+    parser.add_argument("--update", action="store_true")
     parser.add_argument("--status", action="store_true")
     args = parser.parse_args(argv)
 
@@ -907,23 +972,37 @@ def main(argv: list[str] | None = None) -> int:
     if not areas:
         say(f"NOT CHECKED — no areas defined in {CONFIG / 'areas.txt'} on this machine")
         return 0
-    if args.refresh or args.status:
-        if args.refresh:
-            for stale in ("visibility.json", "clones.json"):
-                (CACHE / stale).unlink(missing_ok=True)
-            load(areas, refresh=True)
+    if args.refresh or args.update or args.status:
+        try:
+            if args.refresh:
+                if sealed(areas):
+                    load(areas, refresh=True)  # refuses: nothing is rebuilt from inside a sandbox
+                for stale in ("visibility.json", "clones.json"):
+                    (CACHE / stale).unlink(missing_ok=True)
+                load(areas, refresh=True)
+            elif args.update:
+                load(areas, refresh=False)
+        except ValueError as error:
+            say(f"REFUSED — {error}")
+            return 2
         summary = json.loads((CACHE / "summary.json").read_text()) if (CACHE / "summary.json").is_file() else None
         if summary:
             age = (time.time() - summary["built"]) / 3600
             say(f"fingerprints built {age:.1f}h ago (run {summary['run']}): " + ", ".join(
                 f"{n} {a['documents']} documents / {a['fingerprints']} prints" for n, a in summary["areas"].items()))
-            for path in summary.get("unreadable", []):
-                say(f"could not read (not checked): {path}")
+            unreadable = summary.get("unreadable", [])
+            # Only --status names them: a session starting through --update must not have an
+            # area's file names put in front of it.
+            if args.status:
+                for path in unreadable:
+                    say(f"could not read (not checked): {path}")
+            elif unreadable:
+                say(f"{len(unreadable)} documents could not be read (see --status)")
         else:
             say("fingerprints not built yet")
         return 0
     if not (args.span or args.text or args.where):
-        parser.error("give --range, --text, --where, --refresh or --status")
+        parser.error("give --range, --text, --where, --refresh, --update or --status")
 
     sender = expand(str(args.repo or (sending_repo() if args.span else os.getcwd())))
     here: Path | None = sender
@@ -951,7 +1030,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         lines = [(where, where, line) for where, line in outgoing(args.span)]
 
-    prints = load(areas, refresh=False)
+    try:
+        prints = load(areas, refresh=False)
+    except ValueError as error:
+        say(f"REFUSED — {error}")
+        return 2
     allowed = [normalize(p) for p in read_lines(CONFIG / "allow.txt")]
     public = background_prints()
     found = []

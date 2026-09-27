@@ -224,9 +224,19 @@ the current folder's remote — never the folder the command was typed in:
 Visibility is asked without credentials first (only a public repository
 answers), then as each account `gh` holds, and remembered for ten minutes.
 
-`corpus-scan.py --refresh` walks everything now; `--status` shows what is
-loaded and what could not be read. A machine with no `areas.txt` prints
+`corpus-scan.py --refresh` walks everything now; `--update` brings the prints
+up to date (the changed documents, everything when a full walk is due) and
+says only how many documents could not be read; `--status` shows what is
+loaded and names what could not be read. A machine with no `areas.txt` prints
 `NOT CHECKED` and passes.
+
+Inside a sandbox that cannot open some area — a session caged by `sandbox/` —
+the scan compares with the prints last built outside and says when they were
+built. It walks nothing there and rewrites nothing cached: a walk from inside
+would build the areas it cannot open empty. An area whose folder cannot be
+listed is taken from the areas those prints were built for, and an area with
+no prints at all is a refusal. `sandbox/start.sh` runs `--update` before it
+enters a cage, so the prints are those of the moment the session started.
 
 ### Agent entry guard
 
@@ -272,9 +282,14 @@ Seatbelt on macOS), for the session and every process it starts.
 
 ```sh
 python3 sandbox/cage-config.py --list               # personal, then one cage per area
-python3 sandbox/cage-config.py company > cage.json  # the cage as sandbox-runtime config + env
-node sandbox/run.mjs cage.json -- claude            # run the session inside it
+bash sandbox/start.sh company                       # Claude Code inside the company's cage
+bash sandbox/start.sh personal -- git push          # any command inside a cage
 ```
+
+`start.sh` builds the cage (`cage-config.py <cage>` prints it as
+sandbox-runtime config and environment), brings the private-document prints up
+to date outside it, and runs the command inside it (`run.mjs`). Through
+`~/.git-hooks/sandbox/start.sh` it always runs the installed guards.
 
 A cage is `personal` or the name of an area in `areas.txt`:
 
@@ -288,7 +303,8 @@ A cage is `personal` or the name of an area in `areas.txt`:
   folder is opened entry by entry around it, so a new file directly beside
   such an area cannot be created from the inner cage.
 - Every cage has its own Claude Code config directory (`<account dir>@<cage>`,
-  e.g. `~/.claude@company`; `personal` keeps the account's own) and temp
+  e.g. `~/.claude@company`, logged in as the account; `personal` keeps the
+  account's own) and temp
   directory (`/tmp/claude-cage/<cage>`), and cannot read another
   cage's — nor the temp folders sessions would otherwise share, where one
   cage's conversation would be readable from the next.
@@ -423,8 +439,9 @@ git-hooks/          entry points git calls: pre-commit / commit-msg / pre-push
 gh-shim/            entry point PATH resolves as `gh`: gh-guard.sh
 agent-hooks/        entry points an AI agent calls before each tool:
                     claude-code/area-guard.py
-sandbox/            the OS cage an agent session runs in: cage-config.py
-                    (the cage from areas.txt), run.mjs (runs a command in it)
+sandbox/            the OS cage an agent session runs in: start.sh (the entry
+                    point), cage-config.py (the cage from areas.txt), run.mjs
+                    (runs a command in it)
 scanners/           the judgement the entry points call: anon-scan,
                     anon-audit-deep (11-source audit), anon-fix (history
                     scrub), anon-sync-truth, corpus-scan (private documents),
