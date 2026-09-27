@@ -162,8 +162,9 @@ pre = settings.setdefault("hooks", {}).setdefault("PreToolUse", [])
 for group in pre:
     group["hooks"] = [h for h in group.get("hooks", []) if "area-guard.py" not in h.get("command", "")]
 pre[:] = [g for g in pre if g["hooks"]]
-pre.append({"matcher": "Read|Grep|Glob|Bash|Edit|Write|MultiEdit|NotebookEdit",
-            "hooks": [{"type": "command", "command": command}]})
+# Every tool: a send can go through any tool (an MCP tool, the Artifact tools), not only the file
+# and shell tools; a call the guard is not asked about is a call it cannot judge.
+pre.append({"matcher": "*", "hooks": [{"type": "command", "command": command}]})
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
 PY
