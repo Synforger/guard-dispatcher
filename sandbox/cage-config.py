@@ -11,8 +11,8 @@ attempts them -- a tool call, a shell redirection or a script's own `open()`. A 
             client session still reads the company notes it sits in), and writes only
             inside itself and `_exempt`
 - any cage  has its own Claude Code config and temp directories, and neither reads nor
-            writes another cage's; it does not write the guards' own settings (the global
-            git config, the hooks directory, `areas.txt`)
+            writes another cage's; it does not write the guards themselves (the install
+            the hooks run from, the hooks directory, the global git config, `areas.txt`)
 
 The sandbox refuses a write whenever a write-deny covers the path, whatever allows it, so an
 area around this one is kept out of the writable set rather than denied: where it sits inside
@@ -40,7 +40,10 @@ import sys
 from pathlib import Path
 
 CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
-CORPUS = Path(__file__).resolve().parents[1] / "scanners/corpus-scan.py"
+GUARD = Path(__file__).resolve().parents[1]
+CORPUS = GUARD / "scanners/corpus-scan.py"
+# Where scripts/install.sh puts the guards the hooks run from.
+GUARD_HOME = Path(os.environ.get("GUARD_HOME", Path.home() / ".local/share/guard-dispatcher"))
 EXEMPT = "_exempt"
 PERSONAL = "personal"
 # A cage's Claude Code config directory is the account's directory with `@<cage>` appended
@@ -132,6 +135,7 @@ def build(cage: str, account_dir: Path) -> dict:
             "denyWrite": [
                 *(str(r) for r in others if r not in holding),
                 *map(str, SHARED_TMP),
+                *dict.fromkeys(map(str, [expand(GUARD_HOME), GUARD])),
                 str(home / ".config/git"),
                 str(home / ".git-hooks"),
                 str(CONFIG),

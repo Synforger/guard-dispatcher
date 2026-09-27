@@ -8,8 +8,20 @@ setup() {
     mkdir -p "${H}/.config/anon-words"
     printf '%s\n' "${SENTINEL}" > "${H}/.config/anon-words/master.txt"
     export HOME="${H}"
-    unset GIT_CONFIG_GLOBAL CLAUDE_CONFIG_DIR GUARD_CONFIG_DIR ANON_TRUTH_PATH
+    unset GIT_CONFIG_GLOBAL CLAUDE_CONFIG_DIR GUARD_CONFIG_DIR ANON_TRUTH_PATH GUARD_HOME
+    # The session sandbox runtime is fetched by npm: keep the suite offline.
+    export npm_config_offline=true
+    INSTALLED="${H}/.local/share/guard-dispatcher"
     cd "${H}" || return 1
+}
+
+# clone_to <dir> — a throwaway clone holding this checkout's tracked files as they are
+# on disk (staged, not committed, so it carries uncommitted work under test).
+clone_to() {
+    mkdir -p "$1"
+    ( cd "${GUARD_ROOT}" && git ls-files -z | tar --null -T - -cf - ) | tar -xf - -C "$1"
+    git -C "$1" init -q
+    git -C "$1" add -A
 }
 
 agent_entries() {
@@ -27,9 +39,10 @@ PY
     [ "${status}" -eq 0 ]
     [[ "${output}" == *"doctor: clean"* ]]
     [ -x "${H}/.git-hooks/pre-push" ]
-    [ "$(readlink "${H}/.local/bin/gh")" = "${GUARD_ROOT}/gh-shim/gh-guard.sh" ]
+    [ "$(readlink "${H}/.local/bin/gh")" = "${INSTALLED}/gh-shim/gh-guard.sh" ]
     [ -f "${H}/.git-hooks/agent-hooks/claude-code/area-guard.py" ]
-    [ "$(readlink "${H}/.git-hooks/doctor.sh")" = "${GUARD_ROOT}/scripts/doctor.sh" ]
+    [ "$(readlink "${H}/.git-hooks/doctor.sh")" = "${INSTALLED}/scripts/doctor.sh" ]
+    [ -f "${H}/.git-hooks/sandbox/cage-config.py" ]
     [[ "${output}" == *"agent entry guard registered (${H}/.claude/settings.json)"* ]]
 }
 
@@ -50,6 +63,47 @@ JSON
     [[ "${output}" == *"notify-me"* ]]
     [[ "${output}" != *"/old/place/"* ]]
     [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["theme"])' "${H}/.claude/settings.json")" = "light" ]
+}
+
+@test "install: the guards run from the install, which a later edit to the clone does not touch" {
+    clone_to "${H}/src"
+    printf 'untracked\n' > "${H}/src/scratch.txt"
+    run bash "${H}/src/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    [ "$(cd -P "${H}/.git-hooks/scripts/.." && pwd)" = "${INSTALLED}" ]
+    [ "$(readlink "${H}/.git-hooks/pre-push")" = "${INSTALLED}/git-hooks/pre-push" ]
+    [ -x "${INSTALLED}/git-hooks/pre-push" ]
+    [ ! -e "${INSTALLED}/.git" ]
+    [ ! -e "${INSTALLED}/scratch.txt" ]
+    printf '# edited\n' >> "${H}/src/scanners/anon-scan.sh"
+    ! grep -q '# edited' "${INSTALLED}/scanners/anon-scan.sh" || return 1
+    bash "${H}/src/scripts/install.sh" >/dev/null
+    grep -q '# edited' "${INSTALLED}/scanners/anon-scan.sh"
+}
+
+@test "install: a reinstall keeps the operator word list the install holds" {
+    clone_to "${H}/src"
+    bash "${H}/src/scripts/install.sh" >/dev/null
+    printf 'operator-word\n' > "${INSTALLED}/scanners/anon-words.txt"
+    bash "${H}/src/scripts/install.sh" >/dev/null
+    [ "$(cat "${INSTALLED}/scanners/anon-words.txt")" = "operator-word" ]
+}
+
+@test "install: GUARD_HOME set to the clone runs the guards from it in place" {
+    clone_to "${H}/src"
+    GUARD_HOME="${H}/src" run bash "${H}/src/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    [ "$(readlink "${H}/.git-hooks/pre-push")" = "${H}/src/git-hooks/pre-push" ]
+    [ ! -e "${INSTALLED}" ]
+}
+
+@test "install: a folder that is not a git clone is refused" {
+    clone_to "${H}/src"
+    rm -rf "${H}/src/.git"
+    run bash "${H}/src/scripts/install.sh"
+    [ "${status}" -eq 1 ]
+    [[ "${output}" == *"is not a git clone"* ]]
+    [ ! -e "${H}/.git-hooks" ]
 }
 
 @test "install: an unknown argument is refused before anything is linked" {

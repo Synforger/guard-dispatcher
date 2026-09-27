@@ -44,11 +44,19 @@ cd guard-dispatcher
 bash scripts/bootstrap-machine.sh
 ```
 
-`bootstrap-machine.sh` symlinks the hooks (and the `scanners/`,
-`scripts/` and `agent-hooks/` directories, for stable paths) into
+`bootstrap-machine.sh` installs the clone into `~/.local/share/guard-dispatcher`
+(`$GUARD_HOME`), symlinks the installed hooks (and the `scanners/`, `scripts/`,
+`agent-hooks/` and `sandbox/` directories, for stable paths) into
 `~/.git-hooks/`, points git's global `core.hooksPath` there, installs the
-`gh` shim, verifies your word list and external tools, and finishes with a
-doctor pass. It is idempotent.
+`gh` shim and the session sandbox runtime, verifies your word list and
+external tools, and finishes with a doctor pass. It is idempotent.
+
+The guards run from the install, never from the clone: edit the clone freely,
+then re-run the script to install what you changed. An agent session caged by
+`sandbox/` may write the clone but not the install, so it cannot edit the
+guards that judge it. Installing copies the clone's tracked files as they are
+on disk and keeps the word lists the install already holds. To run the guards
+from the clone in place instead, set `GUARD_HOME` to the clone.
 
 To hold Claude Code to the same areas, name each of its settings files
 (one per config dir):
@@ -58,7 +66,7 @@ bash scripts/bootstrap-machine.sh --claude-settings ~/.claude/settings.json
 ```
 
 The hook is registered through `$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py`,
-so it keeps working whichever clone was installed last. Re-running leaves one
+so it keeps working whatever was installed last. Re-running leaves one
 entry. If that file is missing the entry passes silently rather than refusing
 every tool call, and `doctor.sh` reports it missing.
 
@@ -144,7 +152,7 @@ exemption is push-only: `pre-commit` still requires `user.email` to be on the
 allowed list, because the operator is never a bot.
 
 Scanners resolve repo-local first (`.tooling/local-ci/`), then fall
-back to this checkout's `scanners/` — so individual repositories need
+back to the install's `scanners/` — so individual repositories need
 no toolkit of their own, but can override it.
 
 ### Private documents
@@ -284,8 +292,8 @@ A cage is `personal` or the name of an area in `areas.txt`:
   directory (`/tmp/claude-cage/<cage>`), and cannot read another
   cage's — nor the temp folders sessions would otherwise share, where one
   cage's conversation would be readable from the next.
-- No cage writes the global git config, `~/.git-hooks` or the guard's config
-  directory.
+- No cage writes the guards themselves: the install the hooks run from,
+  `~/.git-hooks`, the global git config or the guard's config directory.
 - The network is left open. What leaves the machine is judged by the git and
   `gh` guards, by content, not by destination.
 

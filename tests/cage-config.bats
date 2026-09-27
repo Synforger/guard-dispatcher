@@ -18,6 +18,7 @@ setup() {
     touch "${H}/notes/README.md" "${H}/notes/projects/org/plan.md"
     export HOME="${H}"
     export GUARD_CONFIG_DIR="${H}/.config/guard"
+    unset GUARD_HOME
     mkdir -p "${GUARD_CONFIG_DIR}"
     cat > "${GUARD_CONFIG_DIR}/areas.txt" <<'AREAS'
 company ~/org ~/notes/projects/org
@@ -116,9 +117,11 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     lists denyWrite "${H}/.claude/debug"
 }
 
-@test "no cage writes the global git config, the hooks directory or the areas" {
+@test "no cage writes the guards: their install, the hooks directory, the global git config, the areas" {
     for cage in personal company client; do
         build "${cage}"
+        lists denyWrite "${H}/.local/share/guard-dispatcher"
+        lists denyWrite "$(cd -P "${GUARD_ROOT}" && pwd)"
         lists denyWrite "${H}/.config/git"
         lists denyWrite "${H}/.git-hooks"
         lists denyWrite "${GUARD_CONFIG_DIR}"

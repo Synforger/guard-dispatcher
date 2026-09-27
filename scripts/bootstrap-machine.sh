@@ -42,6 +42,8 @@ echo "=== bootstrap-machine: arming this machine ==="
 
 # --- 1. dispatcher arm ------------------------------------------------------
 bash "${GUARD_ROOT}/scripts/install.sh" "$@" || exit 1
+# From here on everything is set up from the install, not the clone this ran from.
+GUARD_ROOT="$(cd -P "${HOME}/.git-hooks/scripts/.." && pwd)"
 
 # --- 2. gh command guard ------------------------------------------------------
 # The hooks only see what leaves through git. Everything the CLI sends —
