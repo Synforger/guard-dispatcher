@@ -18,7 +18,7 @@ setup() {
     touch "${H}/notes/README.md" "${H}/notes/projects/org/plan.md"
     export HOME="${H}"
     export GUARD_CONFIG_DIR="${H}/.config/guard"
-    unset GUARD_HOME
+    unset GUARD_HOME GUARD_TMP_ROOT
     mkdir -p "${GUARD_CONFIG_DIR}"
     cat > "${GUARD_CONFIG_DIR}/areas.txt" <<'AREAS'
 company ~/org ~/notes/projects/org
@@ -127,6 +127,19 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
         lists denyWrite "${GUARD_CONFIG_DIR}"
         lists denyWrite "${H}/**/.claude*/settings*.json"
     done
+}
+
+@test "GUARD_TMP_ROOT moves every cage's temp directory together, and nothing else" {
+    export GUARD_TMP_ROOT="${H}/cage-tmp"
+    build company
+    [ "$(env_of TMPDIR)" = "${H}/cage-tmp/company" ]
+    lists allowWrite "${H}/cage-tmp/company"
+    lists denyRead "${H}/cage-tmp/personal"
+    lists denyRead "${H}/cage-tmp/client"
+    lacks denyRead "${T}/claude-cage/personal"
+    # The temp folders every session would share stay hidden wherever the root is.
+    lists denyRead "${T}/claude-$(id -u)"
+    lists denyRead "${T}/claude"
 }
 
 @test "the session starts with its cage's temp directory; an area with its own config directory and the account's login" {

@@ -16,6 +16,9 @@ setup() {
     mkdir -p "${H}/org/clients/acme" "${H}/repos/public-tool" "${H}/.claude"
     export HOME="${H}"
     export GUARD_CONFIG_DIR="${H}/.config/guard"
+    # Inside a cage this HOME sits in the running cage's temp directory, which every other
+    # cage hides; the cages built here keep their temp directories beside it instead.
+    export GUARD_TMP_ROOT="${H}/cage-tmp"
     unset GUARD_HOME
     mkdir -p "${GUARD_CONFIG_DIR}"
     cat > "${GUARD_CONFIG_DIR}/areas.txt" <<'AREAS'
