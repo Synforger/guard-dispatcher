@@ -101,7 +101,7 @@ ZERO_SHA="0000000000000000000000000000000000000000"
 # raw bytes sees compressed data and never the words.
 mk_office() {
     local path="$1" text="$2" work
-    work="$(mktemp -d)" || return 1
+    work="$(mktemp -d "${BATS_TEST_TMPDIR}/office.XXXXXX")" || return 1
     mkdir -p "${work}/ppt/slides"
     printf '<?xml version="1.0"?><p:sld><a:t>%s</a:t></p:sld>\n' "${text}" \
         > "${work}/ppt/slides/slide1.xml"

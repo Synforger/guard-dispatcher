@@ -303,7 +303,7 @@ STUB
 
 @test "anon-scan: a zip with no XML part is not called clean either" {
     mk_repo other
-    work="$(mktemp -d)"
+    work="$(mktemp -d "${BATS_TEST_TMPDIR}/office.XXXXXX")"
     printf 'just a picture\n' > "${work}/image.bin"
     ( cd "${work}" && zip -q -r "$(pwd)/../empty.pptx" . ) 2>/dev/null || true
     zip -q -j "$(pwd)/empty.pptx" "${work}/image.bin"
