@@ -148,6 +148,14 @@ def say(message: str) -> None:
     print(f"[corpus] {message}", file=sys.stderr)
 
 
+def areas_count(names) -> str:
+    """How many areas, without their names: a line printed on every push or `gh` call lands in
+    whatever reads the output -- an agent's conversation, a CI log -- and an area's name names
+    what it holds. A refusal still names the area, for the operator to act on."""
+    n = len(names)
+    return f"{n} area" + ("" if n == 1 else "s")
+
+
 def expand(path: str) -> Path:
     return Path(os.path.realpath(os.path.expanduser(os.path.expandvars(path))))
 
@@ -690,7 +698,7 @@ def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
                                 f"no prints were built for {', '.join(missing) or 'these settings'}")
                              + ": run corpus-scan.py --update outside the sandbox")
         built = time.strftime("%Y-%m-%d %H:%M", time.localtime(summary["checked"] or summary["built"]))
-        say(f"{', '.join(shut)} cannot be opened here -- compared with the prints built outside at {built}")
+        say(f"{areas_count(shut)} cannot be opened here -- compared with the prints built outside at {built}")
         return {name: [read_table(CACHE / f"{name}.bin"), read_table(CACHE / f"{name}.delta.bin")]
                 for name in summary["areas"]}
     summary_path = CACHE / "summary.json"
@@ -707,8 +715,9 @@ def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
     if summary is None:
         say("walking the private documents (unchanged ones are reused)...")
         summary = build(areas, full=full)
-        say(f"built in {summary['seconds']}s: " + ", ".join(
-            f"{n} {a['documents']} documents" for n, a in summary["areas"].items()))
+        documents = sum(a["documents"] for a in summary["areas"].values())
+        say(f"built in {summary['seconds']}s: {documents} documents in {areas_count(summary['areas'])}"
+            " (--status names them)")
         if summary["unreadable"]:
             say(f"{len(summary['unreadable'])} documents could not be read (see --status)")
     return {name: [read_table(CACHE / f"{name}.bin"), read_table(CACHE / f"{name}.delta.bin")]
@@ -1056,7 +1065,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"    {line}", file=sys.stderr)
         say(f"replace it with made-up text, or add a phrase that is fine to {CONFIG / 'allow.txt'}")
         return 1
-    say(f"clean ({len(lines)} lines against {', '.join(checked)})")
+    say(f"clean ({len(lines)} lines against {areas_count(checked)})")
     return 0
 
 

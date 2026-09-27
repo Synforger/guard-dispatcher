@@ -66,3 +66,31 @@ SH
     [ "${status}" -eq 2 ]
     [[ "${output}" == *"usage"* ]]
 }
+
+@test "start: an area's config directory is seeded from the account before the session runs" {
+    printf '{"hasCompletedOnboarding": true}\n' > "${H}/.claude.json"
+    run bash "${START}" company
+    [ "${status}" -eq 7 ]
+    jq -e '.hasCompletedOnboarding == true' "${H}/.claude@company/.claude.json" > /dev/null
+}
+
+@test "start: the seed follows the account the cage was built for, not CLAUDE_CONFIG_DIR" {
+    mkdir -p "${H}/.claude-work"
+    printf '{"lastOnboardingVersion": "work"}\n' > "${H}/.claude-work/.claude.json"
+    printf '{"lastOnboardingVersion": "default"}\n' > "${H}/.claude.json"
+    run env CLAUDE_CONFIG_DIR="${H}/.claude-work" bash "${START}" company
+    [ "${status}" -eq 7 ]
+    [ "$(jq -r .env.CLAUDE_CONFIG_DIR "${BATS_TEST_TMPDIR}/cage.json")" = "${H}/.claude@company" ]
+    [ "$(jq -r .lastOnboardingVersion "${H}/.claude@company/.claude.json")" = "default" ]
+    run bash "${START}" company --account-dir "${H}/.claude-work"
+    [ "${status}" -eq 7 ]
+    [ "$(jq -r .lastOnboardingVersion "${H}/.claude-work@company/.claude.json")" = "work" ]
+}
+
+@test "start: a config directory that cannot be seeded starts nothing" {
+    touch "${H}/.claude@company"
+    run bash "${START}" company
+    [ "${status}" -ne 0 ]
+    [ "${status}" -ne 7 ]
+    [ ! -e "${BATS_TEST_TMPDIR}/node-args" ]
+}

@@ -5,9 +5,11 @@
 #   sandbox/start.sh <cage> [--account-dir DIR] [-- command [args...]]
 #
 # 1. builds the cage from areas.txt (cage-config.py); an unknown cage stops here
-# 2. brings the private-document prints up to date, outside the cage: the scan
+# 2. starts the cage's own config directory from the account's the first time
+#    (seed-config.py), so no first-run screen waits for an answer
+# 3. brings the private-document prints up to date, outside the cage: the scan
 #    inside cannot open the areas the cage hides, so it compares with these
-# 3. runs the command inside the cage (run.mjs), which refuses rather than run
+# 4. runs the command inside the cage (run.mjs), which refuses rather than run
 #    it unconfined
 #
 # `sandbox/cage-config.py --list` names the cages. The exit status is the
@@ -48,6 +50,8 @@ cage_file="$(mktemp "${TMPDIR:-/tmp}/cage.XXXXXX")" || exit 1
 trap 'rm -f "${cage_file}"' EXIT
 
 python3 "${GUARD}/sandbox/cage-config.py" "${cage}" ${config_args[@]+"${config_args[@]}"} > "${cage_file}" || exit 1
+# The same account cage-config.py was given (its default is ~/.claude too).
+python3 "${GUARD}/sandbox/seed-config.py" "${config_args[1]:-${HOME}/.claude}" "${cage_file}" || exit 1
 python3 "${GUARD}/scanners/corpus-scan.py" --update || {
     echo "start.sh: the private-document prints could not be brought up to date; not starting" >&2
     exit 1
