@@ -190,3 +190,39 @@ AREAS
     build company
     [ "${status}" -ne 0 ]
 }
+
+@test "--of: a path belongs to the innermost area holding it, else to personal" {
+    of() { run python3 "${CAGE}" --of "$1"; [ "${status}" -eq 0 ]; echo "${output}"; }
+    [ "$(of "${H}/org")" = "company" ]
+    [ "$(of "${H}/org/clients/globex")" = "company" ]
+    [ "$(of "${H}/org/clients/acme")" = "client" ]
+    [ "$(of "${H}/notes/projects/org/clients/acme/plan.md")" = "client" ]
+    [ "$(of "${H}/notes/projects/org")" = "company" ]
+    # _exempt is not a cage: the notes outside every area are personal.
+    [ "$(of "${H}/notes/journal")" = "personal" ]
+    [ "$(of "${H}/repos/public-tool")" = "personal" ]
+    # A path that does not exist yet, a ~ path and a path through a link are placed the same.
+    [ "$(of "${H}/org/clients/acme/new/deeper")" = "client" ]
+    [ "$(of "~/org/clients/acme")" = "client" ]
+    ln -s "${H}/org/clients/acme" "${H}/repos/acme-link"
+    [ "$(of "${H}/repos/acme-link")" = "client" ]
+    # A sibling whose name starts with an area's name is not inside it.
+    mkdir -p "${H}/org-archive"
+    [ "$(of "${H}/org-archive")" = "personal" ]
+}
+
+@test "--of: a folder-per-client area names the client; no areas or a broken file" {
+    cat > "${GUARD_CONFIG_DIR}/areas.txt" <<'AREAS'
+company   ~/org
+client-*  ~/org/clients/*
+AREAS
+    run python3 "${CAGE}" --of "${H}/org/clients/globex/deck"
+    [ "${output}" = "client-globex" ]
+    rm "${GUARD_CONFIG_DIR}/areas.txt"
+    run python3 "${CAGE}" --of "${H}/org/clients/globex"
+    [ "${status}" -eq 0 ]
+    [ "${output}" = "personal" ]
+    printf 'company org\n' > "${GUARD_CONFIG_DIR}/areas.txt"
+    run python3 "${CAGE}" --of "${H}/org"
+    [ "${status}" -ne 0 ]
+}

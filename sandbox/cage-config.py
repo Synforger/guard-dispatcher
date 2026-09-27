@@ -28,6 +28,8 @@ Usage:
                                                 sandbox-runtime config, `env` the variables
                                                 the session starts with
     cage-config.py --list                       print the cages this machine has
+    cage-config.py --of PATH                    print the cage PATH belongs to: the innermost
+                                                area holding it, else personal
 """
 
 from __future__ import annotations
@@ -89,6 +91,13 @@ def carve(root: Path, holding: list[Path]) -> list[Path]:
         if not entry.is_symlink():
             out.extend(carve(entry, holding))
     return out
+
+
+def cage_of(path: Path) -> str:
+    areas = load_areas()
+    areas.pop(EXEMPT, None)
+    holding = [(len(r.parts), n) for n, roots in areas.items() for r in roots if inside(path, [r])]
+    return max(holding)[1] if holding else PERSONAL
 
 
 def build(cage: str, account_dir: Path) -> dict:
@@ -165,7 +174,11 @@ def main() -> int:
     parser.add_argument("--account-dir", default="~/.claude",
                         help="the Claude Code config directory of the account (default ~/.claude)")
     parser.add_argument("--list", action="store_true", help="print the cages this machine has")
+    parser.add_argument("--of", metavar="PATH", help="print the cage PATH belongs to")
     args = parser.parse_args()
+    if args.of:
+        print(cage_of(expand(args.of)))
+        return 0
     if args.list:
         areas = load_areas()
         areas.pop(EXEMPT, None)

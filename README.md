@@ -282,14 +282,28 @@ Seatbelt on macOS), for the session and every process it starts.
 
 ```sh
 python3 sandbox/cage-config.py --list               # personal, then one cage per area
+python3 sandbox/cage-config.py --of ~/org/clients/acme   # the cage a path belongs to
 bash sandbox/start.sh company                       # Claude Code inside the company's cage
 bash sandbox/start.sh personal -- git push          # any command inside a cage
 ```
 
 `start.sh` builds the cage (`cage-config.py <cage>` prints it as
-sandbox-runtime config and environment), brings the private-document prints up
+sandbox-runtime config and environment), starts the cage's config directory
+from the account's (`seed-config.py`), brings the private-document prints up
 to date outside it, and runs the command inside it (`run.mjs`). Through
 `~/.git-hooks/sandbox/start.sh` it always runs the installed guards.
+`--of PATH` answers which cage a folder is worked on in — the innermost area
+holding it, else `personal` — so a launcher can pick the cage from where the
+work is.
+
+A new cage config directory would open on Claude Code's first-run screens,
+where a session started by a script or a web client waits for an answer.
+`seed-config.py` carries over what the account has been through — the
+first-run markers, `settings.json` when the cage has none, and the
+folder-trust answers for the folders the cage can read (a folder's path names
+what it holds, so the company's cage is not told its clients'). What the cage
+has chosen since is never overwritten, and `personal`, which keeps the
+account's own directory, is left as it is.
 
 A cage is `personal` or the name of an area in `areas.txt`:
 
@@ -340,6 +354,10 @@ contract:
   commits the remote does not already have; force-pushed rewritten
   history falls back to a full scan of the new history. Pinned in
   `tests/hooks.bats`.
+  The scan runs while git holds the connection to the remote open, so a
+  push that sends a whole history (a new or recreated repository) can
+  outlast an idle SSH connection: set `ServerAliveInterval 30` for the host
+  in `~/.ssh/config`.
 - **A word list that does not compile refuses to scan** (exit 2,
   configuration error) — a broken fragment can never silently disarm a
   boundary. Pinned in `tests/scanners.bats`.
@@ -440,8 +458,9 @@ gh-shim/            entry point PATH resolves as `gh`: gh-guard.sh
 agent-hooks/        entry points an AI agent calls before each tool:
                     claude-code/area-guard.py
 sandbox/            the OS cage an agent session runs in: start.sh (the entry
-                    point), cage-config.py (the cage from areas.txt), run.mjs
-                    (runs a command in it)
+                    point), cage-config.py (the cage from areas.txt),
+                    seed-config.py (the cage's config directory from the
+                    account's), run.mjs (runs a command in it)
 scanners/           the judgement the entry points call: anon-scan,
                     anon-audit-deep (11-source audit), anon-fix (history
                     scrub), anon-sync-truth, corpus-scan (private documents),
