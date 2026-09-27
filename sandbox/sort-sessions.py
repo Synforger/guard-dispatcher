@@ -22,14 +22,20 @@ file also gives up the entries of folders inside an area (their paths and exampl
 that area's cage. Running conversations are skipped. A rewritten file is replaced only after
 its lines add up (kept + moved = before).
 
+A conversation judged to stay is remembered with the size and time of its record, its subagents'
+records and its mark (`~/.cache/guard-sort/`), and not read again until one of them changes, so a
+launcher can sort before every session at no cost.
+
 Usage:
     sort-sessions.py [--account-dir DIR ...]           print what would move (the default)
     sort-sessions.py [--account-dir DIR ...] --apply   move it
+    add --quiet to print only when something moves or is left for a person to decide
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -44,6 +50,7 @@ cage_config = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(cage_config)
 
 MARKS = Path(os.environ.get("AREA_GUARD_STATE", Path.home() / ".cache/area-guard"))
+CACHE = Path(os.environ.get("GUARD_SORT_CACHE", Path.home() / ".cache/guard-sort"))
 DEFAULT = Path(os.path.realpath(Path.home() / ".claude"))
 # Keys of a tool call's input that name a path, and those that hold a command line.
 PATH_KEYS = ("file_path", "path", "notebook_path", "cwd")
@@ -144,20 +151,59 @@ def cage_dir(account: Path, cage: str) -> Path:
     return cage_config.config_dir(cage, account)
 
 
+def signature(record: Path) -> list:
+    """What a judgement of the record depends on: the record, its subagents' records, its mark."""
+    def stamp(p: Path) -> list:
+        try:
+            st = p.stat()
+            return [st.st_size, st.st_mtime_ns]
+        except OSError:
+            return []
+    subs = sorted(record.with_suffix("").glob("**/*.jsonl"))
+    return [stamp(record), [stamp(s) for s in subs], stamp(MARKS / f"{record.stem}.json")]
+
+
+def cache_file(account: Path) -> Path:
+    return CACHE / (hashlib.sha256(str(account).encode()).hexdigest()[:16] + ".json")
+
+
+def load_cache(account: Path) -> dict:
+    try:
+        return json.loads(cache_file(account).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_cache(account: Path, stays: dict) -> None:
+    try:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        cache_file(account).write_text(json.dumps(stays))
+    except OSError:
+        pass  # a cache that cannot be kept only costs a re-read next time
+
+
 def plan(account: Path, areas: Areas) -> dict:
     alive = running(account)
+    known = load_cache(account)
+    stays: dict[str, list] = {}
     moves: dict[str, tuple[Path, str]] = {}
     conflicts: dict[str, set[str]] = {}
     skipped: list[str] = []
     stay = 0
     for record in sorted((account / "projects").glob("*/*.jsonl")):
         session = record.stem
+        sig = signature(record)
+        if known.get(str(record)) == sig:
+            stays[str(record)] = sig
+            stay += 1
+            continue
         touched = marks_of(session) | touched_in(record, areas)
         # A subagent's tool calls are in its own record (`<session>/subagents/...`).
         for sub in sorted(record.with_suffix("").glob("**/*.jsonl")):
             touched |= touched_in(sub, areas)
         touched &= set(areas.roots)
         if not touched:
+            stays[str(record)] = sig
             stay += 1
             continue
         if session in alive:
@@ -177,6 +223,7 @@ def plan(account: Path, areas: Areas) -> dict:
     for folder in (state.get("projects") or {}):
         if (a := areas.of(Path(os.path.realpath(folder)))):
             folders[folder] = a
+    save_cache(account, stays)
     return {"moves": moves, "conflicts": conflicts, "skipped": skipped, "stay": stay, "folders": folders}
 
 
@@ -264,21 +311,26 @@ def main() -> int:
     parser.add_argument("--account-dir", action="append", default=[],
                         help="an account's Claude Code config directory (default ~/.claude; repeat)")
     parser.add_argument("--apply", action="store_true", help="move (the default only prints)")
+    parser.add_argument("--quiet", action="store_true",
+                        help="print only when something moves or is left for a person to decide")
     args = parser.parse_args()
     accounts = [cage_config.expand(a) for a in (args.account_dir or ["~/.claude"])]
     areas = Areas()
     if not areas.roots:
-        print("sort-sessions: no areas on this machine; nothing to sort")
+        if not args.quiet:
+            print("sort-sessions: no areas on this machine; nothing to sort")
         return 0
     for account in accounts:
         if cage_config.CAGE_MARK in account.name:
             raise SystemExit(f"sort-sessions: {account} is a cage's directory, not an account's")
         p = plan(account, areas)
+        if args.quiet and not (p["moves"] or p["conflicts"] or p["folders"]):
+            continue
         per_cage = Counter(cage for _, cage in p["moves"].values())
         parts = [f"{p['stay']} stay", *(f"{n} to {c}" for c, n in sorted(per_cage.items()))]
         if p["skipped"]:
             parts.append(f"{len(p['skipped'])} running (skipped)")
-        print(f"{account}: " + ", ".join(parts))
+        print(f"sort-sessions: {account}: " + ", ".join(parts))
         for session, touched in sorted(p["conflicts"].items()):
             print(f"  left in place (areas do not nest: {', '.join(sorted(touched))}): {session}")
         targets = [t for record, cage in p["moves"].values() for t in session_targets(account, record, cage)]
@@ -295,7 +347,7 @@ def main() -> int:
             for src, dst in targets:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(src), dst)
-    if not args.apply:
+    if not args.apply and not args.quiet:
         print("(nothing moved: add --apply)")
     return 0
 
