@@ -385,6 +385,10 @@ prompt-history lines and the pastes only those lines cite; folders inside an
 area leave the account's state file too. A path only printed in a tool's
 output does not count, conversations across areas that do not nest are listed
 and left, and running ones are skipped. It prints the plan; `--apply` moves.
+A conversation judged to stay is remembered (`~/.cache/guard-sort/`) and not
+read again until its record, its subagents' records or its mark change, so a
+launcher can run `--apply --quiet` before every session: it prints only when
+something moves or is left for a person to decide.
 
 ```sh
 python3 sandbox/sort-sessions.py --account-dir ~/.claude --account-dir ~/.claude-work

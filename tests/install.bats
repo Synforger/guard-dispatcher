@@ -153,6 +153,20 @@ JSON
     [[ "${output}" == *"agent entry guard registered (${H}/.claude-work/settings.json)"* ]]
 }
 
+@test "doctor: a cage's config dir is shown without its area's name" {
+    mkdir -p "${H}/org" "${H}/.config/guard" "${H}/.claude@acme"
+    printf 'company %s\n' "${H}/org" > "${H}/.config/guard/areas.txt"
+    printf '{}\n' > "${H}/.claude@acme/settings.json"
+    bash "${GUARD_ROOT}/scripts/install.sh" >/dev/null
+    run bash "${H}/.git-hooks/doctor.sh"
+    [[ "${output}" == *"agent entry guard not registered (${H}/.claude@<cage>/settings.json)"* ]]
+    [[ "${output}" != *acme* ]]
+    bash "${GUARD_ROOT}/scripts/install.sh" --claude-settings "${H}/.claude@acme/settings.json" >/dev/null
+    run bash "${H}/.git-hooks/doctor.sh"
+    [[ "${output}" == *"agent entry guard registered (${H}/.claude@<cage>/settings.json)"* ]]
+    [[ "${output}" != *acme* ]]
+}
+
 @test "doctor: without areas, an unregistered agent guard is only noted" {
     mkdir -p "${H}/.claude"
     printf '{}\n' > "${H}/.claude/settings.json"

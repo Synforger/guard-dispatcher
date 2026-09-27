@@ -18,6 +18,7 @@ setup() {
     export HOME="${H}"
     export GUARD_CONFIG_DIR="${H}/.config/guard"
     export AREA_GUARD_STATE="${H}/.cache/area-guard"
+    export GUARD_SORT_CACHE="${H}/.cache/guard-sort"
     mkdir -p "${GUARD_CONFIG_DIR}"
     cat > "${GUARD_CONFIG_DIR}/areas.txt" <<'AREAS'
 company ~/org
@@ -145,4 +146,37 @@ at() { [ -f "$1/projects/-work/$2.jsonl" ]; }
     sort_sessions --account-dir "${A}@company"
     [ "${status}" -ne 0 ]
     [[ "${output}" == *"not an account's"* ]]
+}
+
+@test "sort: a record judged to stay is not read again until it changes" {
+    sort_sessions
+    [[ "${output}" == *"2 stay"* ]]
+    # Make a staying record look like company work without touching its size or time: the
+    # remembered judgement holds.
+    touch -r "${A}/projects/-work/s-personal.jsonl" "${BATS_TEST_TMPDIR}/stamp"
+    # (same length: repos/tool/a.md -> org/abcdefgh.md)
+    sed -i.bak "s#${H}/repos/tool/a.md#${H}/org/abcdefgh.md#" "${A}/projects/-work/s-personal.jsonl"
+    touch -r "${BATS_TEST_TMPDIR}/stamp" "${A}/projects/-work/s-personal.jsonl"
+    sort_sessions
+    [[ "${output}" != *"4 to company"* ]]
+    # A real change (a new row) is read again.
+    line "${H}/org" '{"type":"text","text":"more"}' >> "${A}/projects/-work/s-personal.jsonl"
+    sort_sessions
+    [[ "${output}" == *"4 to company"* ]]
+    # So is a new mark.
+    printf '["company"]' > "${AREA_GUARD_STATE}/s-printed.json"
+    sort_sessions
+    [[ "${output}" == *"5 to company"* ]]
+}
+
+@test "sort: --quiet prints nothing when nothing is left to move" {
+    sort_sessions --apply --quiet
+    [ -n "${output}" ]
+    # Only what a person must decide is left: it is still printed.
+    sort_sessions --apply --quiet
+    [[ "${output}" == *"left in place"* ]]
+    [[ "${output}" != *" to company"* ]]
+    rm "${A}/projects/-work/s-both.jsonl"
+    sort_sessions --apply --quiet
+    [ -z "${output}" ]
 }
