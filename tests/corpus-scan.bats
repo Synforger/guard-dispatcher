@@ -116,6 +116,17 @@ mk_repo_at() {
     [ "$status" -eq 0 ]
 }
 
+@test "corpus: a clean scan counts the areas it compared with and names none" {
+    mk_repo other
+    commit_line "nothing from any document"
+    scan_last
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"built in "*"s: 2 documents in 2 areas"* ]]
+    [[ "$output" == *"clean (3 lines against 2 areas)"* ]]
+    [[ "$output" != *company* ]]
+    [[ "$output" != *client* ]]
+}
+
 @test "corpus: an identifier of the client's shape is caught, a longer number is not" {
     mk_repo other
     commit_line "sample qx1234 again"
@@ -674,7 +685,9 @@ update_prints() {
     commit_line "expected: ${CLIENT_TEXT}"
     scan_last
     [ "$status" -eq 1 ]
-    [[ "$output" == *"client cannot be opened here -- compared with the prints built outside"* ]]
+    [[ "$output" == *"1 area cannot be opened here -- compared with the prints built outside"* ]]
+    # The notice printed on every scan counts the shut areas; only the refusal names one.
+    [[ "$(grep 'cannot be opened' <<< "$output")" != *client* ]]
     [[ "$output" == *"client text"* ]]
 }
 
