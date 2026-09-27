@@ -27,6 +27,7 @@ identity permanently into public history.
 | PR | `scripts/pr-create.sh` | PR title/body scanned before `gh pr create` |
 | any `gh` send | `gh-shim/gh-guard.sh` (PATH shim) | argument vector, body/notes/template files and stdin payloads scanned before the CLI runs; read-only subcommands pass through |
 | AI agent tool call | `agent-hooks/claude-code/area-guard.py` (Claude Code PreToolUse hook) | a session that read inside a private area cannot write a repository outside it, nor commit, push or send through `gh` there; no session can switch the guards off or around |
+| AI agent session | `sandbox/run.mjs` + `sandbox/cage-config.py` (OS sandbox around Claude Code) | a session started in one area's cage cannot read the other areas nor write outside its own, whatever program tries — tool call, shell redirection or a script's own file I/O |
 | repair | `scanners/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
 | health | `scripts/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
 
@@ -252,6 +253,46 @@ A refusal is one line naming the area and the destination. `doctor.sh` reports
 whether the hook is installed and, per Claude Code config dir, registered; an
 unregistered config dir is a finding on a machine that defines areas.
 
+### Session cage
+
+The entry guard reads commands; a program that opens a file itself (a Python
+one-liner, a build script) says nothing in the command about where it writes.
+`sandbox/` closes that at the OS instead: a Claude Code session is started
+inside one cage and the kernel refuses what the cage does not allow
+([sandbox-runtime](https://github.com/anthropics/sandbox-runtime):
+Seatbelt on macOS), for the session and every process it starts.
+
+```sh
+python3 sandbox/cage-config.py --list               # personal, then one cage per area
+python3 sandbox/cage-config.py company > cage.json  # the cage as sandbox-runtime config + env
+node sandbox/run.mjs cage.json -- claude            # run the session inside it
+```
+
+A cage is `personal` or the name of an area in `areas.txt`:
+
+- `personal` reads everything but the areas and writes anywhere in `$HOME`
+  but the areas.
+- An area reads everything but the other areas — the areas around it stay
+  readable, so a client session still reads the company notes it sits in —
+  and writes only inside itself, `_exempt`, a few machine caches and its own
+  directories. An area around it is left out of the writable set (a write-deny
+  would also cover the area inside it); where it sits inside `_exempt`, that
+  folder is opened entry by entry around it, so a new file directly beside
+  such an area cannot be created from the inner cage.
+- Every cage has its own Claude Code config directory (`<account dir>@<cage>`,
+  e.g. `~/.claude@company`; `personal` keeps the account's own) and temp
+  directory (`/tmp/claude-cage/<cage>`), and cannot read another
+  cage's — nor the temp folders sessions would otherwise share, where one
+  cage's conversation would be readable from the next.
+- No cage writes the global git config, `~/.git-hooks` or the guard's config
+  directory.
+- The network is left open. What leaves the machine is judged by the git and
+  `gh` guards, by content, not by destination.
+
+`run.mjs` never falls back: a cage it cannot build is a refusal and the
+command does not run. `bootstrap-machine.sh` installs the runtime from
+`sandbox/package-lock.json`.
+
 ## Scan guarantee
 
 The contract a machine-wide install provides, stated precisely — both
@@ -341,6 +382,9 @@ contract:
   the conversation marks nothing, other tools and hands are not held to it,
   and a program that runs git for the agent (a script in another language)
   is left to the git hooks.
+- The session cage holds only sessions started through `sandbox/run.mjs`: a
+  plain `claude` runs uncaged. It is exercised on macOS; the Linux path
+  (bubblewrap) is untested here.
 - The private-document scan catches copies, not paraphrase: a value retyped
   on its own, or a sentence reworded, carries no run of the original. Numbers
   are not compared at all — short numbers are not specific to anything.
@@ -371,6 +415,8 @@ git-hooks/          entry points git calls: pre-commit / commit-msg / pre-push
 gh-shim/            entry point PATH resolves as `gh`: gh-guard.sh
 agent-hooks/        entry points an AI agent calls before each tool:
                     claude-code/area-guard.py
+sandbox/            the OS cage an agent session runs in: cage-config.py
+                    (the cage from areas.txt), run.mjs (runs a command in it)
 scanners/           the judgement the entry points call: anon-scan,
                     anon-audit-deep (11-source audit), anon-fix (history
                     scrub), anon-sync-truth, corpus-scan (private documents),
@@ -379,7 +425,8 @@ scripts/            setting up and checking a machine: bootstrap-machine.sh,
                     install.sh, doctor.sh, pr-create.sh, weekly-audit.sh,
                     install-weekly-audit.sh
 tests/              bats suite (dispatcher helpers, all three hooks,
-                    scanners, gh shim, agent hook, install and doctor)
+                    scanners, gh shim, agent hook, session cage, install and
+                    doctor)
 ```
 
 ## Tests
