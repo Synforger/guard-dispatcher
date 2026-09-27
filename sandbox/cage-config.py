@@ -57,7 +57,10 @@ PERSONAL = "personal"
 CAGE_MARK = "@"
 # `/tmp` as the sandbox sees it (on macOS a link to /private/tmp).
 TMP = Path(os.path.realpath("/tmp"))
-TMP_ROOT = TMP / "claude-cage"
+# Each cage's temp directory is `<TMP_ROOT>/<cage>`. GUARD_TMP_ROOT moves the root so a test whose
+# throwaway HOME lives in the running cage's own temp directory does not find that HOME hidden as
+# another cage's temp. It is read here, before any cage starts, never from inside one.
+TMP_ROOT = Path(os.path.realpath(os.environ.get("GUARD_TMP_ROOT") or TMP / "claude-cage"))
 # Temp folders every session would share: Claude Code's own when no cage names one, and the
 # one sandbox-runtime keeps writable in every sandbox. A cage writes its own instead.
 SHARED_TMP = [TMP / f"claude-{os.getuid()}", TMP / "claude"]

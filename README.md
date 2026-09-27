@@ -364,7 +364,8 @@ A cage is `personal` or the name of an area in `areas.txt`:
 - Every cage has its own Claude Code config directory (`<account dir>@<cage>`,
   e.g. `~/.claude@company`, logged in as the account; `personal` keeps the
   account's own) and temp
-  directory (`/tmp/claude-cage/<cage>`), and cannot read another
+  directory (`/tmp/claude-cage/<cage>`; `GUARD_TMP_ROOT` moves the root,
+  which the test suite uses), and cannot read another
   cage's — nor the temp folders sessions would otherwise share, where one
   cage's conversation would be readable from the next.
 - No cage writes the guards themselves: the install the hooks run from,
