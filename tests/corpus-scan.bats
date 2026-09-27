@@ -758,7 +758,8 @@ update_prints() {
     scan_last
     [ "$status" -eq 0 ]
     if named "$output"; then echo "scan named: $output"; return 1; fi
-    run bash "${GUARD_ROOT}/scripts/doctor.sh"
+    # A throwaway HOME: the operator's own config dirs are no part of this test.
+    run env HOME="${BATS_TEST_TMPDIR}/doctor-home" bash "${GUARD_ROOT}/scripts/doctor.sh"
     [[ "$output" == *"prints in 2 areas"* ]]
     if named "$output"; then echo "doctor named: $output"; return 1; fi
     # The operator's own look names everything.
