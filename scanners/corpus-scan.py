@@ -67,7 +67,10 @@ a public repository leaves the client all the same:
     corpus-scan.py --refresh              rebuild the fingerprints now
     corpus-scan.py --update               bring the fingerprints up to date (the changed documents,
                                           everything when a full walk is due)
-    corpus-scan.py --status               what is configured and how fresh
+    corpus-scan.py --status               what is configured and how fresh, naming each area and
+                                          each document that could not be read (for the operator)
+    corpus-scan.py --summary              the same in counts, naming nothing (for output that an
+                                          agent or a log reads: doctor, bootstrap)
 
 Inside a sandbox that cannot open some area (a session caged by sandbox/), nothing is walked
 and nothing cached is rewritten: the text is compared with the prints last built outside, an
@@ -971,6 +974,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--update", action="store_true")
     parser.add_argument("--status", action="store_true")
+    parser.add_argument("--summary", action="store_true")
     args = parser.parse_args(argv)
 
     try:
@@ -981,7 +985,7 @@ def main(argv: list[str] | None = None) -> int:
     if not areas:
         say(f"NOT CHECKED — no areas defined in {CONFIG / 'areas.txt'} on this machine")
         return 0
-    if args.refresh or args.update or args.status:
+    if args.refresh or args.update or args.status or args.summary:
         try:
             if args.refresh:
                 if sealed(areas):
@@ -997,11 +1001,18 @@ def main(argv: list[str] | None = None) -> int:
         summary = json.loads((CACHE / "summary.json").read_text()) if (CACHE / "summary.json").is_file() else None
         if summary:
             age = (time.time() - summary["built"]) / 3600
-            say(f"fingerprints built {age:.1f}h ago (run {summary['run']}): " + ", ".join(
-                f"{n} {a['documents']} documents / {a['fingerprints']} prints" for n, a in summary["areas"].items()))
+            built = f"fingerprints built {age:.1f}h ago (run {summary['run']}): "
+            # Only --status names areas and files: every other mode prints into whatever runs it
+            # -- a session starting through --update, doctor under an agent -- and a name says
+            # what the area holds.
+            if args.status:
+                say(built + ", ".join(f"{n} {a['documents']} documents / {a['fingerprints']} prints"
+                                      for n, a in summary["areas"].items()))
+            else:
+                areas_built = summary["areas"].values()
+                say(built + f"{sum(a['documents'] for a in areas_built)} documents / "
+                    f"{sum(a['fingerprints'] for a in areas_built)} prints in {areas_count(summary['areas'])}")
             unreadable = summary.get("unreadable", [])
-            # Only --status names them: a session starting through --update must not have an
-            # area's file names put in front of it.
             if args.status:
                 for path in unreadable:
                     say(f"could not read (not checked): {path}")
@@ -1011,7 +1022,7 @@ def main(argv: list[str] | None = None) -> int:
             say("fingerprints not built yet")
         return 0
     if not (args.span or args.text or args.where):
-        parser.error("give --range, --text, --where, --refresh, --update or --status")
+        parser.error("give --range, --text, --where, --refresh, --update, --status or --summary")
 
     sender = expand(str(args.repo or (sending_repo() if args.span else os.getcwd())))
     here: Path | None = sender

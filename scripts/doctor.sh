@@ -77,7 +77,9 @@ check_global() {
     local areas="${GUARD_CONFIG_DIR:-${HOME}/.config/guard}/areas.txt"
     if [ -f "${areas}" ]; then
         printf '  %s✓%s private areas defined (%s)\n' "${GRN}" "${NC}" "${areas}"
-        python3 "$(dispatcher::guard_root)/scanners/corpus-scan.py" --status 2>&1 | sed 's/^/    /'
+        # Counts only: doctor runs under bootstrap, install and agents, and an area's name or a
+        # document's path says what the area holds. `corpus-scan.py --status` names them.
+        python3 "$(dispatcher::guard_root)/scanners/corpus-scan.py" --summary 2>&1 | sed 's/^/    /'
     else
         printf '  %s-%s no private areas (%s) — text copied from documents is NOT checked\n' "${DIM}" "${NC}" "${areas}"
     fi
