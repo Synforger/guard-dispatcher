@@ -47,6 +47,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -144,6 +145,15 @@ ANON_TRUTH_PATH = Path(os.environ.get("ANON_TRUTH_PATH", str(Path.home() / ".con
 # outside, an editable install). A conda base keeps envs/ and pkgs/ writable: environments are
 # made from inside a session.
 LOGIN_ITEMS = "~/Library/LaunchAgents"
+# Per machine, what a cage writes or reads beyond what its areas give it, one line each:
+# `<cage> writes <path>...` / `<cage> reads <path>...` (quote a path with spaces). A `personal
+# writes` line makes the personal cage write only what it lists, besides what every cage writes
+# (its temp and config directories, the caches, the keychains, the shared areas), instead of the
+# whole home: a place nobody listed is refused and shows in the denials, where a home-wide grant
+# left it open until someone noticed. A `reads` line opens a folder of an area around the cage,
+# which it does not read otherwise (a client's cage does not read the company's other material).
+CAGES = CONFIG / "cages.txt"
+CAGE_VERBS = ("writes", "reads")
 OUTSIDE_RUN = CONFIG / "outside-run.txt"
 CONDA_BASE = ["bin", "condabin", "lib", "etc", "shell", "conda-meta"]
 
@@ -257,6 +267,25 @@ def inside(path: Path, roots: list[Path]) -> bool:
     return any(path == r or r in path.parents for r in roots)
 
 
+def load_cages(known: set[str]) -> dict[tuple[str, str], list[Path]]:
+    """cages.txt as {(cage, verb): [paths]}. A line that is not `<cage> writes|reads <path>...` with
+    a known cage raises, so a cage is never built from half of the file."""
+    out: dict[tuple[str, str], list[Path]] = {}
+    if not CAGES.is_file():
+        return out
+    for n, line in enumerate(CAGES.read_text(encoding="utf-8").splitlines(), start=1):
+        try:
+            words = shlex.split(line, comments=True)
+        except ValueError as error:
+            raise SystemExit(f"cage-config: {CAGES}:{n}: {error}") from error
+        if not words:
+            continue
+        if len(words) < 3 or words[1] not in CAGE_VERBS or words[0] not in known | {PERSONAL}:
+            raise SystemExit(f"cage-config: {CAGES}:{n} is not `<cage> writes|reads <path>...` with a known cage")
+        out.setdefault((words[0], words[1]), []).extend(expand(w) for w in words[2:])
+    return out
+
+
 def carve(root: Path, holding: list[Path]) -> list[Path]:
     """`root` as writable paths that leave out every folder in `holding`: the whole root when
     none lies within it, else its entries one by one (links skipped: they may lead anywhere)."""
@@ -315,10 +344,16 @@ def build(cage: str, account_dir: Path) -> dict:
         raise SystemExit(f"cage-config: no area named {cage!r} (areas: {known})")
 
     own = areas.get(cage, [])
-    # The areas this one sits inside: readable (a client session reads the company notes
-    # around it), never writable (the client's material does not flow into the company's).
+    extra = load_cages(set(areas))
+    writes, reads = extra.get((cage, "writes"), []), extra.get((cage, "reads"), [])
+    # The areas this one sits inside: never writable (the client's material does not flow into the
+    # company's), and read only where cages.txt opens them (the company's material does not flow
+    # into the client's).
     around = {n for n, roots in areas.items() if n != cage and any(inside(r, roots) for r in own)}
     hidden = [r for n, roots in areas.items() if n not in around | {cage} for r in roots]
+    # The areas around it are hidden too, but for the cage's own folders inside them and what this
+    # machine lets it read: cut down to the pieces beside those (a deny would win over them).
+    hidden += [piece for n in sorted(around) for r in areas[n] for piece in carve(r, [*own, *reads])]
     others = [r for n, roots in areas.items() if n != cage for r in roots]
     holding = [r for r in others if any(inside(o, [r]) for o in own)]
 
@@ -330,9 +365,10 @@ def build(cage: str, account_dir: Path) -> dict:
     other_tmp = [TMP_ROOT / n for n in [PERSONAL, *areas] if n != cage]
 
     if cage == PERSONAL:
-        writable = [home]
+        writable = [home] if not writes else [*writes, *exempt, *(expand(c) for c in [*CACHES, KEYCHAINS]),
+                                              own_config]
     else:
-        opened = [*exempt, *(expand(c) for c in [*CACHES, KEYCHAINS])]
+        opened = [*exempt, *writes, *(expand(c) for c in [*CACHES, KEYCHAINS])]
         writable = [*own, *(p for r in opened for p in carve(r, holding)), own_config]
     writable.append(tmp_dir)
     # With no CLAUDE_CONFIG_DIR, Claude Code keeps its state next to the default directory.

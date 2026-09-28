@@ -64,11 +64,23 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     lists denyWrite "${H}/org/clients/acme"
 }
 
-@test "a client: the company around it stays readable but is not written" {
+@test "a client: the company around it is hidden but for the client's own folders and what the machine opens" {
     build client
     [ "${status}" -eq 0 ]
-    lacks denyRead "${H}/org"
+    lists denyRead "${H}/org/clients/globex"               # the company's other material
+    lists denyRead "${H}/notes/projects/org/plan.md"
+    lacks denyRead "${H}/org"                              # a deny there would win over the client's own
     lacks denyRead "${H}/org/clients/acme"
+    lacks denyRead "${H}/notes/projects/org/clients/acme"
+    printf 'client reads ~/notes/projects/org/plan.md\n' > "${GUARD_CONFIG_DIR}/cages.txt"
+    build client
+    lacks denyRead "${H}/notes/projects/org/plan.md"
+    lists denyRead "${H}/org/clients/globex"
+}
+
+@test "a client: the company around it is not written" {
+    build client
+    [ "${status}" -eq 0 ]
     lists allowWrite "${H}/org/clients/acme"
     lacks allowWrite "${H}/org"
     # A write-deny would win over the client inside it: the company is left out instead.
@@ -204,6 +216,35 @@ JSON
         lists denyWrite "${P}/.claude/hooks/relative.sh"
         lists denyWrite "${H}/a/b/c/d/e/deep/line.sh"
         lacks denyWrite "${P}/.claude/hooks"
+    done
+}
+
+@test "cages.txt: a personal writes line makes the personal cage write only what it lists and what every cage writes" {
+    printf '# what the personal cage writes\npersonal writes ~/code "~/Media Files"\n' > "${GUARD_CONFIG_DIR}/cages.txt"
+    build personal
+    [ "${status}" -eq 0 ]
+    lacks allowWrite "${H}"
+    lists allowWrite "${H}/code"
+    lists allowWrite "${H}/Media Files"
+    lists allowWrite "${H}/notes"                          # the shared areas
+    lists allowWrite "${H}/.cache"
+    lists allowWrite "${H}/Library/Keychains"
+    lists allowWrite "${H}/.claude"                        # its own config directory
+    lists allowWrite "${H}/.claude.json"
+    lists allowWrite "${T}/claude-cage/personal"
+    lists denyWrite "${H}/org"                             # the areas stay out of it
+}
+
+@test "cages.txt: a company writes line adds to what the area writes; a broken line builds no cage" {
+    printf 'company writes ~/Desktop\n' > "${GUARD_CONFIG_DIR}/cages.txt"
+    mkdir -p "${H}/Desktop"
+    build company
+    lists allowWrite "${H}/Desktop"
+    for line in 'company edits ~/Desktop' 'nobody writes ~/Desktop' 'company writes' 'company writes "~/open'; do
+        printf '%s\n' "${line}" > "${GUARD_CONFIG_DIR}/cages.txt"
+        build company
+        [ "${status}" -ne 0 ]
+        [[ "${output}" == *"cages.txt"* ]]
     done
 }
 

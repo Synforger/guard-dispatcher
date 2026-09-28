@@ -478,6 +478,25 @@ shell start (its `envs/` and `pkgs/` stay writable), and each path listed in
 `$GUARD_CONFIG_DIR/outside-run.txt` (one a line: a server a relay starts outside
 the cage, an editable install).
 
+What a cage may touch beyond its areas is set per machine in
+`$GUARD_CONFIG_DIR/cages.txt`, one line each:
+
+```
+personal writes ~/code ~/Desktop "~/Media Files"
+company  writes ~/Desktop
+client   reads  ~/org/templates
+```
+
+A `personal writes` line makes the personal cage write only what it lists, plus
+what every cage writes (its temp and config directories, the caches, the
+keychains, the shared areas), instead of the whole home: a place nobody listed
+is refused and shows in the denials, where a home-wide grant left it open until
+someone noticed. Without the line the personal cage writes the whole home, less
+what is denied above. An area's cage never reads the other areas; the areas
+around it (the company around a client) are hidden too, but for its own folders
+inside them and what a `reads` line opens. A line that does not parse, or names
+an unknown cage, builds no cage.
+
 A session keeps the cage it started in. Each cage carries a digest of the files
 it was built from (`GUARD_CAGE_BUILD`); once the install holds other files, the
 entry guard stops every call of a session still running in the older cage, since
