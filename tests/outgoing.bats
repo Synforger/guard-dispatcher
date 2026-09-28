@@ -99,6 +99,31 @@ denied() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"permissionDecision": "d
     passed
 }
 
+# --- the host's web tools ------------------------------------------------------------------
+
+@test "outgoing: a web search carrying area text is refused; an ordinary query passes" {
+    call WebSearch "$(jq -n --arg q "${CLIENT_TEXT}" '{query: $q}')"
+    denied
+    [[ "${output}" == *"WebSearch (outside every area)"* ]]
+    call WebSearch '{"query": "python zipfile read xml members"}'
+    passed
+}
+
+@test "outgoing: a web fetch carrying area text in its prompt or URL is refused" {
+    call WebFetch "$(jq -n --arg p "summarise how ${CLIENT_TEXT}" '{url: "https://example.com/", prompt: $p}')"
+    denied
+    call WebFetch "$(jq -n --arg u "https://example.com/?q=${CLIENT_TEXT}" '{url: $u, prompt: "summarise"}')"
+    denied
+    call WebFetch '{"url": "https://docs.python.org/3/library/zipfile.html", "prompt": "list the methods"}'
+    passed
+}
+
+@test "outgoing: a web tool can be declared like any service" {
+    destinations 'WebSearch company'
+    call WebSearch "$(jq -n --arg q "${COMPANY_TEXT}" '{query: $q}')"
+    passed
+}
+
 # --- files whose text is not plain -----------------------------------------------------
 
 upload() { call Artifact "$(jq -n --arg f "$1" '{file_path: $f}')"; }

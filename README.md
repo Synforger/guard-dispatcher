@@ -294,7 +294,8 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
 `send-scan.py --dest NAME --text FILE`, or `--where NAME`):
 
 - **What is scanned**: every string of the tool call and the contents of the
-  local files it uploads; for `curl` / `wget`, the body and the files it sends
+  local files it uploads (Claude Code's WebFetch and WebSearch included: the
+  URL, the prompt and the query reach the service); for `curl` / `wget`, the body and the files it sends
   (`-d`, `--data*`, `--json`, `-F`, `-T`, `--post-*`, or `-X POST|PUT|PATCH`).
   The text of an Office document or a PDF is taken out of it first. A file
   whose text cannot be taken out (over 8 MB, or not text, like an image)
