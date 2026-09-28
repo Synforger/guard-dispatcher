@@ -462,6 +462,18 @@ python3 sandbox/sort-sessions.py --account-dir ~/.claude --account-dir ~/.claude
 command does not run. `bootstrap-machine.sh` installs the runtime from
 `sandbox/package-lock.json`.
 
+The launcher that builds a cage runs outside it, from a repository the agent
+edits inside one. `scripts/pre-launch.sh` stands in front of it, called from the
+shell's launch function (a startup file no cage writes): it pulls the repository
+(`--pull`), refuses a watched path (default `.tooling`) that differs from HEAD
+unless the terminal answers `y`, names in one line what changed there since the
+last start, then runs the launcher with `GUARD_PRE_LAUNCH=1` so the launcher
+does not pull after the check.
+
+```sh
+agent() { cd ~/agent && ~/.git-hooks/scripts/pre-launch.sh --pull ~/agent -- ~/agent/.tooling/claude-launch.sh "$@"; }
+```
+
 ## Scan guarantee
 
 The contract a machine-wide install provides, stated precisely — both
@@ -612,8 +624,8 @@ scanners/           the judgement the entry points call: anon-scan,
                     send-scan (a payload bound for a declared destination),
                     setup-lib, anon-words.example.txt
 scripts/            setting up and checking a machine: bootstrap-machine.sh,
-                    install.sh, doctor.sh, pr-create.sh, weekly-audit.sh,
-                    install-weekly-audit.sh
+                    install.sh, doctor.sh, pr-create.sh, pre-launch.sh,
+                    weekly-audit.sh, install-weekly-audit.sh
 tests/              bats suite (dispatcher helpers, all three hooks,
                     scanners, gh shim, agent hook, session cage, install and
                     doctor)
