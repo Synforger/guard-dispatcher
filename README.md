@@ -296,7 +296,12 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
 - **What is scanned**: every string of the tool call and the contents of the
   local files it uploads (Claude Code's WebFetch and WebSearch included: the
   URL, the prompt and the query reach the service); for `curl` / `wget`, the body and the files it sends
-  (`-d`, `--data*`, `--json`, `-F`, `-T`, `--post-*`, or `-X POST|PUT|PATCH`).
+  (`-d`, `--data*`, `--json`, `-F`, `-T`, `--post-*`, or `-X POST|PUT|PATCH`),
+  including what they read from standard input (`@-`, `-T -`) when it comes
+  from `< file` or a here-string. A body only known when the command runs —
+  a `$(…)` or backtick substitution, a variable, or standard input from a
+  pipe or a heredoc — cannot be scanned and is refused unless it goes to this
+  machine; write it to a file and send the file instead.
   The text of an Office document or a PDF is taken out of it first. A file
   whose text cannot be taken out (over 8 MB, or not text, like an image)
   cannot be scanned: it is refused once the session has read inside an area,
