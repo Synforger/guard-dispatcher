@@ -129,6 +129,10 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
         lists denyWrite "${GUARD_CONFIG_DIR}"
         lists denyWrite "${H}/.config/anon-words"
         lists denyWrite "${H}/**/.claude*/settings*.json"
+        # The global git config (core.hooksPath) and the shells' startup files (the launchers)
+        for f in .gitconfig .zshrc .zshenv .zprofile .zlogin .bashrc .bash_profile .profile; do
+            lists denyWrite "${H}/${f}"
+        done
     done
 }
 
@@ -185,11 +189,25 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     done
 }
 
-@test "the network is left open (no allowlist), the session keeps a terminal, and file-watch mach lookups pass" {
+@test "the network is left open (no allowlist), the session keeps a terminal, and file-watch and audio-device lookups pass" {
     build company
     jq -e '.sandbox.network | has("allowedDomains") | not' <<< "${output}" > /dev/null
-    jq -e '.sandbox.network.allowMachLookup == ["com.apple.trustd.agent", "com.apple.FSEvents"]' <<< "${output}" > /dev/null
+    jq -e '.sandbox.network.allowMachLookup == ["com.apple.trustd.agent", "com.apple.FSEvents", "com.apple.audio.audiohald", "com.apple.audio.coreaudiod"]' <<< "${output}" > /dev/null
     jq -e '.sandbox.allowPty == true' <<< "${output}" > /dev/null
+}
+
+@test "only the personal cage reaches the clipboard (an area cage could carry its content out through it)" {
+    build personal
+    jq -e '.sandbox.network.allowMachLookup | index("com.apple.pasteboard.1") != null' <<< "${output}" > /dev/null
+    for cage in company client; do
+        build "${cage}"
+        jq -e '.sandbox.network.allowMachLookup | index("com.apple.pasteboard.1") == null' <<< "${output}" > /dev/null
+    done
+}
+
+@test "every cage lets a language runtime read the CPU feature it checks before starting" {
+    build company
+    jq -e '.seatbelt | index("(allow sysctl-read (sysctl-name \"hw.optional.neon\"))") != null' <<< "${output}" > /dev/null
 }
 
 @test "a folder-per-client area: every client is its own cage and cannot see its siblings" {

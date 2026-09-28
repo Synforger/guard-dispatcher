@@ -77,7 +77,20 @@ SETTINGS_GLOB = "{home}/**/.claude*/settings*.json"
 # at the end of the profile). Security.framework reads this sysctl before it writes a keychain item;
 # refused, every keychain write fails -- and Claude Code keeps its login there, so /login and each
 # token refresh fail and the session goes on with a revoked token (401).
-SEATBELT = ['(allow sysctl-read (sysctl-name "security.mac.sandbox.sentinel"))']
+# The CPU feature a language runtime reads before it starts (SuperCollider's sclang stops without it).
+SEATBELT = ['(allow sysctl-read (sysctl-name "security.mac.sandbox.sentinel"))',
+            '(allow sysctl-read (sysctl-name "hw.optional.neon"))']
+# The global git config (core.hooksPath, the git guards' way in) and the shells' startup files
+# (where a launcher is defined, and an environment variable could point it elsewhere): no cage writes
+# them, or a session could switch the guards off for the sessions after it.
+GUARD_ENTRIES = [".gitconfig", ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".bashrc", ".bash_profile", ".profile"]
+# Services every cage may look up: TLS verification for Go programs (gh), the file-change notices
+# Claude Code's watcher needs, and the list of audio devices (read only; music tools ask for it).
+MACH_LOOKUP = ["com.apple.trustd.agent", "com.apple.FSEvents",
+               "com.apple.audio.audiohald", "com.apple.audio.coreaudiod"]
+# The personal cage also reaches the clipboard. An area cage does not: what it put there, the personal
+# cage could read -- a way out of the area.
+PERSONAL_MACH_LOOKUP = ["com.apple.pasteboard.1"]
 # Machine-wide caches a session writes whichever cage it is in.
 CACHES = ["~/.cache", "~/.npm", "~/Library/Caches", "~/.local/share/claude", "~/.local/state/claude"]
 # The login keychain's folder: Claude Code keeps its login there, and each token refresh rewrites
@@ -195,15 +208,10 @@ def build(cage: str, account_dir: Path) -> dict:
         writable.append(home / ".claude.json")
 
     sandbox = {
-        # No allowedDomains: sandbox-runtime then leaves the network unrestricted. Go programs
-        # (gh) verify TLS through trustd, which the sandbox otherwise blocks; with the network
-        # open it is no further way out.
+        # No allowedDomains: sandbox-runtime then leaves the network unrestricted (the git and gh
+        # guards judge what leaves by content).
         "network": {"deniedDomains": [], "allowMachLookup": [
-            "com.apple.trustd.agent",
-            # Read-only notice service: lets Claude Code's own file watcher learn about
-            # changes without granting any filesystem access beyond what is already open.
-            "com.apple.FSEvents",
-        ]},
+            *MACH_LOOKUP, *(PERSONAL_MACH_LOOKUP if cage == PERSONAL else [])]},
         "filesystem": {
             "denyRead": [*map(str, hidden), cage_configs, *map(str, other_tmp), *map(str, SHARED_TMP)],
             "allowRead": [str(own_config)] if cage != PERSONAL else [],
@@ -213,6 +221,7 @@ def build(cage: str, account_dir: Path) -> dict:
                 *map(str, SHARED_TMP),
                 *dict.fromkeys(map(str, [expand(GUARD_HOME), GUARD])),
                 str(home / ".config/git"),
+                *(str(home / name) for name in GUARD_ENTRIES),
                 str(home / ".git-hooks"),
                 str(CONFIG),
                 str(ANON_TRUTH_PATH.parent),
