@@ -12,8 +12,9 @@ attempts them -- a tool call, a shell redirection or a script's own `open()`. A 
             inside itself and `_exempt`
 - any cage  has its own Claude Code config and temp directories, and neither reads nor
             writes another cage's; it does not write the guards themselves (the install
-            the hooks run from, the hooks directory, the global git config, `areas.txt`),
-            and starts its session knowing when the cage was entered (`GUARD_CAGED_SINCE`)
+            the hooks run from, the hooks directory, the global git config, `areas.txt`, the
+            scanners' master word list), and starts its session knowing when the cage was
+            entered (`GUARD_CAGED_SINCE`)
 
 The sandbox refuses a write whenever a write-deny covers the path, whatever allows it, so an
 area around this one is kept out of the writable set rather than denied: where it sits inside
@@ -73,6 +74,13 @@ SHARED_TMP = [TMP / f"claude-{os.getuid()}", TMP / "claude"]
 SETTINGS_GLOB = "{home}/**/.claude*/settings*.json"
 # Machine-wide caches a session writes whichever cage it is in.
 CACHES = ["~/.cache", "~/.npm", "~/Library/Caches", "~/.local/share/claude", "~/.local/state/claude"]
+# The operator master word list scanners/anon-scan.sh (and anon-fix.sh, anon-audit-deep.sh)
+# read by default, and anon-sync-truth.sh / bootstrap-machine.sh / doctor.sh treat as the
+# sync source (`ANON_TRUTH_PATH` overrides the file, same default in every one of them). Its
+# directory (not just this one file: an operator may keep more than one list there, e.g. a
+# second one an area's `ANON_TRUTH_PATH` points at) is a scanner truth a session must not be
+# able to weaken, so its whole folder is carved out below like the guard's own config dir.
+ANON_TRUTH_PATH = Path(os.environ.get("ANON_TRUTH_PATH", str(Path.home() / ".config/anon-words/master.txt")))
 
 
 def expand(path: str | Path) -> Path:
@@ -179,7 +187,12 @@ def build(cage: str, account_dir: Path) -> dict:
         # No allowedDomains: sandbox-runtime then leaves the network unrestricted. Go programs
         # (gh) verify TLS through trustd, which the sandbox otherwise blocks; with the network
         # open it is no further way out.
-        "network": {"deniedDomains": [], "allowMachLookup": ["com.apple.trustd.agent"]},
+        "network": {"deniedDomains": [], "allowMachLookup": [
+            "com.apple.trustd.agent",
+            # Read-only notice service: lets Claude Code's own file watcher learn about
+            # changes without granting any filesystem access beyond what is already open.
+            "com.apple.FSEvents",
+        ]},
         "filesystem": {
             "denyRead": [*map(str, hidden), cage_configs, *map(str, other_tmp), *map(str, SHARED_TMP)],
             "allowRead": [str(own_config)] if cage != PERSONAL else [],
@@ -191,6 +204,7 @@ def build(cage: str, account_dir: Path) -> dict:
                 str(home / ".config/git"),
                 str(home / ".git-hooks"),
                 str(CONFIG),
+                str(ANON_TRUTH_PATH.parent),
                 # Claude Code's settings, of every config dir and every project: the entry guard is
                 # registered there, and a `disableAllHooks` or a dropped hook would switch it off from
                 # inside. The launcher writes them before the cage starts. (A glob: macOS only.)

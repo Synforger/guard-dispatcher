@@ -18,7 +18,7 @@ setup() {
     touch "${H}/notes/README.md" "${H}/notes/projects/org/plan.md"
     export HOME="${H}"
     export GUARD_CONFIG_DIR="${H}/.config/guard"
-    unset GUARD_HOME GUARD_TMP_ROOT
+    unset GUARD_HOME GUARD_TMP_ROOT ANON_TRUTH_PATH
     mkdir -p "${GUARD_CONFIG_DIR}"
     cat > "${GUARD_CONFIG_DIR}/areas.txt" <<'AREAS'
 company ~/org ~/notes/projects/org
@@ -117,7 +117,7 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     lists denyWrite "${H}/.claude/debug"
 }
 
-@test "no cage writes the guards: their install, the hooks directory, the global git config, the areas, Claude Code's settings" {
+@test "no cage writes the guards: their install, the hooks directory, the global git config, the areas, the word list, Claude Code's settings" {
     for cage in personal company client; do
         build "${cage}"
         lists denyWrite "${H}/.local/share/guard-dispatcher"
@@ -125,8 +125,20 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
         lists denyWrite "${H}/.config/git"
         lists denyWrite "${H}/.git-hooks"
         lists denyWrite "${GUARD_CONFIG_DIR}"
+        lists denyWrite "${H}/.config/anon-words"
         lists denyWrite "${H}/**/.claude*/settings*.json"
     done
+}
+
+@test "no cage writes the scanners' master word list directory, wherever ANON_TRUTH_PATH points" {
+    for cage in personal company client; do
+        build "${cage}"
+        lists denyWrite "${H}/.config/anon-words"
+    done
+    export ANON_TRUTH_PATH="${H}/elsewhere/company.txt"
+    build personal
+    lists denyWrite "${H}/elsewhere"
+    lacks denyWrite "${H}/.config/anon-words"
 }
 
 @test "GUARD_TMP_ROOT moves every cage's temp directory together, and nothing else" {
@@ -164,10 +176,10 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     jq -e '.env | has("CLAUDE_SECURESTORAGE_CONFIG_DIR") | not' <<< "${output}" > /dev/null
 }
 
-@test "the network is left open (no allowlist) and the session keeps a terminal" {
+@test "the network is left open (no allowlist), the session keeps a terminal, and file-watch mach lookups pass" {
     build company
     jq -e '.sandbox.network | has("allowedDomains") | not' <<< "${output}" > /dev/null
-    jq -e '.sandbox.network.allowMachLookup == ["com.apple.trustd.agent"]' <<< "${output}" > /dev/null
+    jq -e '.sandbox.network.allowMachLookup == ["com.apple.trustd.agent", "com.apple.FSEvents"]' <<< "${output}" > /dev/null
     jq -e '.sandbox.allowPty == true' <<< "${output}" > /dev/null
 }
 
