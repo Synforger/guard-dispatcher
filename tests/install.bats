@@ -9,7 +9,6 @@ setup() {
     printf '%s\n' "${SENTINEL}" > "${H}/.config/anon-words/master.txt"
     export HOME="${H}"
     unset GIT_CONFIG_GLOBAL CLAUDE_CONFIG_DIR GUARD_CONFIG_DIR ANON_TRUTH_PATH
-    OLD_COPY="${H}/.local/share/guard-dispatcher"
     cd "${H}" || return 1
 }
 
@@ -40,16 +39,7 @@ PY
     [ "$(readlink "${H}/.local/bin/gh")" = "${GUARD_ROOT}/gh-shim/gh-guard.sh" ]
     [ -f "${H}/.git-hooks/agent-hooks/claude-code/area-guard.py" ]
     [ "$(readlink "${H}/.git-hooks/doctor.sh")" = "${GUARD_ROOT}/scripts/doctor.sh" ]
-    [ ! -e "${H}/.git-hooks/sandbox" ]
     [[ "${output}" == *"agent entry guard registered (${H}/.claude/settings.json)"* ]]
-}
-
-@test "install: the session cage an older install linked is removed" {
-    mkdir -p "${H}/.git-hooks" "${H}/old-install/sandbox"
-    ln -s "${H}/old-install/sandbox" "${H}/.git-hooks/sandbox"
-    run bash "${GUARD_ROOT}/scripts/install.sh"
-    [ "${status}" -eq 0 ]
-    [ ! -e "${H}/.git-hooks/sandbox" ] && [ ! -L "${H}/.git-hooks/sandbox" ]
 }
 
 @test "install: registering twice leaves one entry, replaces an old copy, keeps other hooks" {
@@ -79,27 +69,6 @@ JSON
     [ "$(readlink "${H}/.git-hooks/scanners")" = "${H}/src/scanners" ]
     printf '# edited\n' >> "${H}/src/scanners/anon-scan.sh"
     grep -q '# edited' "${H}/.git-hooks/scanners/anon-scan.sh"
-}
-
-@test "install: the copy an older install ran from is dropped, its word list moved to the clone" {
-    clone_to "${H}/src"
-    mkdir -p "${OLD_COPY}/scanners"
-    printf 'operator-word\n' > "${OLD_COPY}/scanners/anon-words.txt"
-    run bash "${H}/src/scripts/install.sh"
-    [ "${status}" -eq 0 ]
-    [ ! -e "${OLD_COPY}" ]
-    [ "$(cat "${H}/src/scanners/anon-words.txt")" = "operator-word" ]
-}
-
-@test "install: the clone's own word list is kept over the older copy's" {
-    clone_to "${H}/src"
-    printf 'clone-word\n' > "${H}/src/scanners/anon-words.txt"
-    mkdir -p "${OLD_COPY}/scanners"
-    printf 'copy-word\n' > "${OLD_COPY}/scanners/anon-words.txt"
-    run bash "${H}/src/scripts/install.sh"
-    [ "${status}" -eq 0 ]
-    [ ! -e "${OLD_COPY}" ]
-    [ "$(cat "${H}/src/scanners/anon-words.txt")" = "clone-word" ]
 }
 
 @test "install: pre-compiles the clone's bytecode so the hook does not recompile on every call" {
@@ -158,20 +127,6 @@ JSON
     bash "${GUARD_ROOT}/scripts/install.sh" --claude-settings "${H}/.claude-work/settings.json" >/dev/null
     run bash "${H}/.git-hooks/doctor.sh"
     [[ "${output}" == *"agent entry guard registered (${H}/.claude-work/settings.json)"* ]]
-}
-
-@test "doctor: a config dir left by a cage is shown without its area's name" {
-    mkdir -p "${H}/org" "${H}/.config/guard" "${H}/.claude@acme"
-    printf 'company %s\n' "${H}/org" > "${H}/.config/guard/areas.txt"
-    printf '{}\n' > "${H}/.claude@acme/settings.json"
-    bash "${GUARD_ROOT}/scripts/install.sh" >/dev/null
-    run bash "${H}/.git-hooks/doctor.sh"
-    [[ "${output}" == *"agent entry guard not registered (${H}/.claude@<cage>/settings.json)"* ]]
-    [[ "${output}" != *acme* ]]
-    bash "${GUARD_ROOT}/scripts/install.sh" --claude-settings "${H}/.claude@acme/settings.json" >/dev/null
-    run bash "${H}/.git-hooks/doctor.sh"
-    [[ "${output}" == *"agent entry guard registered (${H}/.claude@<cage>/settings.json)"* ]]
-    [[ "${output}" != *acme* ]]
 }
 
 @test "doctor: without areas, an unregistered agent guard is only noted" {

@@ -51,9 +51,7 @@ bash scripts/bootstrap-machine.sh
 doctor pass. It is idempotent.
 
 The guards run from the clone in place, so keep it on the branch you want to
-run and do work in progress elsewhere (a `git worktree`). An older install ran
-them from a copy under `~/.local/share/guard-dispatcher`; installing again moves
-its word lists into the clone and removes it.
+run and do work in progress elsewhere (a `git worktree`).
 
 To hold Claude Code to the same areas, name each of its settings files
 (one per config dir):
