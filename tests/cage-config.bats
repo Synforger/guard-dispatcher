@@ -176,6 +176,13 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     jq -e '.env | has("CLAUDE_SECURESTORAGE_CONFIG_DIR") | not' <<< "${output}" > /dev/null
 }
 
+@test "every cage lets Security.framework learn it is sandboxed, so keychain writes (the login) work" {
+    for cage in personal company; do
+        build "${cage}"
+        jq -e '.seatbelt | index("(allow sysctl-read (sysctl-name \"security.mac.sandbox.sentinel\"))") != null' <<< "${output}" > /dev/null
+    done
+}
+
 @test "the network is left open (no allowlist), the session keeps a terminal, and file-watch mach lookups pass" {
     build company
     jq -e '.sandbox.network | has("allowedDomains") | not' <<< "${output}" > /dev/null

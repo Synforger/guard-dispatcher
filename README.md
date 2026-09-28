@@ -412,6 +412,13 @@ A cage is `personal` or the name of an area in `areas.txt`:
   writes them before the cage starts. The settings glob is a macOS-only rule.
 - The network is left open. What leaves the machine is judged by the git and
   `gh` guards, by content, not by destination.
+- On macOS every cage may read the `security.mac.sandbox.sentinel` sysctl:
+  Security.framework reads it before it writes a keychain item, and refused,
+  every keychain write fails — Claude Code keeps its login in the keychain, so
+  `/login` and each token refresh would fail and the session would go on with
+  a revoked token. sandbox-runtime has no setting for a sysctl, so `run.mjs`
+  runs `sandbox-exec` through `seatbelt-exec.sh`, which appends the cage's
+  `seatbelt` rules (from `cage-config.py`) to the end of the profile.
 
 Conversations from before the cages all live in the account's own config
 directory, which the personal cage reads. `sandbox/sort-sessions.py` moves each
@@ -577,7 +584,9 @@ agent-hooks/        entry points an AI agent calls before each tool:
 sandbox/            the OS cage an agent session runs in: start.sh (the entry
                     point), cage-config.py (the cage from areas.txt),
                     seed-config.py (the cage's config directory from the
-                    account's), run.mjs (runs a command in it),
+                    account's), run.mjs (runs a command in it, with
+                    seatbelt.mjs / seatbelt-exec.sh adding the macOS rules
+                    sandbox-runtime has no setting for),
                     sort-sessions.py (moves past conversations into cages)
 scanners/           the judgement the entry points call: anon-scan,
                     anon-audit-deep (11-source audit), anon-fix (history
