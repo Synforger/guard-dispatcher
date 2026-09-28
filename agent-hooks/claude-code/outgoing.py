@@ -565,7 +565,10 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
             r = subprocess.run(["python3", str(send_scan), "--dest", name, "--text", path,
                                 *(["--reading"] if reading else [])],
                                capture_output=True, text=True, timeout=180)
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
+            return (f"outgoing: not sent to {name}: the send scan did not finish within 180s -- "
+                    f"refused because it could not be judged in time, not because of what it found")
+        except OSError:
             return f"outgoing: not sent to {name}: the send scan could not run"
         finally:
             os.unlink(path)

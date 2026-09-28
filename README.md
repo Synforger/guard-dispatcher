@@ -201,9 +201,19 @@ not specific to any area and are dropped.
 
 Prints are kept per document and reused while a document is unchanged.
 Documents changed since the last scan are found through Spotlight and added at
-once; when Spotlight cannot answer (indexing off, an area it does not index,
-not macOS) everything is walked again, and a full walk happens at least every
-six hours. A document that could not be read is listed by `--status`.
+once. When Spotlight cannot answer (indexing off, an area it does not index, or
+a sandbox that can still list the area's folder) the size and modification
+time each document's print was built from are compared with what `stat` gives
+now instead, and only the folders whose modification time moved are listed
+again (creating, removing or renaming a file changes its folder's time) — an
+edited, deleted or created document is caught at once without walking
+everything, and a full walk still comes at least every six hours. Only one process at a
+time walks or writes the fingerprints; the rest use what is already on disk
+rather than wait or walk beside it, and every file is written whole (a
+temporary file, then renamed into place) so a reader never opens a half-written
+one. A document that could not be read is listed by `--status`, with why —
+timed out, its extractor is not installed, or its exit code — and `--summary`
+/ `doctor.sh` show the same grouped by why, without naming any of them.
 
 **Where the text is going decides what it may carry**: every area that does
 not contain the destination is checked. Areas nest — a client inside a

@@ -420,3 +420,58 @@ body_files() {
     bash_call "curl -s -X POST -d 'ping' https://api.example.com/x"
     passed
 }
+
+# --- a time-out is told apart from a real hit ---------------------------------------
+
+@test "outgoing: a send scan that does not finish in time says so, not that it found something" {
+    run python3 -c "
+import importlib.util, subprocess
+spec = importlib.util.spec_from_file_location('outgoing', '${GUARD_ROOT}/agent-hooks/claude-code/outgoing.py')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+from pathlib import Path
+
+def fake_run(cmd, **kw):
+    raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get('timeout'))
+m.subprocess.run = fake_run
+reason = m.check('WebFetch', {'url': 'https://example.com', 'prompt': 'hello'}, '${BATS_TEST_TMPDIR}',
+                 Path('${GUARD_ROOT}/scanners/send-scan.py'))
+print(reason)
+"
+    [[ "$output" == *"did not finish within 180s"* ]]
+    [[ "$output" == *"not because of what it found"* ]]
+}
+
+@test "send-scan: a private-document scan that does not finish in time says so, not that it found a hit" {
+    printf 'harmless\n' > "${BATS_TEST_TMPDIR}/payload.txt"
+    printf '* company\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    run python3 -c "
+import importlib.util, subprocess
+spec = importlib.util.spec_from_file_location('send_scan', '${GUARD_ROOT}/scanners/send-scan.py')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+from pathlib import Path
+
+def fake_run(cmd, **kw):
+    raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get('timeout'))
+m.subprocess.run = fake_run
+print(m.judge('anything', Path('${BATS_TEST_TMPDIR}/payload.txt')))
+"
+    [[ "$output" == *"did not finish within 120s"* ]]
+    [[ "$output" == *"not because of what it found"* ]]
+}
+
+@test "send-scan: a word-list scan that does not finish in time says so, not that it found a hit" {
+    printf 'harmless\n' > "${BATS_TEST_TMPDIR}/payload.txt"
+    run python3 -c "
+import importlib.util, subprocess
+spec = importlib.util.spec_from_file_location('send_scan', '${GUARD_ROOT}/scanners/send-scan.py')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+from pathlib import Path
+
+def fake_run(cmd, **kw):
+    raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get('timeout'))
+m.subprocess.run = fake_run
+print(m.judge('anything', Path('${BATS_TEST_TMPDIR}/payload.txt')))
+"
+    [[ "$output" == *"did not finish within 60s"* ]]
+    [[ "$output" == *"not because of what it found"* ]]
+}

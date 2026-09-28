@@ -41,7 +41,16 @@ third-party folders do not). A sent line is a hit when it holds a prose run or
 is a whole printed row, and a block of CODE_LINES sent lines is a hit when each
 is a whole printed line. Prints are kept per document and reused while the
 document is unchanged; documents changed since the last look are found through
-Spotlight and added at once, and everything is walked again every MAX_AGE.
+Spotlight and added at once. When Spotlight cannot answer (disabled, an area it
+does not index, or inside a sandbox that can still list the area's folder) the
+size and modification time each document's print was built from are compared
+with what `stat` gives now instead, and only the folders whose modification time
+moved are listed again (a file created, removed or renamed changes its folder's
+time): a document edited, deleted or created since the last look is caught at
+once without walking everything. A full walk still comes at least every six
+hours (MAX_AGE). Only one process at a time walks or writes the
+fingerprints (a lock file in the cache); the rest use what is already there
+rather than wait or walk beside it.
 
 What is checked depends on where the text is going: every area that does not
 contain the destination. A repository inside an area may carry that area's
@@ -68,9 +77,10 @@ a public repository leaves the client all the same:
     corpus-scan.py --update               bring the fingerprints up to date (the changed documents,
                                           everything when a full walk is due)
     corpus-scan.py --status               what is configured and how fresh, naming each area and
-                                          each document that could not be read (for the operator)
-    corpus-scan.py --summary              the same in counts, naming nothing (for output that an
-                                          agent or a log reads: doctor, bootstrap)
+                                          each document that could not be read, and why (for the
+                                          operator)
+    corpus-scan.py --summary              the same in counts, grouped by why, naming nothing (for
+                                          output that an agent or a log reads: doctor, bootstrap)
 
 Inside a sandbox that cannot open some area (a session caged by sandbox/), nothing is walked
 and nothing cached is rewritten: the text is compared with the prints last built outside, an
@@ -84,6 +94,8 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import contextlib
+import fcntl
 import hashlib
 import heapq
 import html
@@ -93,10 +105,12 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 import zipfile
 from array import array
+from collections import Counter
 from pathlib import Path
 
 # How many consecutive characters count as copied. Twelve characters of
@@ -124,8 +138,16 @@ VENDORED = {"vendor", "vendors", "external", "extern", "third_party", "thirdpart
 PRINT_FORMAT = 3
 DOCS = CACHE / "docs"
 INDEX = DOCS / "index.json"
+# Every folder the last full walk went through, with its modification time: a file created, removed
+# or renamed in a folder changes that folder's time, so the stat fallback of catch_up() finds new
+# documents by listing only the folders whose time moved.
+FOLDERS = DOCS / "folders.json"
 # Past this many changed documents since the last full walk, walk again instead of growing the delta.
 MAX_DELTA = 200
+# One PDF's extractor gets far less than the judgement's own budget (send-scan.py's 120s for the
+# whole scan): a single huge attachment must not eat that budget, so it is marked unreadable
+# instead, on its own, well before the outer timeout could fire.
+PDF_TIMEOUT = int(os.environ.get("GUARD_CORPUS_PDF_TIMEOUT", "30"))
 TEXT_RUN = re.compile(r"<(?:a:|w:)?t(?:\s[^>]*)?>([^<]*)</(?:a:|w:)?t>")
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "third_party", "dist", "build",
              "target", ".fetchcontent-cache", "DerivedData", "site-packages", ".gradle", "obj", "bin",
@@ -147,6 +169,56 @@ COMMENT_MARKS = re.compile(r"^\s*(?:#+|//+|/\*+|\*+|--|;+|%+|<!--|'''|\"\"\")\s*
 
 def say(message: str) -> None:
     print(f"[corpus] {message}", file=sys.stderr)
+
+
+def atomic_write(path: Path, data: bytes | str) -> None:
+    """Write the whole of `path` at once: a temporary file next to it, then one rename. A reader
+    never opens a half-written file, and two writers racing (one lost the lock between the check
+    and the write) leave the last one's version whole, never a mix of both."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data.encode() if isinstance(data, str) else data)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+@contextlib.contextmanager
+def lock_file(wait: bool):
+    """The one lock a build or a catch-up takes, so several processes never write the same cache
+    files at once: only the holder walks or writes; the rest read what is already there.
+
+    Non-blocking unless `wait` (nothing usable exists yet, so there is nothing to fall back to,
+    and this run must be the one that builds it). A process that loses a non-blocking race yields
+    False having touched nothing -- it goes on to use whatever is already on disk."""
+    CACHE.mkdir(parents=True, exist_ok=True)
+    with open(CACHE / "build.lock", "a+") as fh:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def unreadable_reason(entry) -> str | None:
+    """The reason an old-format entry (a bare path, from before this had one) or a new one
+    ([path, reason]) carries, or None."""
+    return entry[1] if isinstance(entry, list) and len(entry) > 1 else None
+
+
+def unreadable_line(unreadable: list) -> str:
+    """--summary / doctor's one line for documents that could not be read: how many, and how many
+    for each reason (a time-out, a missing extractor, its exit code, ...) -- never which ones."""
+    counts = Counter(unreadable_reason(e) or "could not be read" for e in unreadable)
+    detail = ", ".join(f"{reason}: {n}" for reason, n in sorted(counts.items()))
+    return f"{len(unreadable)} documents could not be read (see --status): {detail}"
 
 
 def areas_count(names) -> str:
@@ -314,9 +386,10 @@ def join_wrapped(lines: list[str]) -> list[str]:
 
 
 def pdf_units(path: Path) -> list[str]:
-    run = subprocess.run(["pdftotext", "-q", "-enc", "UTF-8", str(path), "-"], capture_output=True, timeout=300)
+    run = subprocess.run(["pdftotext", "-q", "-enc", "UTF-8", str(path), "-"], capture_output=True,
+                         timeout=PDF_TIMEOUT)
     if run.returncode != 0:
-        raise OSError(f"pdftotext could not read {path}")
+        raise OSError(f"pdftotext exited {run.returncode}")
     return join_wrapped(run.stdout.decode("utf-8", "replace").splitlines())
 
 
@@ -404,8 +477,10 @@ def document(path: Path, repos: Repos, repo: Path | None | bool = False, root: P
     return f"{PRINT_FORMAT}:{reader[0]}:{st.st_mtime_ns}:{st.st_size}", reader
 
 
-def documents(roots: list[Path], inner: list[Path], ignored: list[Path], repos: Repos):
-    """(path, stamp, read) for every document under roots, skipping nested areas and ignored folders."""
+def documents(roots: list[Path], inner: list[Path], ignored: list[Path], repos: Repos,
+              folders: dict | None = None):
+    """(path, stamp, read) for every document under roots, skipping nested areas and ignored folders.
+    Every folder walked goes into `folders` with its modification time (for catch_up())."""
     for root in roots:
         repo_of = {root: repos.of(root)}     # a folder's repository is its own, or its parent's
         for folder, dirs, files in os.walk(root):
@@ -414,6 +489,9 @@ def documents(roots: list[Path], inner: list[Path], ignored: list[Path], repos: 
                 repo_of[here] = here if (here / ".git").exists() else repo_of[here.parent]
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")
                        and here / d not in inner and here / d not in ignored]
+            if folders is not None:
+                with contextlib.suppress(OSError):
+                    folders[folder] = here.stat().st_mtime_ns
             for name in files:
                 found = document(here / name, repos, repo_of[here], root)
                 if found:
@@ -480,8 +558,7 @@ def background_prints() -> array:
                 if b"\0" not in data[:8192]:
                     prints |= public_prints(name, data.decode("utf-8", "replace"))
     table = array("Q", sorted(prints))
-    CACHE.mkdir(parents=True, exist_ok=True)
-    cached.write_bytes(table.tobytes())
+    atomic_write(cached, table.tobytes())
     return table
 
 
@@ -509,8 +586,10 @@ def area_of_path(areas: dict[str, list[Path]], path: Path) -> str | None:
     return best[1] if best else None
 
 
-def document_prints(path: Path, stamp: str, read, known: dict, index: dict, area: str) -> bool:
-    """Make sure one document's runs are on disk; reuse them while its stamp holds. False = unreadable."""
+def document_prints(path: Path, stamp: str, read, known: dict, index: dict, area: str) -> tuple[bool, str | None]:
+    """Make sure one document's runs are on disk; reuse them while its stamp holds.
+    (False, why) = unreadable, why said plainly enough that --status / --summary can group by it
+    without naming the document (a time-out, a missing extractor, or its exit code)."""
     key = str(path)
     fid = hashlib.sha1(key.encode()).hexdigest()
     cached = known.get(key)
@@ -518,17 +597,23 @@ def document_prints(path: Path, stamp: str, read, known: dict, index: dict, area
         kind, reader = read
         try:
             units = reader()
-        except (OSError, ValueError, zipfile.BadZipFile, subprocess.TimeoutExpired):
-            return False
+        except subprocess.TimeoutExpired:
+            return False, "timed out"
+        except FileNotFoundError:
+            return False, "the extractor is not installed"
+        except zipfile.BadZipFile:
+            return False, "not a valid Office document"
+        except (OSError, ValueError) as error:
+            return False, str(error) or error.__class__.__name__
         prints: set[int] = set()
         for unit in units:
             if kind == "runs":
                 prints |= fingerprints(unit)
             elif (value := line_print(unit, "row" if kind == "rows" else "line")) is not None:
                 prints.add(value)
-        (DOCS / f"{fid}.bin").write_bytes(array("Q", sorted(prints)).tobytes())
+        atomic_write(DOCS / f"{fid}.bin", array("Q", sorted(prints)).tobytes())
     index[key] = [stamp, fid, area]
-    return True
+    return True, None
 
 
 def merged(fids: list[str], allowed: set[int], public: array) -> array:
@@ -542,6 +627,24 @@ def merged(fids: list[str], allowed: set[int], public: array) -> array:
 
 
 def build(areas: dict[str, list[Path]], full: bool = True) -> dict:
+    """_build_locked, but only one process at a time walks and writes: the lock is taken first, and
+    a process that cannot take it right away uses the summary already on disk instead of waiting or
+    walking beside whoever holds it. Waiting is only worth it when there is nothing on disk yet to
+    fall back to (a fresh machine, or the cache wiped by --refresh)."""
+    have_index = (CACHE / "summary.json").is_file()
+    with lock_file(wait=not have_index) as acquired:
+        if acquired:
+            return _build_locked(areas, full)
+    existing = built_summary()
+    if existing is not None:
+        return existing
+    # have_index was true a moment ago and yet nothing is there now, and the non-blocking try
+    # above lost the race anyway: vanishingly rare, and waiting properly is the safe way out.
+    with lock_file(wait=True):
+        return _build_locked(areas, full)
+
+
+def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
     """Walk every area and reuse the runs of every document whose stamp holds. A full build merges
     each area's table anew; otherwise the documents that changed go to the area's delta table and
     the merge waits until the delta grows past MAX_DELTA (= a walk costs the walk, not the merge).
@@ -558,15 +661,17 @@ def build(areas: dict[str, list[Path]], full: bool = True) -> dict:
     ignored = [expand(p) for p in read_lines(CONFIG / "ignore.txt")]
     repos = Repos()
     summary = {"built": started, "checked": started, "run": [RUN, LATIN_RUN], "areas": {}, "unreadable": []}
+    folders: dict = {}
     for name, roots in areas.items():
         if name == EXEMPT:
             continue
         fids, changed = [], []
-        for path, stamp, read in documents(roots, inner_roots(areas, name), ignored, repos):
+        for path, stamp, read in documents(roots, inner_roots(areas, name), ignored, repos, folders):
             key = str(path)
             fresh = key not in old or old[key][0] != stamp or old[key][2] != name
-            if not document_prints(path, stamp, read, old, index, name):
-                summary["unreadable"].append(key)
+            ok, why = document_prints(path, stamp, read, old, index, name)
+            if not ok:
+                summary["unreadable"].append([key, why])
                 continue
             fids.append(index[key][1])
             if fresh or (not full and old[key][-1] == "delta"):
@@ -576,11 +681,11 @@ def build(areas: dict[str, list[Path]], full: bool = True) -> dict:
         keep_base = (not full and base.is_file() and name in previous.get("areas", {})
                      and len(changed) <= MAX_DELTA)
         if keep_base:
-            (CACHE / f"{name}.delta.bin").write_bytes(merged(changed, allowed, public).tobytes())
+            atomic_write(CACHE / f"{name}.delta.bin", merged(changed, allowed, public).tobytes())
             count = len(read_table(base))
         else:
             table = merged(fids, allowed, public)
-            base.write_bytes(table.tobytes())
+            atomic_write(base, table.tobytes())
             (CACHE / f"{name}.delta.bin").unlink(missing_ok=True)
             for key, entry in index.items():
                 if entry[2] == name and entry[-1] == "delta":
@@ -590,9 +695,10 @@ def build(areas: dict[str, list[Path]], full: bool = True) -> dict:
     kept = {v[1] for v in index.values()}
     for stale in {v[1] for v in old.values()} - kept:
         (DOCS / f"{stale}.bin").unlink(missing_ok=True)
-    INDEX.write_text(json.dumps(index))
+    atomic_write(INDEX, json.dumps(index))
+    atomic_write(FOLDERS, json.dumps(folders))
     summary["seconds"] = round(time.time() - started, 1)
-    (CACHE / "summary.json").write_text(json.dumps(summary, indent=1))
+    atomic_write(CACHE / "summary.json", json.dumps(summary, indent=1))
     return summary
 
 
@@ -646,45 +752,144 @@ def spotlight_changes(roots: list[Path], since: float, known: dict) -> list[Path
     return found
 
 
+def stamp_stat(stamp: str) -> tuple[int, int] | None:
+    """(mtime_ns, size) a document's stamp holds, or None when this cannot parse it (an older
+    PRINT_FORMAT, or something malformed) -- then it is safest read as changed, not trusted."""
+    parts = stamp.split(":")
+    if len(parts) != 4 or parts[0] != str(PRINT_FORMAT):
+        return None
+    try:
+        return int(parts[2]), int(parts[3])
+    except ValueError:
+        return None
+
+
+def stat_changes(index: dict) -> tuple[list[Path], list[Path]]:
+    """(changed, removed) among the documents the index already knows, found by comparing the
+    size and modification time it recorded with what `stat` gives now -- no folder is listed and
+    no file is opened. This is the fallback for when Spotlight cannot answer (disabled, or inside
+    a sandbox): it catches every one of them edited or deleted since the last look; the documents
+    created since then are folder_changes()'. A stamp this cannot parse counts as changed: its
+    print is rebuilt rather than trusted on faith."""
+    changed, removed = [], []
+    for key, entry in index.items():
+        path = Path(key)
+        known = stamp_stat(entry[0])
+        try:
+            st = path.stat()
+        except OSError:
+            removed.append(path)
+            continue
+        if known is None or (st.st_mtime_ns, st.st_size) != known:
+            changed.append(path)
+    return changed, removed
+
+
+def folder_changes(index: dict) -> list[Path] | None:
+    """Files the index does not know yet in the folders whose modification time moved since the
+    last look -- the documents created since then, which stat_changes() cannot see (creating,
+    removing or renaming a file changes its folder's time). Only those folders are listed; a new
+    folder is walked whole. The folder list is brought up to date. None when there is no folder
+    list yet (a cache from before it was kept): the caller then walks everything once."""
+    if not FOLDERS.is_file():
+        return None
+    folders = json.loads(FOLDERS.read_text())
+    new: list[Path] = []
+    moved = False
+    for folder, mtime in list(folders.items()):
+        here = Path(folder)
+        try:
+            now = here.stat().st_mtime_ns
+        except OSError:
+            folders.pop(folder)
+            moved = True
+            continue
+        if now == mtime:
+            continue
+        folders[folder] = now
+        moved = True
+        with contextlib.suppress(OSError):
+            for entry in os.scandir(here):
+                if entry.name.startswith(".") or entry.name in SKIP_DIRS:
+                    continue
+                path = here / entry.name
+                if entry.is_dir(follow_symlinks=False):
+                    if str(path) in folders:
+                        continue
+                    for sub, dirs, files in os.walk(path):
+                        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+                        with contextlib.suppress(OSError):
+                            folders[sub] = Path(sub).stat().st_mtime_ns
+                        new += [Path(sub) / f for f in files]
+                elif entry.is_file(follow_symlinks=False) and str(path) not in index:
+                    new.append(path)
+    if moved:
+        atomic_write(FOLDERS, json.dumps(folders))
+    return new
+
+
 def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
     """Add the documents changed since the last look to per-area delta tables.
-    None = a full walk is needed instead (Spotlight could not answer, or the delta grew large).
-    A deleted document stays in the tables until the next full walk (= the safe side)."""
-    index = json.loads(INDEX.read_text()) if INDEX.is_file() else {}
-    roots = [r for n, rs in areas.items() if n != EXEMPT for r in rs]
-    changed = spotlight_changes(roots, summary["checked"], index)
-    if changed is None:
-        return None
-    started = time.time()
-    ignored = [expand(p) for p in read_lines(CONFIG / "ignore.txt")]
-    repos = Repos()
-    touched: set[str] = set()
-    for path in changed:
-        path = expand(str(path))
-        area = area_of_path(areas, path)
-        if area in (None, EXEMPT) or any(path == i or i in path.parents for i in ignored):
-            continue
-        root = max((r for r in areas[area] if r in path.parents), key=lambda r: len(r.parts))
-        if any(p in SKIP_DIRS or p.startswith(".") for p in path.relative_to(root).parts[:-1]):
-            continue
-        found = document(path, repos, root=root)
-        if found and document_prints(path, *found, index, index, area):
-            index[str(path)].append("delta")
-            touched.add(area)
-    deltas = {n: [v[1] for v in index.values() if v[2] == n and v[-1] == "delta"] for n in touched}
-    if sum(len(f) for f in deltas.values()) > MAX_DELTA:
-        return None
-    if touched:
-        allowed: set[int] = set()
-        for phrase in read_lines(CONFIG / "allow.txt"):
-            allowed |= fingerprints(phrase)
-        public = background_prints()
-        for name, fids in deltas.items():
-            (CACHE / f"{name}.delta.bin").write_bytes(merged(fids, allowed, public).tobytes())
-        INDEX.write_text(json.dumps(index))
-    summary["checked"] = started
-    (CACHE / "summary.json").write_text(json.dumps(summary, indent=1))
-    return summary
+    None = a full walk is needed instead (Spotlight could not answer and the delta this fell back
+    to grew large). A deleted document Spotlight reports stays in the tables until the next full
+    walk (= the safe side); one the stat fallback finds gone is dropped from the index at once (it
+    can name no folder to have missed a new document in, so there is nothing more to catch there).
+
+    Skipped, unchanged, when another process already holds the build lock: its own update (or
+    the fuller one under way) is used instead of two processes walking or writing together."""
+    with lock_file(wait=False) as acquired:
+        if not acquired:
+            return summary
+        index = json.loads(INDEX.read_text()) if INDEX.is_file() else {}
+        roots = [r for n, rs in areas.items() if n != EXEMPT for r in rs]
+        changed = spotlight_changes(roots, summary["checked"], index)
+        removed: list[Path] = []
+        if changed is None:
+            created = folder_changes(index)
+            if created is None:
+                return None
+            changed, removed = stat_changes(index)
+            changed += created
+        started = time.time()
+        ignored = [expand(p) for p in read_lines(CONFIG / "ignore.txt")]
+        repos = Repos()
+        touched: set[str] = set()
+        dropped = False
+        for path in removed:
+            stale = index.pop(str(path), None)
+            if stale is None:
+                continue
+            dropped = True
+            if not any(v[1] == stale[1] for v in index.values()):
+                (DOCS / f"{stale[1]}.bin").unlink(missing_ok=True)
+        for path in changed:
+            path = expand(str(path))
+            area = area_of_path(areas, path)
+            if area in (None, EXEMPT) or any(path == i or i in path.parents for i in ignored):
+                continue
+            root = max((r for r in areas[area] if r in path.parents), key=lambda r: len(r.parts))
+            if any(p in SKIP_DIRS or p.startswith(".") for p in path.relative_to(root).parts[:-1]):
+                continue
+            found = document(path, repos, root=root)
+            ok = found and document_prints(path, *found, index, index, area)[0]
+            if ok:
+                index[str(path)].append("delta")
+                touched.add(area)
+        deltas = {n: [v[1] for v in index.values() if v[2] == n and v[-1] == "delta"] for n in touched}
+        if sum(len(f) for f in deltas.values()) > MAX_DELTA:
+            return None
+        if touched:
+            allowed: set[int] = set()
+            for phrase in read_lines(CONFIG / "allow.txt"):
+                allowed |= fingerprints(phrase)
+            public = background_prints()
+            for name, fids in deltas.items():
+                atomic_write(CACHE / f"{name}.delta.bin", merged(fids, allowed, public).tobytes())
+        if touched or dropped:
+            atomic_write(INDEX, json.dumps(index))
+        summary["checked"] = started
+        atomic_write(CACHE / "summary.json", json.dumps(summary, indent=1))
+        return summary
 
 
 def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
@@ -720,7 +925,7 @@ def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
         say(f"built in {summary['seconds']}s: {documents} documents in {areas_count(summary['areas'])}"
             " (--status names them)")
         if summary["unreadable"]:
-            say(f"{len(summary['unreadable'])} documents could not be read (see --status)")
+            say(unreadable_line(summary["unreadable"]))
     return {name: [read_table(CACHE / f"{name}.bin"), read_table(CACHE / f"{name}.delta.bin")]
             for name in summary["areas"]}
 
@@ -1017,10 +1222,12 @@ def main(argv: list[str] | None = None) -> int:
                     f"{sum(a['fingerprints'] for a in areas_built)} prints in {areas_count(summary['areas'])}")
             unreadable = summary.get("unreadable", [])
             if args.status:
-                for path in unreadable:
-                    say(f"could not read (not checked): {path}")
+                for entry in unreadable:
+                    path = entry[0] if isinstance(entry, list) else entry
+                    reason = unreadable_reason(entry)
+                    say(f"could not read (not checked): {path}" + (f" ({reason})" if reason else ""))
             elif unreadable:
-                say(f"{len(unreadable)} documents could not be read (see --status)")
+                say(unreadable_line(unreadable))
         else:
             say("fingerprints not built yet")
         return 0
