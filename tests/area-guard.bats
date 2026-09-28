@@ -503,3 +503,22 @@ state_of() { cat "${AREA_GUARD_STATE}/${1:-s1}.json"; }
     write_to "${PERSONAL}/a.md"
     denied
 }
+
+# --- when the destination check itself times out, a deny says so, not that it found it outside ---
+
+@test "area-guard: a destination check that times out says so instead of pretending the sending repository was found" {
+    run python3 -c "
+import importlib.util, subprocess
+spec = importlib.util.spec_from_file_location('ag', '${HOOK}')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+def fake_run(cmd, **kw):
+    raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get('timeout'))
+m.subprocess.run = fake_run
+place, note = m.destination(m.Path('${CASE_REPO}'), ['--dest', 'git@github.com:acme/pipeline.git'])
+print(place == m.Path('${CASE_REPO}'), note)
+"
+    [[ "$output" == *"True"* ]]
+    [[ "$output" == *"did not finish within 60s"* ]]
+    [[ "$output" == *"not that it was found outside every area"* ]]
+}

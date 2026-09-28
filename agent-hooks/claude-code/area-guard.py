@@ -398,11 +398,14 @@ def push_url(repo: Path, named: str | None) -> str:
     return git("remote", "get-url", "--push", name)
 
 
-def destination(target: Path, dest_args: list[str]) -> Path | None:
-    """Where a send lands; None when outside every area (a public repository, say).
-    When the private-document scan cannot answer, the sending repository stands in."""
+def destination(target: Path, dest_args: list[str]) -> tuple[Path | None, str | None]:
+    """(where a send lands, why that is only a guess). None = outside every area (a public
+    repository, say). When the private-document scan cannot answer -- including a time-out, not
+    that it found the destination outside every area -- the sending repository stands in, and the
+    second element says so (so a deny a guess like this leads to can tell the operator it was one,
+    not a real determination)."""
     if not dest_args:
-        return target
+        return target, None
     import tempfile   # loaded only for a push or a gh send: most hook calls never get here
     with tempfile.NamedTemporaryFile() as argv_file:
         args = dest_args
@@ -414,12 +417,14 @@ def destination(target: Path, dest_args: list[str]) -> Path | None:
             r = subprocess.run(["python3", str(CORPUS), "--where", "--repo", str(target), *args],
                                capture_output=True, text=True, timeout=60,
                                env={**os.environ, "GUARD_CONFIG_DIR": str(CONFIG)})
-        except (OSError, subprocess.TimeoutExpired):
-            return target
+        except subprocess.TimeoutExpired:
+            return target, "where the destination sits did not finish within 60s, not that it was found outside every area"
+        except OSError:
+            return target, None
     out = r.stdout.strip().splitlines()[-1:] if r.returncode == 0 else []
     if not out:
-        return target
-    return None if out[0] == "OUTSIDE" else real(out[0])
+        return target, None
+    return (None, None) if out[0] == "OUTSIDE" else (real(out[0]), None)
 
 
 def load_state(session: str) -> dict:
@@ -622,12 +627,13 @@ def main() -> int:
                      f"write {target} (areas: {AREAS}). Do it in another session")
                 return 0
         for send in sends_of(command, cwd) if marks else []:
-            place = destination(*send)
+            place, guess_why = destination(*send)
             if place is None or not allowed(place, marks, areas):
                 where = "a public repository or another place outside every area" if place is None \
                     else str(repo_root(place) or place)
+                caveat = f" ({guess_why})" if guess_why else ""
                 deny(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
-                     f"send to {where} (areas: {AREAS}). Do it in another session")
+                     f"send to {where}{caveat} (areas: {AREAS}). Do it in another session")
                 return 0
     elif tool in WRITES:
         target = real(args.get("file_path") or args.get("notebook_path") or "", cwd)

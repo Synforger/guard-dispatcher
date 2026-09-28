@@ -91,17 +91,27 @@ def judge(name: str, payload: Path, reading: bool = False) -> tuple[int, str]:
         return 1, f"{name} is blocked for sending ({DESTINATIONS}); reading through it still works"
     place = "outside every area" if destination == OUTSIDE else f"in {destination}"
     env = {**os.environ, "GUARD_CONFIG_DIR": str(CONFIG)}
-    try:
-        if destination == OUTSIDE and ANON.is_file():
+    if destination == OUTSIDE and ANON.is_file():
+        try:
             r = subprocess.run(["bash", str(ANON)], capture_output=True, text=True, timeout=60,
                                env={**env, "ANON_SCAN_PATHS": str(payload)})
-            if r.returncode != 0:
-                return 1, f"not sent to {name} ({place}): it carries a flagged identifier (word list)"
+        except subprocess.TimeoutExpired:
+            return 2, (f"not sent to {name}: the word-list scan did not finish within 60s -- refused "
+                       f"because it could not be judged in time, not because of what it found")
+        except OSError as error:
+            return 2, f"not sent to {name}: the word-list scan could not run ({error})"
+        if r.returncode != 0:
+            return 1, f"not sent to {name} ({place}): it carries a flagged identifier (word list)"
+    try:
         r = subprocess.run(["python3", str(CORPUS), "--text", str(payload), "--dest-area",
                             "OUTSIDE" if destination == OUTSIDE else destination],
                            capture_output=True, text=True, timeout=120, env=env)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return 2, f"not sent to {name}: the scans could not run ({error})"
+    except subprocess.TimeoutExpired:
+        return 2, (f"not sent to {name}: the private-document scan did not finish within 120s -- "
+                   f"refused because it could not be judged in time (often a full walk of the "
+                   f"documents), not because of what it found")
+    except OSError as error:
+        return 2, f"not sent to {name}: the private-document scan could not run ({error})"
     if r.returncode == 1:
         return 1, (f"not sent to {name} ({place}): it carries text from a private area the destination "
                    f"is outside of. Replace the text, or declare where it sits in {DESTINATIONS}")
