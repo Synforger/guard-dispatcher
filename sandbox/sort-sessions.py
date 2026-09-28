@@ -12,7 +12,9 @@ A conversation worked inside an area when the agent entry guard marked it there
 a working directory, or a path a tool call named (a file it read or wrote, a path in a command),
 inside the area.
 A path merely printed in a tool's output does not count -- names are visible from every cage,
-content is what a cage keeps. When the areas touched nest (a client inside the company), the
+content is what a cage keeps. Nor does a row written while the conversation ran in a cage (the
+entry guard keeps when it did): the cage refused whatever it hid, and the guard marked only what
+the session could read. When the areas touched nest (a client inside the company), the
 conversation goes to the innermost; when they do not (two clients), it is listed and left.
 
 What moves with a conversation: its record (and the folder of its subagents), its edit backups
@@ -43,6 +45,7 @@ import re
 import shutil
 import sys
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location("cage_config", Path(__file__).with_name("cage-config.py"))
@@ -113,14 +116,28 @@ def resolve(token: str, cwd: str | None) -> Path | None:
     return Path(os.path.realpath(os.path.normpath(path)))
 
 
-def touched_in(record: Path, areas: Areas) -> set[str]:
+def when(stamp) -> datetime | None:
+    try:
+        t = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def caged(row: dict, runs: list[tuple[datetime, datetime]]) -> bool:
+    """The row was written in a cage (a row with no time is taken to have been written outside)."""
+    t = when(row.get("timestamp")) if row.get("timestamp") else None
+    return t is not None and any(since <= t <= last for since, last in runs)
+
+
+def touched_in(record: Path, areas: Areas, runs: list[tuple[datetime, datetime]] = ()) -> set[str]:
     found: set[str] = set()
     for line in record.open(encoding="utf-8", errors="replace"):
         try:
             row = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(row, dict):
+        if not isinstance(row, dict) or caged(row, runs):
             continue
         cwd = row.get("cwd")
         if cwd and (a := areas.of(Path(os.path.realpath(cwd)))):
@@ -140,11 +157,17 @@ def touched_in(record: Path, areas: Areas) -> set[str]:
     return found
 
 
-def marks_of(session: str) -> set[str]:
+def state_of(session: str) -> tuple[set[str], list[tuple[datetime, datetime]]]:
+    """The entry guard's marks of a session and its runs in a cage (a bare list is marks only)."""
     try:
-        return set(json.loads((MARKS / f"{session}.json").read_text()))
+        data = json.loads((MARKS / f"{session}.json").read_text())
     except (OSError, ValueError):
-        return set()
+        return set(), []
+    if isinstance(data, list):
+        return set(data), []
+    runs = [(a, b) for a, b in ((when(r[0]), when(r[1])) for r in data.get("caged") or []
+                                if isinstance(r, list) and len(r) == 2) if a and b]
+    return set(data.get("areas") or []), runs
 
 
 def cage_dir(account: Path, cage: str) -> Path:
@@ -197,10 +220,11 @@ def plan(account: Path, areas: Areas) -> dict:
             stays[str(record)] = sig
             stay += 1
             continue
-        touched = marks_of(session) | touched_in(record, areas)
+        marks, runs = state_of(session)
+        touched = marks | touched_in(record, areas, runs)
         # A subagent's tool calls are in its own record (`<session>/subagents/...`).
         for sub in sorted(record.with_suffix("").glob("**/*.jsonl")):
-            touched |= touched_in(sub, areas)
+            touched |= touched_in(sub, areas, runs)
         touched &= set(areas.roots)
         if not touched:
             stays[str(record)] = sig

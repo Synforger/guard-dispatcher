@@ -146,6 +146,10 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     build personal
     [ "$(env_of CLAUDE_CODE_TMPDIR)" = "${T}/claude-cage/personal" ]
     [ "$(env_of TMPDIR)" = "${T}/claude-cage/personal" ]
+    # zsh's here-documents too (they go under TMPPREFIX, not TMPDIR).
+    [ "$(env_of TMPPREFIX)" = "${T}/claude-cage/personal/zsh" ]
+    # When the cage was entered, in the form of a record's row times (UTC, milliseconds, Z).
+    [[ "$(env_of GUARD_CAGED_SINCE)" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$ ]]
     [ -z "$(env_of CLAUDE_CONFIG_DIR)" ]
     jq -e '.env | has("CLAUDE_SECURESTORAGE_CONFIG_DIR") | not' <<< "${output}" > /dev/null
     build company

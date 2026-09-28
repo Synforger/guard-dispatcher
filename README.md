@@ -264,6 +264,9 @@ step earlier, before each tool call, from the same `areas.txt`:
   [Session cage](#session-cage)) the OS refuses the read, so naming a path in
   it marks nothing. Marks are kept per session under
   `~/.cache/area-guard/`, so they outlive the agent compacting its context.
+  The same file keeps when the session ran in a cage: from the moment the cage
+  was entered (`start.sh` hands the session `GUARD_CAGED_SINCE`) to the last
+  call the hook saw there, one run per cage the conversation was opened in.
 - A marked session cannot `Edit` / `Write` a file inside a git repository
   outside its marks, nor write one from the shell where the command names it
   (a `>` / `>>` redirection, `tee`, `touch`, the destination of `cp` / `mv`
@@ -415,8 +418,10 @@ one that worked inside an area — the entry guard marked it there, or its recor
 area — into that area's cage directory, with its edit backups, environment,
 prompt-history lines and the pastes only those lines cite; folders inside an
 area leave the account's state file too. A path only printed in a tool's
-output does not count, conversations across areas that do not nest are listed
-and left, and running ones are skipped. It prints the plan; `--apply` moves.
+output does not count, nor does a row written while the conversation ran in a
+cage (the entry guard keeps those runs): the cage refused what it hid, and the
+guard marked only what the session could read. Conversations across areas that
+do not nest are listed and left, and running ones are skipped. It prints the plan; `--apply` moves.
 A conversation judged to stay is remembered (`~/.cache/guard-sort/`) and not
 read again until its record, its subagents' records or its mark change, so a
 launcher can run `--apply --quiet` before every session: it prints only when
