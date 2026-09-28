@@ -168,6 +168,26 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     done
 }
 
+@test "no cage writes what Claude Code runs by itself: the settings' hook and status line scripts, the config directories' skills" {
+    mkdir -p "${H}/.claude" "${H}/.claude@company" "${H}/tools"
+    cat > "${H}/.claude/settings.json" <<'JSON'
+{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "f=\"$HOME/tools/on-start.sh\"; [ -f \"$f\" ] && exec bash \"$f\""}]}],
+           "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "python3 ~/tools/check.py --x"}]}]},
+ "statusLine": {"type": "command", "command": "bash ${HOME}/tools/line.sh"}}
+JSON
+    printf '{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "bash /usr/local/bin/outside-home.sh"}]}]}}\n' \
+        > "${H}/.claude@company/settings.json"
+    for cage in personal company client; do
+        build "${cage}"
+        lists denyWrite "${H}/tools/on-start.sh"
+        lists denyWrite "${H}/tools/check.py"
+        lists denyWrite "${H}/tools/line.sh"
+        lacks denyWrite /usr/local/bin/outside-home.sh
+        lacks denyWrite "${H}/tools"                            # the scripts, not the folder beside them
+        for kind in skills commands agents; do lists denyWrite "${H}/.claude*/${kind}"; done
+    done
+}
+
 @test "a cage carries the digest of the files it was built from, and it follows them" {
     build personal
     first="$(env_of GUARD_CAGE_BUILD)"

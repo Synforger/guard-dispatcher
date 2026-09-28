@@ -479,7 +479,7 @@ it lacks what was fixed since, until it is resumed through the launcher.
 The launcher that builds a cage runs outside it, from a repository the agent
 edits inside one. `scripts/pre-launch.sh` stands in front of it, called from the
 shell's launch function (a startup file no cage writes): it pulls the repository
-(`--pull`), refuses a watched path (default `.tooling`) that differs from HEAD
+(`--pull`), refuses a watched path (default `.tooling` and `.claude`) that differs from HEAD
 unless the terminal answers `y`, names in one line what changed there since the
 last start, then runs the launcher with `GUARD_PRE_LAUNCH=1` so the launcher
 does not pull after the check.

