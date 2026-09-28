@@ -475,3 +475,53 @@ print(m.judge('anything', Path('${BATS_TEST_TMPDIR}/payload.txt')))
     [[ "$output" == *"did not finish within 60s"* ]]
     [[ "$output" == *"not because of what it found"* ]]
 }
+
+# --- a browser tool types into the page its tab shows -------------------------------------
+
+# words_for_areas — the operator's list flags a real name and a handle; the company's list only the handle.
+words_for_areas() {
+    export ANON_TRUTH_PATH="${H}/.config/anon-words/master.txt"
+    mkdir -p "${H}/.config/anon-words"
+    printf '%s\n' "${SENTINEL}" "Taro Example" > "${ANON_WORDS_FILE}"
+    cp "${ANON_WORDS_FILE}" "${ANON_TRUTH_PATH}"
+    printf '%s\n' "${SENTINEL}" > "${H}/.config/anon-words/company.txt"
+}
+browser() { call "mcp__claude-in-chrome__$1" "$2"; }
+
+@test "outgoing: a browser tab opened at a company page takes the company's word list, not the operator's" {
+    words_for_areas
+    destinations 'browser:*.force.example company'
+    browser navigate '{"url": "https://acme.lightning.force.example/new", "tabId": 7}'
+    passed
+    browser form_input '{"ref": "user", "value": "Taro Example", "tabId": 7}'
+    passed
+    browser form_input "{\"ref\": \"note\", \"value\": \"${SENTINEL}\", \"tabId\": 7}"
+    denied
+    [[ "${output}" == *"browser:acme.lightning.force.example (in company)"* ]]
+    browser browser_batch '{"actions": [{"action": "type", "text": "Taro Example", "tabId": 7}]}'
+    passed
+}
+
+@test "outgoing: a tab this session has not opened, or opened elsewhere, stays outside every area" {
+    words_for_areas
+    destinations 'browser:*.force.example company'
+    browser form_input '{"ref": "user", "value": "Taro Example", "tabId": 8}'
+    denied
+    [[ "${output}" == *"open it with a navigate call"* ]]
+    browser navigate '{"url": "https://acme.lightning.force.example/", "tabId": 7}'
+    browser navigate '{"url": "https://pricing.example.org/", "tabId": 7}'
+    browser form_input '{"ref": "user", "value": "Taro Example", "tabId": 7}'
+    denied
+    [[ "${output}" == *"browser:pricing.example.org (outside every area)"* ]]
+    browser navigate '{"url": "https://acme.lightning.force.example/", "tabId": 7}'
+    browser browser_batch '{"actions": [{"text": "Taro Example", "tabId": 7}, {"text": "x", "tabId": 9}]}'
+    denied                                              # two tabs, one unknown: not one page
+}
+
+@test "outgoing: an area with no word list of its own takes none, as before" {
+    words_for_areas
+    rm "${H}/.config/anon-words/company.txt"
+    destinations 'mcp__*drive* company'
+    send mcp__acme__drive_upload_file "${SENTINEL}"
+    passed
+}

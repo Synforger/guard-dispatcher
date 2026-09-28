@@ -342,7 +342,10 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   to the loopback host are not sends.
 - **Against what**: the private-document scan compares the payload with the
   areas its destination sits outside of, exactly as for a push; a destination
-  outside every area also gets the word-list scan, as a public repository does.
+  outside every area also gets the word-list scan, as a public repository does,
+  and one inside an area gets that area's own word list when the machine keeps
+  one beside the master (`company.txt` next to `master.txt`: the company takes
+  real names but not the operator's handles).
 - **Where a destination sits** is declared per machine in
   `$GUARD_CONFIG_DIR/destinations.txt`, first match winning:
 
@@ -350,11 +353,15 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   # pattern                 area | outside | block
   mcp__*drive*              company     # company text may go there, a client's may not
   host:*.corp.example.com   company
+  browser:*.corp.example.com company    # a browser tool typing into a page there
   *slack*                   block       # sending refused outright; reading still works
   ```
 
-  The pattern is a glob over the tool name, or over `host:<name>` for a
-  network command. A destination no line names is outside every area, so a new
+  The pattern is a glob over the tool name, over `host:<name>` for a
+  network command, or over `browser:<host>` for a browser tool (an MCP call
+  naming a `tabId`) whose tab this session opened at a page there; a tab it did
+  not open stays named by the tool, and one opened at a page keeps that host
+  after a click takes it elsewhere. A destination no line names is outside every area, so a new
   service carries nothing private until it is declared. A line naming an
   unknown area stops every send until it is fixed.
 
