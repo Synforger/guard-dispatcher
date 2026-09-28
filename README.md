@@ -415,7 +415,10 @@ A cage is `personal` or the name of an area in `areas.txt`:
   cage's — nor the temp folders sessions would otherwise share, where one
   cage's conversation would be readable from the next.
 - No cage writes the guards themselves: the install the hooks run from,
-  `~/.git-hooks`, the global git config, the guard's config directory, the
+  `~/.git-hooks`, the global git config (`~/.config/git` and `~/.gitconfig`,
+  where `core.hooksPath` is), the shells' startup files (`~/.zshrc`,
+  `~/.zshenv`, `~/.zprofile`, `~/.zlogin`, `~/.bashrc`, `~/.bash_profile`,
+  `~/.profile`: where a launcher is defined), the guard's config directory, the
   scanners' master word list (`~/.config/anon-words/`, or wherever
   `ANON_TRUTH_PATH` points — the same default every scanner and sync script
   reads), or Claude Code's settings files (`~/**/.claude*/settings*.json`:
@@ -423,7 +426,10 @@ A cage is `personal` or the name of an area in `areas.txt`:
   registered and where a `disableAllHooks` would switch it off. `start.sh`
   writes them before the cage starts. The settings glob is a macOS-only rule.
 - The network is left open. What leaves the machine is judged by the git and
-  `gh` guards, by content, not by destination.
+  `gh` guards, by content, not by destination. Every cage may look up the
+  file-change notices, TLS verification and the audio-device list; only the
+  personal cage reaches the clipboard (what an area cage put there, the
+  personal cage could read).
 - On macOS every cage may read the `security.mac.sandbox.sentinel` sysctl:
   Security.framework reads it before it writes a keychain item, and refused,
   every keychain write fails — Claude Code keeps its login in the keychain, so
