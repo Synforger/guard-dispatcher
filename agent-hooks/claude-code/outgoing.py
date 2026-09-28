@@ -292,10 +292,243 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
     return out
 
 
+# --- network commands other than curl / wget --------------------------------------------------
+# Each reader takes one simple command and returns its sends. What it sends is scanned like a
+# curl body: the text it carries, the files it uploads (a folder counts as a file that cannot be
+# scanned), and its standard input.
+
+# Options that take a value, per command (the value is not a path or a destination).
+VALUED = {
+    "scp": set("cFiJloPS"),
+    "ssh": set("bcDEeFIiJLlmOopQRSWw"),
+    "rsync": {"e", "f", "B", "M", "T"},
+    "nc": set("epsiwxXqTOIVc"),
+    "mail": {"s", "c", "b", "r", "a"},
+    "http": {"a", "o"},
+}
+RSYNC_VALUED = {"--rsh", "--exclude", "--include", "--filter", "--exclude-from", "--include-from",
+                "--files-from", "--password-file", "--port", "--log-file", "--temp-dir", "--chmod",
+                "--chown", "--rsync-path", "--timeout", "--bwlimit"}
+HTTP_VALUED = {"--auth", "--session", "--session-read-only", "--output", "--verify", "--cert",
+               "--cert-key", "--auth-type", "--proxy", "--timeout", "--print", "--style", "--format-options"}
+SOCKET_ADDRESS = re.compile(r"(?i)^(tcp|tcp4|tcp6|udp|udp4|udp6|ssl|openssl|sctp)[\w-]*:([^:,]+)")
+
+
+def split_options(words: list[str], short_valued: set[str], long_valued: set[str] = frozenset()):
+    """(options, positionals) of a command's arguments; an option's value is kept with it."""
+    options, positional, j = [], [], 0
+    while j < len(words):
+        w = words[j]
+        if w == "--":
+            positional += words[j + 1:]
+            break
+        if w.startswith("--"):
+            takes = w in long_valued
+            options.append((w, words[j + 1] if takes and j + 1 < len(words) else None))
+            j += 2 if takes else 1
+        elif w.startswith("-") and len(w) > 1:
+            last = w[-1]
+            takes = last in short_valued and len(w) == 2
+            value = words[j + 1] if takes and j + 1 < len(words) else (w[2:] if w[1] in short_valued and len(w) > 2 else None)
+            options.append((w[:2], value))
+            j += 2 if takes else 1
+        else:
+            positional.append(w)
+            j += 1
+    return options, positional
+
+
+def remote_host(arg: str) -> str | None:
+    """The host of a remote path (`user@host:path`, `host::module`, `scp://`/`rsync://` URLs), or
+    None for a local path."""
+    if "://" in arg:
+        return urlsplit(arg).hostname
+    head, colon, _ = arg.partition(":")
+    if not colon or "/" in head or not head:
+        return None
+    return head.rsplit("@", 1)[-1] or None
+
+
+def local_payload(ref: str, cwd: str, send_scan: Path) -> tuple[str, list[tuple[Path, str]]]:
+    """What sending a local path carries: a file's text, or the path itself when it cannot be
+    scanned (a folder, or a file whose text cannot be taken out). A path that does not exist
+    carries nothing."""
+    path = Path(os.path.expanduser(ref))
+    path = path if path.is_absolute() else Path(cwd) / path
+    if path.is_dir():
+        return "", [(path, "a folder")]
+    if not path.is_file():
+        return "", []
+    text, why = file_text(path, send_scan)
+    return (text, []) if text is not None else ("", [(path, why)])
+
+
+def stdin_payload(stdin, cwd: str, send_scan: Path) -> tuple[str, list[tuple[Path, str]], str | None]:
+    """(text, unreadable, unknown) for a command's standard input."""
+    if stdin is None:
+        return "", [], None
+    kind, source = stdin
+    if kind == "unknown":
+        return "", [], source
+    if kind == "text":
+        return source, [], None
+    text, files = local_payload(source, cwd, send_scan)
+    return text, files, None
+
+
+def copy_sends(tool: str, words: list[str], cwd: str, send_scan: Path) -> list[Send]:
+    """scp / rsync: local sources copied to a remote destination (the last path)."""
+    options, paths = split_options(words, VALUED[tool], RSYNC_VALUED if tool == "rsync" else frozenset())
+    if len(paths) < 2 or (host := remote_host(paths[-1])) is None:
+        return []
+    texts, unreadable = [], []
+    for source in paths[:-1]:
+        if remote_host(source) is None:
+            text, files = local_payload(source, cwd, send_scan)
+            texts.append(text)
+            unreadable += files
+    return [Send(f"host:{host}", "\n".join(texts), unreadable)]
+
+
+def shell_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
+    """ssh host [command] / nc host port: the command's words and standard input."""
+    options, positional = split_options(words, VALUED["ssh" if tool == "ssh" else "nc"])
+    flags = {o for o, _ in options}
+    if not positional or (tool != "ssh" and ("-l" in flags)):
+        return []
+    host = positional[0].rsplit("@", 1)[-1]
+    text, unreadable, unknown = stdin_payload(stdin, cwd, send_scan)
+    carried = positional[1:] if tool == "ssh" else []
+    if tool != "ssh" and ({"-e", "-c"} & flags):
+        unknown = unknown or "a program nc runs"
+    if any(RUNTIME_TEXT.search(w) for w in carried):
+        unknown = unknown or "a substitution or a variable"
+    if not (carried or stdin):
+        return []
+    return [Send(f"host:{host}", "\n".join([*carried, text]), unreadable, unknown)]
+
+
+def mail_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
+    """mail / mailx / sendmail: each recipient's domain; the subject, attachments and body."""
+    options, positional = split_options(words, VALUED["mail"])
+    recipients = [p for p in positional if "@" in p] + [v for o, v in options if o in ("-c", "-b") and v]
+    text, unreadable, unknown = stdin_payload(stdin, cwd, send_scan)
+    texts = [v for o, v in options if o == "-s" and v] + [text]
+    for o, v in options:
+        if o == "-a" and v:
+            t, files = local_payload(v, cwd, send_scan)
+            texts.append(t)
+            unreadable += files
+    if not recipients:
+        return [Send("mail:?", "\n".join(texts), unreadable, unknown or "recipients read from the message")]
+    domains = dict.fromkeys(r.rsplit("@", 1)[-1].strip(">,").lower() for r in recipients)
+    return [Send(f"mail:{d}", "\n".join(texts), unreadable, unknown) for d in domains]
+
+
+def http_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
+    """HTTPie (`http` / `https` / `xh`): the request items after the URL, and standard input."""
+    options, positional = split_options(words, VALUED["http"], HTTP_VALUED)
+    if positional and positional[0].isupper():
+        method, positional = positional[0], positional[1:]
+    else:
+        method = None
+    if not positional:
+        return []
+    url, items = positional[0], positional[1:]
+    host = "localhost" if url.startswith(":") else urlsplit(url if "://" in url else f"http://{url}").hostname or ""
+    texts, unreadable = [], []
+    for item in items:
+        m = re.match(r"^([^=:@]*)(:=@|=@|@|:=|==|=|:)(.*)$", item)
+        if m and m.group(2) in (":=@", "=@", "@"):
+            t, files = local_payload(m.group(3), cwd, send_scan)
+            texts.append(t)
+            unreadable += files
+        else:
+            texts.append(item)
+    text, files, unknown = stdin_payload(stdin, cwd, send_scan)
+    unknown = unknown or ("a substitution or a variable" if any(RUNTIME_TEXT.search(i) for i in items) else None)
+    if not (items or stdin or method in SENDING_METHODS) or not host or host in LOOPBACK:
+        return []
+    return [Send(f"host:{host}", "\n".join([*texts, text]), unreadable + files, unknown)]
+
+
+def bucket_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
+    """aws s3 / gcloud storage / gsutil / rclone: local sources copied to a bucket or a remote."""
+    verbs = {"cp", "mv", "sync", "rsync", "copy", "copyto", "move", "moveto", "rcat"}
+    rest = words[1:]
+    if tool == "aws":
+        if rest[:1] != ["s3"]:
+            return []
+        rest = rest[1:]
+    elif tool == "gcloud":
+        if rest[:1] != ["storage"]:
+            return []
+        rest = rest[1:]
+    if not rest or rest[0] not in verbs:
+        return []
+    verb, (_, paths) = rest[0], split_options(rest[1:], set())
+    if not paths:
+        return []
+    target = paths[-1]
+    scheme = re.match(r"^(s3|gs)://([^/]+)", target)
+    if scheme:
+        dest = f"{scheme.group(1)}:{scheme.group(2)}"
+    elif tool == "rclone" and ":" in target and not target.startswith(("/", ".", "~")):
+        dest = f"rclone:{target.split(':', 1)[0]}"
+    else:
+        return []   # a download to this machine
+    if verb == "rcat":
+        text, unreadable, unknown = stdin_payload(stdin, cwd, send_scan)
+        return [Send(dest, text, unreadable, unknown)]
+    texts, unreadable = [], []
+    for source in paths[:-1]:
+        if not re.match(r"^(s3|gs)://", source) and not (tool == "rclone" and remote_host(source)):
+            t, files = local_payload(source, cwd, send_scan)
+            texts.append(t)
+            unreadable += files
+    return [Send(dest, "\n".join(texts), unreadable)]
+
+
+def socat_sends(words: list[str]) -> list[Send]:
+    """socat relays whatever it reads to a network address: its payload cannot be named."""
+    hosts = [m.group(2) for w in words[1:] if (m := SOCKET_ADDRESS.match(w))]
+    return [Send(f"host:{h}", "", [], "socat relays whatever it reads") for h in hosts if h not in LOOPBACK]
+
+
+def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
+    """The sends of network commands other than curl / wget. A command with no reader here is
+    not seen (see the README: a script's own network calls are the cage's to limit)."""
+    try:
+        commands = simple_commands(command)
+    except ValueError:
+        return []
+    out = []
+    for words, stdin in commands:
+        tool = os.path.basename(words[0])
+        args = words[1:]
+        if tool in ("scp", "rsync"):
+            out += copy_sends(tool, args, cwd, send_scan)
+        elif tool in ("ssh", "nc", "ncat", "netcat"):
+            out += shell_sends("ssh" if tool == "ssh" else "nc", args, stdin, cwd, send_scan)
+        elif tool in ("mail", "mailx", "sendmail"):
+            out += mail_sends(tool, args, stdin, cwd, send_scan)
+        elif tool in ("http", "https", "xh", "xhs"):
+            out += http_sends(args, stdin, cwd, send_scan)
+        elif tool in ("aws", "gcloud", "gsutil", "rclone"):
+            out += bucket_sends(tool, words, stdin, cwd, send_scan)
+        elif tool == "socat":
+            out += socat_sends(words)
+        elif tool == "sftp":
+            hosts = [p.rsplit("@", 1)[-1].split(":", 1)[0] for p in split_options(args, VALUED["scp"])[1]]
+            out += [Send(f"host:{h}", "", [], "sftp takes its commands as it runs") for h in hosts[:1]]
+    return [s for s in out if s.dest.split(":", 1)[-1] not in LOOPBACK]
+
+
 def sends(tool: str, args: dict, cwd: str, send_scan: Path) -> list[Send]:
     """Every send the call makes."""
     if tool == "Bash":
-        return curl_sends(args.get("command", ""), cwd, send_scan)
+        command = args.get("command", "")
+        return curl_sends(command, cwd, send_scan) + other_sends(command, cwd, send_scan)
     s = tool_send(tool, args, cwd, send_scan)
     return [s] if s is not None else []
 

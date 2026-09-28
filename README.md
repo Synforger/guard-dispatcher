@@ -302,6 +302,15 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   a `$(…)` or backtick substitution, a variable, or standard input from a
   pipe or a heredoc — cannot be scanned and is refused unless it goes to this
   machine; write it to a file and send the file instead.
+  Other network commands are read the same way: `scp` / `rsync` (the local
+  files copied to a remote host; a folder counts as a file that cannot be
+  scanned), `ssh` / `nc` (the remote command and standard input), `mail` /
+  `mailx` / `sendmail` (subject, body and attachments, named `mail:<domain>`),
+  HTTPie (`http` / `https` / `xh`: request items and uploaded files),
+  `aws s3` / `gcloud storage` / `gsutil` / `rclone` (local sources copied to
+  `s3:<bucket>`, `gs:<bucket>` or `rclone:<remote>`). `socat` and `sftp` to
+  another host are refused, since what they send is only known as they run.
+  A command not listed here is not read; its sends are the cage's to limit.
   The text of an Office document or a PDF is taken out of it first. A file
   whose text cannot be taken out (over 8 MB, or not text, like an image)
   cannot be scanned: it is refused once the session has read inside an area,
