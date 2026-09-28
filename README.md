@@ -259,7 +259,10 @@ step earlier, before each tool call, from the same `areas.txt`:
   nothing: `test`, `[ … ]`, `stat`, `realpath`, `readlink` or `ls -d` run on
   its own, every argument literal (no second command, pipe, redirect,
   substitution, glob or variable other than `$HOME`). Anything else is taken
-  to read what it names. Marks are kept per session under
+  to read what it names. Only an area the session can read marks it: the hook
+  runs inside the session's cage, and where the cage hides an area (see
+  [Session cage](#session-cage)) the OS refuses the read, so naming a path in
+  it marks nothing. Marks are kept per session under
   `~/.cache/area-guard/`, so they outlive the agent compacting its context.
 - A marked session cannot `Edit` / `Write` a file inside a git repository
   outside its marks, and cannot `git commit`, `git push` or send through `gh`
