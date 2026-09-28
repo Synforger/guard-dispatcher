@@ -581,9 +581,12 @@ tests/              bats suite (dispatcher helpers, all three hooks,
 ## Tests
 
 ```sh
-brew install bats-core   # once
-bats tests/
+brew install bats-core parallel   # once
+bats --jobs "$(getconf _NPROCESSORS_ONLN)" tests/
 ```
+
+The tests run in parallel, one per core (`--jobs` needs GNU parallel);
+`bats tests/` runs them one after another.
 
 Every test builds a throwaway git repo and a sentinel-only word list
 under the test tmpdir — no operator data is read and nothing outside
