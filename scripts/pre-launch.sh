@@ -18,7 +18,7 @@
 #   4. exec the command with GUARD_PRE_LAUNCH=1 (the launcher then skips its own pull)
 #
 # Usage: pre-launch.sh [--pull] [--watch <path>]... <repo> -- <command> [args...]
-#        --watch is relative to the repository and defaults to .tooling
+#        --watch is relative to the repository and defaults to .tooling and .claude
 # Exit:  the command's, or 1 when the start is refused, 2 on a usage error
 # =============================================================================
 
@@ -41,7 +41,7 @@ if [ -z "${repo}" ] || [ $# -eq 0 ]; then
     echo "usage: pre-launch.sh [--pull] [--watch <path>]... <repo> -- <command> [args...]" >&2
     exit 2
 fi
-[ ${#watch[@]} -gt 0 ] || watch=(.tooling)
+[ ${#watch[@]} -gt 0 ] || watch=(.tooling .claude)
 git -C "${repo}" rev-parse --git-dir >/dev/null 2>&1 || { echo "pre-launch: ${repo} is not a git repository" >&2; exit 2; }
 
 # --- 1. pull ------------------------------------------------------------------

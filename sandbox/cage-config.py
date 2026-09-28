@@ -46,6 +46,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -91,6 +92,13 @@ SETTINGS_GLOB = "{home}/**/.claude*/settings*.json"
 # core.hooksPath elsewhere is refused at commit and push by agent-hooks.
 LOADED_GLOBS = ["{home}/**/.mcp.json", "{home}/**/.claude/commands", "{home}/**/.claude/agents",
                 "{home}/**/.idea", "{home}/**/.ripgreprc"]
+# Claude Code's own extensions in its config directories, outside any repository: a skill's inline
+# shell runs when it loads and its frontmatter can carry hooks and tool grants; commands and agents
+# are loaded the same way. A repository's own are watched at each start instead
+# (scripts/pre-launch.sh), where the agent keeps working on them through commits.
+USER_EXTENSIONS = ["{home}/.claude*/skills", "{home}/.claude*/commands", "{home}/.claude*/agents"]
+# A script path in a settings command: what Claude Code runs by itself in every session.
+SCRIPT_IN_COMMAND = re.compile(r"(?:\$HOME|\$\{HOME\}|~|/)[^\s\"';|&]*\.(?:sh|py|js|mjs|ts|rb|pl)\b")
 # Seatbelt rules every cage adds on macOS that sandbox-runtime has no setting for (run.mjs puts them
 # at the end of the profile). Security.framework reads this sysctl before it writes a keychain item;
 # refused, every keychain write fails -- and Claude Code keeps its login there, so /login and each
@@ -156,6 +164,35 @@ def load_areas() -> dict[str, list[Path]]:
     spec.loader.exec_module(module)
     source = CONFIG / "areas.txt"
     return module.load_areas(source) if source.is_file() else {}
+
+
+def hook_scripts(home: Path) -> list[Path]:
+    """The scripts Claude Code runs by itself (hooks, the status line), as the config directories'
+    settings name them. They run in every session: one a cage rewrote would run in the next session
+    of every other cage, and outside any cage."""
+    def commands(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "command" and isinstance(value, str):
+                    yield value
+                else:
+                    yield from commands(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from commands(value)
+
+    found: list[Path] = []
+    for settings in sorted(home.glob(".claude*/settings*.json")):
+        try:
+            data = json.loads(settings.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for command in commands(data):
+            for word in SCRIPT_IN_COMMAND.findall(command):
+                path = expand(word.replace("${HOME}", "$HOME"))
+                if inside(path, [home]):
+                    found.append(path)
+    return list(dict.fromkeys(found))
 
 
 def outside_run(home: Path) -> list[Path]:
@@ -299,6 +336,8 @@ def build(cage: str, account_dir: Path) -> dict:
                 SETTINGS_GLOB.format(home=home),
                 *(g.format(home=home) for g in LOADED_GLOBS),
                 *map(str, outside_run(home)),
+                *(g.format(home=home) for g in USER_EXTENSIONS),
+                *map(str, hook_scripts(home)),
                 # sandbox-runtime keeps this one writable in every sandbox; it is the personal
                 # account's, so only the personal cage writes it.
                 *([cage_configs] if cage == PERSONAL else [str(home / ".claude/debug")]),
