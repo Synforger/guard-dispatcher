@@ -119,6 +119,7 @@ class Send(NamedTuple):
     dest: str                            # the destination's name (a tool name, or host:<name>)
     payload: str                         # every text the send carries, files' text included
     unreadable: list[tuple[Path, str]]   # files it uploads whose text cannot be taken out, and why
+    unknown: str | None = None          # why the body is only known when the command runs, if it is
 
 
 @functools.lru_cache(maxsize=None)
@@ -185,42 +186,109 @@ def body_text(tool: str, flag: str, value: str, cwd: str, send_scan: Path) -> tu
     return value, []
 
 
+class Command(NamedTuple):
+    words: list[str]
+    stdin: tuple[str, str] | None   # ("file", path) / ("text", here-string) / ("unknown", why)
+
+
+def simple_commands(command: str) -> list[Command]:
+    """The simple commands of a shell command line, each with where its standard input comes
+    from: `< file`, a here-string `<<< text`, or something only known when it runs (a heredoc,
+    or a pipe from the command before). Other redirections are left out, as in shell_words.
+    Raises ValueError on an unclosed quote."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    out: list[Command] = []
+    words: list[str] = []
+    stdin: tuple[str, str] | None = None
+    redirect: str | None = None
+    piped = False
+    for word in lexer:
+        if redirect is not None:
+            if redirect == "<":
+                stdin = ("file", word)
+            elif redirect == "<<<":
+                stdin = ("text", word)
+            redirect = None
+            continue
+        if word in SHELL_BREAK:
+            out.append(Command(words, stdin or (("unknown", "a pipe") if piped else None)))
+            piped, words, stdin = word in ("|", "|&"), [], None
+            continue
+        if word and set(word) <= set("<>&-") and set(word) & set("<>"):
+            if words and words[-1].isdigit():   # the fd of `2>`: split off by the lexer
+                words.pop()
+            if word.startswith("<<") and word != "<<<":
+                stdin = ("unknown", "a heredoc")
+            redirect = word
+            continue
+        words.append(word)
+    out.append(Command(words, stdin or (("unknown", "a pipe") if piped else None)))
+    return [c for c in out if c.words]
+
+
+# A body whose text the shell makes when the command runs: a substitution or a variable.
+RUNTIME_TEXT = re.compile(r"[`$]")
+# Body values that send the command's standard input.
+STDIN_REFS = {"@-", "-", "<-"}
+
+
 def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
-    """The send of each curl / wget in the command that sends a body or a file."""
+    """The send of each curl / wget in the command that sends a body or a file.
+
+    A body known only when the command runs (a substitution or a variable, or standard input
+    from a pipe or a heredoc) cannot be scanned; its send carries `unknown`, and when the shell
+    split the substitution off and took the URL with it, the destination is `host:?`."""
     try:
-        words = shell_words(command)
+        commands = simple_commands(command)
     except ValueError:
         return []
     out = []
-    i = 0
-    while i < len(words):
-        tool = os.path.basename(words[i])
+    for words, stdin in commands:
+        tool = os.path.basename(words[0])
         if tool not in ("curl", "wget"):
-            i += 1
             continue
         body_flags = CURL_BODY if tool == "curl" else WGET_BODY
         takes_value = CURL_TAKES_VALUE if tool == "curl" else WGET_BODY
-        j, body, unreadable, urls, method = i + 1, [], [], [], None
-        while j < len(words) and words[j] not in SHELL_BREAK:
+        j, body, unreadable, urls, method, unknown = 1, [], [], [], None, None
+        while j < len(words):
             w = words[j]
             flag, eq, inline = w.partition("=") if w.startswith("--") else (w, "", "")
             takes = flag in takes_value and not eq
             value = inline if eq else (words[j + 1] if takes and j + 1 < len(words) else None)
             if flag in body_flags and value is not None:
-                text, files = body_text(tool, flag, value, cwd, send_scan)
-                body.append(text)
-                unreadable += files
+                ref = value.split("=", 1)[1] if flag in ("-F", "--form") and "=" in value else value
+                if RUNTIME_TEXT.search(value):
+                    unknown = "a substitution or a variable"
+                elif ref in STDIN_REFS or (tool == "wget" and value == "-"):
+                    kind, source = stdin or ("text", "")
+                    if kind == "unknown":
+                        unknown = source
+                    elif kind == "text":
+                        body.append(source)
+                    else:
+                        text, files = body_text(tool, "-T", source, cwd, send_scan) if tool == "curl" \
+                            else body_text(tool, "--post-file", source, cwd, send_scan)
+                        body.append(text)
+                        unreadable += files
+                else:
+                    text, files = body_text(tool, flag, value, cwd, send_scan)
+                    body.append(text)
+                    unreadable += files
             elif flag in ("-X", "--request") and value:
                 method = value.upper()
             elif not w.startswith("-"):
                 urls.append(w)
             j += 2 if takes else 1
-        if body or method in SENDING_METHODS:
-            for u in urls:
-                host = urlsplit(u if "://" in u else f"http://{u}").hostname or ""
-                if host and host not in LOOPBACK:
-                    out.append(Send(f"host:{host}", "\n".join(body), unreadable))
-        i = j
+        if not (body or unknown or method in SENDING_METHODS):
+            continue
+        hosts = [urlsplit(u if "://" in u else f"http://{u}").hostname or "" for u in urls]
+        hosts = [h for h in hosts if h]
+        if unknown and not hosts:
+            out.append(Send("host:?", "", unreadable, unknown))
+        for host in hosts:
+            if host not in LOOPBACK:
+                out.append(Send(f"host:{host}", "\n".join(body), unreadable, unknown))
     return out
 
 
@@ -240,7 +308,10 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
     refused when the session has read inside an area (`marks`) or the file itself sits inside
     one (`area_of`); a file a session that read nothing private sends from outside the areas —
     an image it made — passes."""
-    for name, payload, unreadable in sends(tool, args, cwd, send_scan):
+    for name, payload, unreadable, unknown in sends(tool, args, cwd, send_scan):
+        if unknown:
+            return (f"outgoing: not sent to {name}: its body is only known when the command runs ({unknown}), "
+                    f"so it cannot be scanned. Write the body to a file and send that file instead")
         for path, why in unreadable:
             area = area_of(path)
             if marks or area:
