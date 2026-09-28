@@ -143,8 +143,9 @@ def load_areas() -> dict[str, list[Path]]:
 
 def outside_run(home: Path) -> list[Path]:
     """Where programs that run outside the cages live, under HOME (see LOGIN_ITEMS). A link on
-    PATH leads to one file (a versioned binary: the folder beside it takes new versions) or into
-    an install whose `bin/` holds it (a venv, a Python build: the whole install)."""
+    PATH leads into an install whose `bin/` holds it (a venv, a Python build: the whole install)
+    or into a folder of its own (a folder of versions: the whole folder, or a cage could plant the
+    next version for the updater outside to link)."""
     def install(root: Path) -> list[Path]:
         # A conda prefix is its base, not envs/ and pkgs/ beside it.
         if (root / "conda-meta").is_dir():
@@ -163,7 +164,7 @@ def outside_run(home: Path) -> list[Path]:
             target = expand(item)
             if not inside(target, [home]) or not target.exists():
                 continue
-            found += install(target.parent.parent) if target.parent.name == "bin" else [target]
+            found += install(target.parent.parent) if target.parent.name == "bin" else [target.parent]
     if OUTSIDE_RUN.is_file():
         for line in OUTSIDE_RUN.read_text(encoding="utf-8").splitlines():
             if line.split("#", 1)[0].strip():
@@ -291,6 +292,9 @@ def build(cage: str, account_dir: Path) -> dict:
     }
     # zsh puts a here-document's temp file under TMPPREFIX (default /tmp/zsh), not TMPDIR.
     env = {"CLAUDE_CODE_TMPDIR": str(tmp_dir), "TMPDIR": str(tmp_dir), "TMPPREFIX": str(tmp_dir / "zsh"),
+           # Claude Code's updater relinks `~/.local/bin/claude`, which no cage writes (OUTSIDE_RUN):
+           # updates are left to whatever starts the cage, outside it.
+           "DISABLE_AUTOUPDATER": "1",
            # When the cage was entered, in the form Claude Code stamps on a record's rows: the entry
            # guard keeps it with the session, so a later sort knows which rows ran in a cage.
            CAGED_SINCE: datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")}

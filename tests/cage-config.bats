@@ -157,8 +157,8 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
         lists denyWrite "${H}/Library/LaunchAgents"
         lists denyWrite "${H}/.local/bin"
         lists denyWrite "${H}/.local/pipx/venvs/tool"              # the venv the link's bin/ sits in
-        lists denyWrite "${H}/.local/share/claude/versions/9.9.9"  # the binary, not the folder of versions
-        lacks denyWrite "${H}/.local/share/claude/versions"
+        lists denyWrite "${H}/.local/share/claude/versions"        # the folder of versions: no planted next one
+        [ "$(env_of DISABLE_AUTOUPDATER)" = "1" ]                   # updates happen outside, where the link is written
         lists denyWrite "${H}/forge/condabin"
         for base in bin lib conda-meta; do lists denyWrite "${H}/forge/${base}"; done
         lacks denyWrite "${H}/forge/envs"                          # environments are made from a session

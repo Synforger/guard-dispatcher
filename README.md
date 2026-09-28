@@ -465,7 +465,8 @@ command does not run. `bootstrap-machine.sh` installs the runtime from
 Every cage also leaves alone what runs outside the cages by itself: login items
 (`~/Library/LaunchAgents`), each PATH folder under HOME (`~/.local/bin` comes
 before git and gh), the install a link there leads into (a venv, a Python build,
-a versioned binary), the base of a conda prefix whose shell hook runs at every
+a folder of versions: Claude Code's updater is off inside a cage, so whatever
+starts the cage updates it outside), the base of a conda prefix whose shell hook runs at every
 shell start (its `envs/` and `pkgs/` stay writable), and each path listed in
 `$GUARD_CONFIG_DIR/outside-run.txt` (one a line: a server a relay starts outside
 the cage, an editable install).
