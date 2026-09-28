@@ -42,6 +42,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -55,6 +56,13 @@ CORPUS = GUARD / "scanners/corpus-scan.py"
 # Where scripts/install.sh puts the guards the hooks run from.
 GUARD_HOME = Path(os.environ.get("GUARD_HOME", Path.home() / ".local/share/guard-dispatcher"))
 EXEMPT = "_exempt"
+# The files a cage is built from. A session keeps the cage it started in; once the install holds
+# other files, that cage lacks what was fixed since (on 2026-09-28, storing the login: a session
+# left running in a cage from before that fix revoked every session's login at its next token
+# refresh). The entry guard compares this build with the install's and stops such a session.
+CAGE_FILES = ["sandbox/cage-config.py", "sandbox/run.mjs", "sandbox/seatbelt.mjs", "sandbox/seatbelt-exec.sh",
+              "sandbox/start.sh", "sandbox/package-lock.json"]
+CAGE_BUILD = "GUARD_CAGE_BUILD"
 PERSONAL = "personal"
 # A cage's Claude Code config directory is the account's directory with `@<cage>` appended
 # (`~/.claude@company`), so one glob finds every cage's directory whatever the account.
@@ -125,6 +133,15 @@ ANON_TRUTH_PATH = Path(os.environ.get("ANON_TRUTH_PATH", str(Path.home() / ".con
 LOGIN_ITEMS = "~/Library/LaunchAgents"
 OUTSIDE_RUN = CONFIG / "outside-run.txt"
 CONDA_BASE = ["bin", "condabin", "lib", "etc", "shell", "conda-meta"]
+
+
+def cage_build(root: Path = GUARD) -> str:
+    """A short digest of the files a cage is built from, as installed under `root`."""
+    digest = hashlib.sha256()
+    for rel in CAGE_FILES:
+        path = root / rel
+        digest.update(rel.encode() + b"\0" + (path.read_bytes() if path.is_file() else b"") + b"\0")
+    return digest.hexdigest()[:16]
 
 
 def expand(path: str | Path) -> Path:
@@ -295,6 +312,7 @@ def build(cage: str, account_dir: Path) -> dict:
            # Claude Code's updater relinks `~/.local/bin/claude`, which no cage writes (OUTSIDE_RUN):
            # updates are left to whatever starts the cage, outside it.
            "DISABLE_AUTOUPDATER": "1",
+           CAGE_BUILD: cage_build(),
            # When the cage was entered, in the form Claude Code stamps on a record's rows: the entry
            # guard keeps it with the session, so a later sort knows which rows ran in a cage.
            CAGED_SINCE: datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")}

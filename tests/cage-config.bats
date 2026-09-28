@@ -168,6 +168,21 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     done
 }
 
+@test "a cage carries the digest of the files it was built from, and it follows them" {
+    build personal
+    first="$(env_of GUARD_CAGE_BUILD)"
+    [[ "${first}" =~ ^[0-9a-f]{16}$ ]]
+    build company
+    [ "$(env_of GUARD_CAGE_BUILD)" = "${first}" ]          # the same install, whatever the cage
+    copy="${BATS_TEST_TMPDIR}/guard"
+    mkdir -p "${copy}/sandbox" "${copy}/scanners"
+    cp "${GUARD_ROOT}"/sandbox/*.py "${GUARD_ROOT}"/sandbox/*.mjs "${GUARD_ROOT}"/sandbox/*.sh "${GUARD_ROOT}"/sandbox/*.json "${copy}/sandbox/"
+    cp "${GUARD_ROOT}"/scanners/corpus-scan.py "${copy}/scanners/"
+    printf '\n' >> "${copy}/sandbox/run.mjs"
+    run python3 "${copy}/sandbox/cage-config.py" personal
+    [ "$(env_of GUARD_CAGE_BUILD)" != "${first}" ]
+}
+
 @test "no cage writes the scanners' master word list directory, wherever ANON_TRUTH_PATH points" {
     for cage in personal company client; do
         build "${cage}"

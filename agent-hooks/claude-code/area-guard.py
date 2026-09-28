@@ -55,6 +55,7 @@ AREAS = CONFIG / "areas.txt"
 STATE = Path(os.environ.get("AREA_GUARD_STATE", Path.home() / ".cache/area-guard"))
 CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus-scan.py"
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/send-scan.py"
+CAGE_CONFIG = Path(__file__).resolve().parents[2] / "sandbox/cage-config.py"
 EXEMPT = "_exempt"
 CAGED_SINCE = "GUARD_CAGED_SINCE"
 READS = {"Read", "Grep", "Glob"}
@@ -589,6 +590,15 @@ def deny(reason: str) -> None:
         "permissionDecisionReason": reason}}, ensure_ascii=False))
 
 
+def stale_cage() -> bool:
+    """Whether this session runs in a cage built from other files than the installed ones."""
+    spec = importlib.util.spec_from_file_location("cage_config", CAGE_CONFIG)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    built = os.environ.get(module.CAGE_BUILD)
+    return bool(built) and built != module.cage_build()
+
+
 def main() -> int:
     event = json.load(sys.stdin)
     areas = load_areas()
@@ -600,6 +610,13 @@ def main() -> int:
     if areas and (since := os.environ.get(CAGED_SINCE)):
         stamp_cage(state, since)
         save_state(session, state)
+    # A session left running in a cage from before the install lacks what was fixed since: stop it
+    # until it is started again (whatever the call, on any machine).
+    if CAGE_CONFIG.is_file() and stale_cage():
+        deny("area-guard: this session runs in a cage built from an older guard than the one installed, "
+             "so it lacks what was fixed since (storing the login among them). End it (/exit) and resume "
+             "it through the launcher, which builds the current cage")
+        return 0
     # Switching the guards off or around is refused even on a machine with no areas
     if tool == "Bash" and (reason := bypass(args.get("command", ""), cwd, areas)):
         deny(f"area-guard: an agent does not switch the guards off or around ({reason}). "
