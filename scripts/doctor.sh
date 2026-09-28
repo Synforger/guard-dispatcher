@@ -103,13 +103,13 @@ check_agent() {
     for settings in ${CLAUDE_CONFIG_DIR:+"${CLAUDE_CONFIG_DIR}/settings.json"} "${HOME}"/.claude*/settings.json; do
         [ -f "${settings}" ] || continue
         found=1
-        # A cage's config dir is named after its area (`<account>@<area>`): this line runs under
-        # bootstrap and agents, so the area is not printed (`sandbox/cage-config.py --config-dirs` lists them).
+        # A config dir left by the retired cages is named after its area (`<account>@<area>`): this
+        # line runs under bootstrap and agents, so the area is not printed.
         local label="${settings}" fix="install.sh --claude-settings ${settings}"
         case "$(basename "$(dirname "${settings}")")" in
             *@*)
                 label="$(dirname "$(dirname "${settings}")")/$(basename "$(dirname "${settings}")" | sed 's/@.*//')@<cage>/settings.json"
-                fix="install.sh --claude-settings for each dir sandbox/cage-config.py --config-dirs prints"
+                fix="install.sh --claude-settings for each ~/.claude*@*/settings.json"
                 ;;
         esac
         if python3 - "${settings}" <<'PY'

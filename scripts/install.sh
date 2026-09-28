@@ -10,8 +10,7 @@
 # classification logic).
 #
 # The guards run from that install, not from the clone: the clone stays free
-# to edit, and an agent session caged by sandbox/ can write the clone but
-# never the install. Installing copies the clone's tracked files as they are
+# to edit without changing what runs. Installing copies the clone's tracked files as they are
 # on disk; the operator's word lists the install already holds (gitignored,
 # never in the clone's history) are kept. Set GUARD_HOME to the clone itself
 # to run the guards from it in place, as before.
@@ -116,17 +115,23 @@ done
 # lost the +x bit if the user re-created files via editor.
 chmod +x "${HOOKS_SRC}/pre-commit" "${HOOKS_SRC}/commit-msg" "${HOOKS_SRC}/pre-push" "${SCRIPT_DIR}/doctor.sh"
 
-# Expose the scanners, helper scripts, agent hooks and session cage alongside the git hooks
+# Expose the scanners, helper scripts and agent hooks alongside the git hooks
 # so Taskfiles, shells and agent settings can invoke them via a stable path
 # (git only executes known hook names, so extra entries here are inert to git
 # itself).
-for entry in scanners scripts agent-hooks sandbox; do
+for entry in scanners scripts agent-hooks; do
     dst="${TARGET_DIR}/${entry}"
     if [ -e "${dst}" ] || [ -L "${dst}" ]; then
         rm -rf "${dst}"
     fi
     ln -s "${GUARD_ROOT}/${entry}" "${dst}"
 done
+
+# The session cage is retired (see _archive/README.md): drop the entry an older
+# install left, so a launcher that looks for it starts without a cage.
+if [ -e "${TARGET_DIR}/sandbox" ] || [ -L "${TARGET_DIR}/sandbox" ]; then
+    rm -rf "${TARGET_DIR}/sandbox"
+fi
 
 git config --global core.hooksPath "${TARGET_DIR}"
 
@@ -172,15 +177,11 @@ PY
 done
 
 # Pre-compile the installed tree's bytecode with the python3 the hook itself invokes
-# (PATH's), so its dynamic imports (area-guard.py's corpus-scan.py and outgoing.py,
-# sort-sessions.py's cage-config.py, ...) do not recompile on every call: the install
-# is not writable from inside a cage (see sandbox/cage-config.py's denyWrite), so a
-# session cannot leave its own __pycache__ there. Best-effort: never blocks the install.
+# (PATH's), so its dynamic imports (area-guard.py's corpus-scan.py and outgoing.py, ...)
+# do not recompile on every call. Best-effort: never blocks the install.
 if command -v python3 >/dev/null 2>&1; then
-    # Only the folders that hold Python: sandbox/node_modules has none, and walking it
-    # tripled the time of an install.
-    if python3 -m compileall -q -x node_modules \
-        "${GUARD_ROOT}/agent-hooks" "${GUARD_ROOT}/scanners" "${GUARD_ROOT}/sandbox"; then
+    # Only the folders the hooks run Python from.
+    if python3 -m compileall -q "${GUARD_ROOT}/agent-hooks" "${GUARD_ROOT}/scanners"; then
         echo "[global-hooks] pre-compiled ${GUARD_ROOT} bytecode"
     else
         echo "[global-hooks] warning: bytecode pre-compile failed (non-fatal)" >&2

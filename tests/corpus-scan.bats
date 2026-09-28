@@ -555,13 +555,15 @@ SH
     [[ "$output" != *"walking the private documents"* ]]
 }
 
-# index_has <path> — the index (docs/index.json) still names <path> as a document.
+# index_has <path> — the index (docs/index.json) still names <path> as a document. The index
+# names real paths (macOS's temp folder sits behind a symlink); a deleted file's folder still
+# resolves, so the path is resolved before the lookup.
 index_has() {
     python3 -c "
-import json, sys
+import json, os, sys
 with open('${GUARD_CORPUS_CACHE}/docs/index.json') as fh:
     index = json.load(fh)
-sys.exit(0 if sys.argv[1] in index else 1)" "$1"
+sys.exit(0 if os.path.realpath(sys.argv[1]) in index else 1)" "$1"
 }
 
 @test "corpus: when Spotlight cannot answer, an edited document is caught without a full rebuild" {
@@ -757,11 +759,11 @@ time.sleep(float(sys.argv[2]))
     [ ! -f "${BATS_TEST_TMPDIR}/ran" ]
 }
 
-# --- inside a sandbox that cannot open an area -------------------------------------
-# A session caged by sandbox/ cannot open the areas outside its cage. A folder made
-# unreadable here stands in for that: the scan must compare with the prints built
-# outside, never walk (and so never rebuild the shut area empty), and refuse when
-# there is nothing built to compare with.
+# --- in a process that cannot open an area -----------------------------------------
+# The OS can keep a process from an area (macOS privacy settings, folder permissions).
+# A folder made unreadable here stands in for that: the scan must compare with the
+# prints built where it could be read, never walk (and so never rebuild the shut area
+# empty), and refuse when there is nothing built to compare with.
 
 # shut <dir> — make a folder unopenable for the rest of the test.
 shut() {
@@ -812,7 +814,7 @@ update_prints() {
     commit_line "nothing copied here"
     scan_last
     [ "$status" -eq 2 ]
-    [[ "$output" == *"REFUSED"*"run corpus-scan.py --update outside the sandbox"* ]]
+    [[ "$output" == *"REFUSED"*"run corpus-scan.py --update where every area can be read"* ]]
 }
 
 @test "corpus: the prints are neither refreshed nor updated from inside" {

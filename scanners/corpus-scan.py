@@ -42,7 +42,7 @@ is a whole printed row, and a block of CODE_LINES sent lines is a hit when each
 is a whole printed line. Prints are kept per document and reused while the
 document is unchanged; documents changed since the last look are found through
 Spotlight and added at once. When Spotlight cannot answer (disabled, an area it
-does not index, or inside a sandbox that can still list the area's folder) the
+does not index, or a process that can list the area's folder but not search it) the
 size and modification time each document's print was built from are compared
 with what `stat` gives now instead, and only the folders whose modification time
 moved are listed again (a file created, removed or renamed changes its folder's
@@ -82,10 +82,11 @@ a public repository leaves the client all the same:
     corpus-scan.py --summary              the same in counts, grouped by why, naming nothing (for
                                           output that an agent or a log reads: doctor, bootstrap)
 
-Inside a sandbox that cannot open some area (a session caged by sandbox/), nothing is walked
-and nothing cached is rewritten: the text is compared with the prints last built outside, an
-area whose folder cannot be listed is taken from the areas those prints were built for, and an
-area with no prints at all is a refusal. Run --update outside before entering the sandbox.
+In a process the OS keeps from some area (macOS privacy settings, folder permissions), nothing
+is walked and nothing cached is rewritten: the text is compared with the prints last built where
+the area could be read, an area whose folder cannot be listed is taken from the areas those
+prints were built for, and an area with no prints at all is a refusal. Run --update where every
+area can be read.
 
 Exit: 0 clean or not configured, 1 hit, 2 usage / configuration error.
 """
@@ -282,7 +283,7 @@ def built_children(template: str, parent: Path) -> list[Path]:
     summary = built_summary()
     if summary is None:
         raise ValueError(f"cannot list {parent} here and no prints were built where it can be "
-                         f"read: run corpus-scan.py --update outside the sandbox")
+                         f"read: run corpus-scan.py --update where every area can be read")
     return sorted(parent / n[len(prefix):len(n) - len(suffix)] for n in summary["areas"]
                   if n.startswith(prefix) and n.endswith(suffix) and len(n) > len(prefix) + len(suffix))
 
@@ -295,7 +296,7 @@ def built_summary() -> dict | None:
 
 
 def sealed(areas: dict[str, list[Path]]) -> list[str]:
-    """Areas this process cannot open: it runs in a sandbox, and may only use what was built outside."""
+    """Areas this process cannot open: it may only use the prints built where they could be read."""
     shut = []
     for name, roots in areas.items():
         if name == EXEMPT:
@@ -767,8 +768,8 @@ def stamp_stat(stamp: str) -> tuple[int, int] | None:
 def stat_changes(index: dict) -> tuple[list[Path], list[Path]]:
     """(changed, removed) among the documents the index already knows, found by comparing the
     size and modification time it recorded with what `stat` gives now -- no folder is listed and
-    no file is opened. This is the fallback for when Spotlight cannot answer (disabled, or inside
-    a sandbox): it catches every one of them edited or deleted since the last look; the documents
+    no file is opened. This is the fallback for when Spotlight cannot answer (disabled, or an
+    area it does not index): it catches every one of them edited or deleted since the last look; the documents
     created since then are folder_changes()'. A stamp this cannot parse counts as changed: its
     print is rebuilt rather than trusted on faith."""
     changed, removed = [], []
@@ -902,7 +903,7 @@ def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
             raise ValueError(f"{', '.join(shut)} cannot be opened here and "
                              + ("the prints cannot be rebuilt from inside" if refresh else
                                 f"no prints were built for {', '.join(missing) or 'these settings'}")
-                             + ": run corpus-scan.py --update outside the sandbox")
+                             + ": run corpus-scan.py --update where every area can be read")
         built = time.strftime("%Y-%m-%d %H:%M", time.localtime(summary["checked"] or summary["built"]))
         say(f"{areas_count(shut)} cannot be opened here -- compared with the prints built outside at {built}")
         return {name: [read_table(CACHE / f"{name}.bin"), read_table(CACHE / f"{name}.delta.bin")]
@@ -1000,7 +1001,7 @@ def clones(areas: dict[str, list[Path]]) -> dict[str, list[str]]:
     shut = sealed(areas)
     try:
         cached = json.loads(path.read_text())
-        # Inside a sandbox a walk misses the shut areas: the map built outside is the better one.
+        # A walk misses the shut areas: the map built where they could be read is the better one.
         if shut or time.time() - cached["built"] < CLONES_TTL:
             return cached["map"]
     except (OSError, ValueError, KeyError):
@@ -1197,7 +1198,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if args.refresh:
                 if sealed(areas):
-                    load(areas, refresh=True)  # refuses: nothing is rebuilt from inside a sandbox
+                    load(areas, refresh=True)  # refuses: nothing is rebuilt where an area cannot be read
                 for stale in ("visibility.json", "clones.json"):
                     (CACHE / stale).unlink(missing_ok=True)
                 load(areas, refresh=True)
