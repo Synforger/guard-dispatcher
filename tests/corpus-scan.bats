@@ -555,13 +555,15 @@ SH
     [[ "$output" != *"walking the private documents"* ]]
 }
 
-# index_has <path> — the index (docs/index.json) still names <path> as a document.
+# index_has <path> — the index (docs/index.json) still names <path> as a document. The index
+# names real paths (macOS's temp folder sits behind a symlink); a deleted file's folder still
+# resolves, so the path is resolved before the lookup.
 index_has() {
     python3 -c "
-import json, sys
+import json, os, sys
 with open('${GUARD_CORPUS_CACHE}/docs/index.json') as fh:
     index = json.load(fh)
-sys.exit(0 if sys.argv[1] in index else 1)" "$1"
+sys.exit(0 if os.path.realpath(sys.argv[1]) in index else 1)" "$1"
 }
 
 @test "corpus: when Spotlight cannot answer, an edited document is caught without a full rebuild" {
