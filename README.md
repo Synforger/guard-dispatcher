@@ -462,6 +462,14 @@ python3 sandbox/sort-sessions.py --account-dir ~/.claude --account-dir ~/.claude
 command does not run. `bootstrap-machine.sh` installs the runtime from
 `sandbox/package-lock.json`.
 
+Every cage also leaves alone what runs outside the cages by itself: login items
+(`~/Library/LaunchAgents`), each PATH folder under HOME (`~/.local/bin` comes
+before git and gh), the install a link there leads into (a venv, a Python build,
+a versioned binary), the base of a conda prefix whose shell hook runs at every
+shell start (its `envs/` and `pkgs/` stay writable), and each path listed in
+`$GUARD_CONFIG_DIR/outside-run.txt` (one a line: a server a relay starts outside
+the cage, an editable install).
+
 The launcher that builds a cage runs outside it, from a repository the agent
 edits inside one. `scripts/pre-launch.sh` stands in front of it, called from the
 shell's launch function (a startup file no cage writes): it pulls the repository

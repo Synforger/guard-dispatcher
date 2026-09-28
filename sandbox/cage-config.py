@@ -115,6 +115,16 @@ KEYCHAINS = "~/Library/Keychains"
 # second one an area's `ANON_TRUTH_PATH` points at) is a scanner truth a session must not be
 # able to weaken, so its whole folder is carved out below like the guard's own config dir.
 ANON_TRUTH_PATH = Path(os.environ.get("ANON_TRUTH_PATH", str(Path.home() / ".config/anon-words/master.txt")))
+# What runs outside every cage by itself: a login item, and the programs a shell outside finds on
+# PATH. A program a cage could rewrite there runs as the operator the next time anyone types its
+# name -- and `~/.local/bin` comes first on PATH, ahead of git, gh and python. So no cage writes a
+# PATH folder under HOME, the install a link there leads into, a conda base the shell hook runs at
+# every start, nor what this machine lists in OUTSIDE_RUN (one path a line: a server a relay starts
+# outside, an editable install). A conda base keeps envs/ and pkgs/ writable: environments are
+# made from inside a session.
+LOGIN_ITEMS = "~/Library/LaunchAgents"
+OUTSIDE_RUN = CONFIG / "outside-run.txt"
+CONDA_BASE = ["bin", "condabin", "lib", "etc", "shell", "conda-meta"]
 
 
 def expand(path: str | Path) -> Path:
@@ -129,6 +139,36 @@ def load_areas() -> dict[str, list[Path]]:
     spec.loader.exec_module(module)
     source = CONFIG / "areas.txt"
     return module.load_areas(source) if source.is_file() else {}
+
+
+def outside_run(home: Path) -> list[Path]:
+    """Where programs that run outside the cages live, under HOME (see LOGIN_ITEMS). A link on
+    PATH leads to one file (a versioned binary: the folder beside it takes new versions) or into
+    an install whose `bin/` holds it (a venv, a Python build: the whole install)."""
+    def install(root: Path) -> list[Path]:
+        # A conda prefix is its base, not envs/ and pkgs/ beside it.
+        if (root / "conda-meta").is_dir():
+            return [root / name for name in CONDA_BASE if (root / name).exists()]
+        return [root]
+
+    found: list[Path] = [expand(LOGIN_ITEMS)]
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        folder = expand(entry) if entry else None
+        if folder is None or not inside(folder, [home]) or not folder.is_dir():
+            continue
+        found += [folder, *(install(folder.parent) if (folder.parent / "conda-meta").is_dir() else [])]
+        for item in folder.iterdir():
+            if not item.is_symlink():
+                continue
+            target = expand(item)
+            if not inside(target, [home]) or not target.exists():
+                continue
+            found += install(target.parent.parent) if target.parent.name == "bin" else [target]
+    if OUTSIDE_RUN.is_file():
+        for line in OUTSIDE_RUN.read_text(encoding="utf-8").splitlines():
+            if line.split("#", 1)[0].strip():
+                found.append(expand(line.split("#", 1)[0].strip()))
+    return list(dict.fromkeys(found))
 
 
 def inside(path: Path, roots: list[Path]) -> bool:
@@ -240,6 +280,7 @@ def build(cage: str, account_dir: Path) -> dict:
                 # inside. The launcher writes them before the cage starts. (A glob: macOS only.)
                 SETTINGS_GLOB.format(home=home),
                 *(g.format(home=home) for g in LOADED_GLOBS),
+                *map(str, outside_run(home)),
                 # sandbox-runtime keeps this one writable in every sandbox; it is the personal
                 # account's, so only the personal cage writes it.
                 *([cage_configs] if cage == PERSONAL else [str(home / ".claude/debug")]),
