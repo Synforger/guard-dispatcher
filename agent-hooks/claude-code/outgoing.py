@@ -6,7 +6,10 @@ judgement in `scanners/send-scan.py`, which decides as for a push (see there for
 `destinations.txt`).
 
 - A tool that sends to a service (an MCP tool, the Artifact tools) is named by the tool; its
-  payload is every string of the call and the contents of the local files it uploads.
+  payload is every string of the call and the contents of the local files it uploads (the text
+  of an Office document or a PDF is taken out of it). A file whose text cannot be taken out
+  (too large, or not text) is refused once the session has read inside an area or when the file
+  sits inside one; otherwise it passes unscanned.
 - A `curl` / `wget` with a body or an upload (`-d`, `--data*`, `--json`, `-F`, `-T`, `--post-*`,
   or `-X POST|PUT|PATCH`) is named `host:<host>`; its payload is the body and the files it sends.
 
@@ -17,12 +20,15 @@ without a body, and anything bound for the loopback host (this machine).
 
 from __future__ import annotations
 
+import functools
+import importlib.util
 import os
 import re
 import shlex
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import urlsplit
 
 # The last word of a tool name (`mcp__server__slack_read_channel` -> `slack_read_channel`) that
@@ -107,43 +113,78 @@ def local_files(args: dict, cwd: str) -> list[Path]:
     return found
 
 
-def file_text(path: Path) -> str:
+class Send(NamedTuple):
+    dest: str                            # the destination's name (a tool name, or host:<name>)
+    payload: str                         # every text the send carries, files' text included
+    unreadable: list[tuple[Path, str]]   # files it uploads whose text cannot be taken out, and why
+
+
+@functools.lru_cache(maxsize=None)
+def corpus_module(send_scan: Path):
+    """The private-document scan as a module: Office and PDF text is taken out in that one place."""
+    spec = importlib.util.spec_from_file_location("corpus_scan", send_scan.parent / "corpus-scan.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def file_text(path: Path, send_scan: Path) -> tuple[str | None, str]:
+    """(text, why) for a file a call uploads. The text of an Office document or a PDF is taken out
+    of it. text is None when the file cannot be read as text, and why then says why."""
+    suffix = path.suffix.lower()
     try:
+        corpus = corpus_module(send_scan)
+        if suffix in corpus.OFFICE:
+            return "\n".join(corpus.office_units(path)), ""
+        if suffix == ".pdf":
+            return "\n".join(corpus.pdf_units(path)), ""
         if path.stat().st_size > MAX_FILE:
-            return ""
-        return path.read_bytes().decode("utf-8", "replace")
-    except OSError:
-        return ""
+            return None, f"larger than {MAX_FILE // (1024 * 1024)} MB"
+        data = path.read_bytes()
+    except Exception:  # noqa: BLE001 — whatever stops the reading, the file counts as unscanned
+        return None, "its text could not be taken out"
+    if b"\0" in data[:8192]:
+        return None, "not a text file"
+    return data.decode("utf-8", "replace"), ""
 
 
-def tool_send(tool: str, args: dict, cwd: str) -> tuple[str, str] | None:
-    """(destination name, payload) for a tool call that sends, else None."""
+def tool_send(tool: str, args: dict, cwd: str, send_scan: Path) -> Send | None:
+    """The send of a tool call that sends, else None."""
     if not (tool.startswith("mcp__") or tool in HOST_SENDERS) or reads_only(tool, args):
         return None
-    texts = strings(args) + [file_text(p) for p in local_files(args, cwd)]
-    return tool, "\n".join(texts)
+    texts, unreadable = strings(args), []
+    for p in local_files(args, cwd):
+        text, why = file_text(p, send_scan)
+        if text is None:
+            unreadable.append((p, why))
+        else:
+            texts.append(text)
+    return Send(tool, "\n".join(texts), unreadable)
 
 
-def body_text(tool: str, flag: str, value: str, cwd: str) -> str:
-    """What one body option sends: its text, or the contents of the file it points at."""
-    def contents(ref: str) -> str:
+def body_text(tool: str, flag: str, value: str, cwd: str, send_scan: Path) -> tuple[str, list[tuple[Path, str]]]:
+    """What one body option sends: its text, or the contents of the file it points at (with the
+    file itself when its text cannot be taken out)."""
+    def contents(ref: str) -> tuple[str, list[tuple[Path, str]]]:
         path = Path(os.path.expanduser(ref))
-        return file_text(path if path.is_absolute() else Path(cwd) / path)
+        path = path if path.is_absolute() else Path(cwd) / path
+        text, why = file_text(path, send_scan)
+        return (text, []) if text is not None else ("", [(path, why)])
     if (tool, flag) in {("curl", "-T"), ("curl", "--upload-file"), ("wget", "--post-file"), ("wget", "--body-file")}:
         return contents(value)
     if flag == "--data-raw" or tool == "wget":
-        return value
+        return value, []
     # -d @file, --json @file, --data-urlencode [name]@file, -F name=@file / name=<file
     ref = value.split("=", 1)[1] if flag in ("-F", "--form") and "=" in value else value
     if flag == "--data-urlencode" and "@" in value and "=" not in value.split("@", 1)[0]:
         ref = "@" + value.split("@", 1)[1]
     if ref[:1] in ("@", "<") and ref[1:] != "-":
         return contents(ref[1:])
-    return value
+    return value, []
 
 
-def curl_sends(command: str, cwd: str) -> list[tuple[str, str]]:
-    """(host:<name>, payload) for each curl / wget in the command that sends a body or a file."""
+def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
+    """The send of each curl / wget in the command that sends a body or a file."""
     try:
         words = shell_words(command)
     except ValueError:
@@ -157,14 +198,16 @@ def curl_sends(command: str, cwd: str) -> list[tuple[str, str]]:
             continue
         body_flags = CURL_BODY if tool == "curl" else WGET_BODY
         takes_value = CURL_TAKES_VALUE if tool == "curl" else WGET_BODY
-        j, body, urls, method = i + 1, [], [], None
+        j, body, unreadable, urls, method = i + 1, [], [], [], None
         while j < len(words) and words[j] not in SHELL_BREAK:
             w = words[j]
             flag, eq, inline = w.partition("=") if w.startswith("--") else (w, "", "")
             takes = flag in takes_value and not eq
             value = inline if eq else (words[j + 1] if takes and j + 1 < len(words) else None)
             if flag in body_flags and value is not None:
-                body.append(body_text(tool, flag, value, cwd))
+                text, files = body_text(tool, flag, value, cwd, send_scan)
+                body.append(text)
+                unreadable += files
             elif flag in ("-X", "--request") and value:
                 method = value.upper()
             elif not w.startswith("-"):
@@ -174,22 +217,34 @@ def curl_sends(command: str, cwd: str) -> list[tuple[str, str]]:
             for u in urls:
                 host = urlsplit(u if "://" in u else f"http://{u}").hostname or ""
                 if host and host not in LOOPBACK:
-                    out.append((f"host:{host}", "\n".join(body)))
+                    out.append(Send(f"host:{host}", "\n".join(body), unreadable))
         i = j
     return out
 
 
-def sends(tool: str, args: dict, cwd: str) -> list[tuple[str, str]]:
-    """Every (destination name, payload) the call sends."""
+def sends(tool: str, args: dict, cwd: str, send_scan: Path) -> list[Send]:
+    """Every send the call makes."""
     if tool == "Bash":
-        return curl_sends(args.get("command", ""), cwd)
-    s = tool_send(tool, args, cwd)
+        return curl_sends(args.get("command", ""), cwd, send_scan)
+    s = tool_send(tool, args, cwd, send_scan)
     return [s] if s is not None else []
 
 
-def check(tool: str, args: dict, cwd: str, send_scan: Path) -> str | None:
-    """The one-line refusal for this call, or None when every send in it passes."""
-    for name, payload in sends(tool, args, cwd):
+def check(tool: str, args: dict, cwd: str, send_scan: Path,
+          marks: frozenset[str] = frozenset(), area_of=lambda path: None) -> str | None:
+    """The one-line refusal for this call, or None when every send in it passes.
+
+    A file whose text cannot be taken out (too large, or not text) cannot be scanned. It is
+    refused when the session has read inside an area (`marks`) or the file itself sits inside
+    one (`area_of`); a file a session that read nothing private sends from outside the areas —
+    an image it made — passes."""
+    for name, payload, unreadable in sends(tool, args, cwd, send_scan):
+        for path, why in unreadable:
+            area = area_of(path)
+            if marks or area:
+                because = (f"this session has read inside {', '.join(sorted(marks))}" if marks
+                           else f"the file sits inside {area}")
+                return f"outgoing: not sent to {name}: {path} cannot be scanned ({why}), and {because}"
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8",
                                          dir=os.environ.get("TMPDIR") or None) as fh:
             fh.write(payload)

@@ -108,3 +108,30 @@ mk_office() {
     ( cd "${work}" && zip -q -r "${path}" . )
     rm -rf "${work}"
 }
+
+# mk_pdf <path> <text> [flate] — a one-page PDF whose text layer holds <text> (ASCII). With
+# flate the page stream is compressed, as in a real PDF, so its bytes do not show the text.
+mk_pdf() {
+    python3 - "$1" "$2" "${3:-}" <<'PY'
+import sys, zlib
+path, text, flate = sys.argv[1], sys.argv[2], sys.argv[3] == "flate"
+stream = f"BT /F1 10 Tf 20 700 Td ({text}) Tj ET".encode()
+filt = b""
+if flate:
+    stream, filt = zlib.compress(stream), b" /Filter /FlateDecode"
+objs = [b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        b"<< /Length %d%s >>\nstream\n" % (len(stream), filt) + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+out, offsets = b"%PDF-1.4\n", []
+for i, body in enumerate(objs, 1):
+    offsets.append(len(out))
+    out += b"%d 0 obj\n" % i + body + b"\nendobj\n"
+xref = len(out)
+out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+out += b"".join(b"%010d 00000 n \n" % o for o in offsets)
+out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+open(path, "wb").write(out)
+PY
+}

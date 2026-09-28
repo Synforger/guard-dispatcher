@@ -423,13 +423,18 @@ def main() -> int:
     if tool in WRITES and ".cache/area-guard" in str(real(args.get("file_path") or args.get("notebook_path") or "", cwd)):
         deny("area-guard: an agent does not rewrite the entry guard's marks")
         return 0
-    if reason := outgoing_module().check(tool, args, cwd, SEND_SCAN):
+    session = event.get("session_id", "unknown")
+    marks = load_marks(session) if areas else set()
+
+    def private_area(path: Path) -> str | None:
+        area = area_of(real(path), areas)
+        return area if area != EXEMPT else None
+
+    if reason := outgoing_module().check(tool, args, cwd, SEND_SCAN, frozenset(marks), private_area):
         deny(reason)
         return 0
     if not areas:
         return 0
-    session = event.get("session_id", "unknown")
-    marks = load_marks(session)
     touched: list[Path] = []
 
     if tool in READS:
