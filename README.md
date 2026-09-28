@@ -489,6 +489,13 @@ contract:
   comment threads, repo description/topics/homepage, releases, and
   Actions run titles.
   The weekly audit runs it scoped to the week's activity.
+  Findings that will not be rewritten (history, PR text) can be accepted as
+  known: `scripts/weekly-audit.sh --accept <repo>...` records each
+  repository as it stands in `~/.config/guard-dispatcher/known/<repo>.known`
+  (the ref tips, the time, and the matching lines of branch names, tags,
+  metadata and releases). From then on only what appears later is red — a new
+  commit carrying a known word included — and the files in the tree are
+  always scanned whole (`anon-audit-deep.sh --known FILE` / `--record-known FILE`).
 - **A GitHub source that cannot be fetched is reported as a finding, never
   as clean.** The audit settles reachability once before scanning and falls
   back to the keyring credential when an environment token cannot see the
