@@ -403,11 +403,13 @@ A cage is `personal` or the name of an area in `areas.txt`:
   cage's — nor the temp folders sessions would otherwise share, where one
   cage's conversation would be readable from the next.
 - No cage writes the guards themselves: the install the hooks run from,
-  `~/.git-hooks`, the global git config, the guard's config directory, or
-  Claude Code's settings files (`~/**/.claude*/settings*.json`: every config
-  dir's and every project's), where the entry guard is registered and where a
-  `disableAllHooks` would switch it off. `start.sh` writes them before the cage
-  starts. The settings glob is a macOS-only rule.
+  `~/.git-hooks`, the global git config, the guard's config directory, the
+  scanners' master word list (`~/.config/anon-words/`, or wherever
+  `ANON_TRUTH_PATH` points — the same default every scanner and sync script
+  reads), or Claude Code's settings files (`~/**/.claude*/settings*.json`:
+  every config dir's and every project's), where the entry guard is
+  registered and where a `disableAllHooks` would switch it off. `start.sh`
+  writes them before the cage starts. The settings glob is a macOS-only rule.
 - The network is left open. What leaves the machine is judged by the git and
   `gh` guards, by content, not by destination.
 

@@ -106,6 +106,17 @@ JSON
     [ ! -e "${H}/.git-hooks" ]
 }
 
+@test "install: pre-compiles the installed tree's bytecode so the hook does not recompile on every call" {
+    run bash "${GUARD_ROOT}/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"pre-compiled ${INSTALLED} bytecode"* ]]
+    [ -d "${INSTALLED}/agent-hooks/claude-code/__pycache__" ]
+    [ -d "${INSTALLED}/scanners/__pycache__" ]
+    [ -d "${INSTALLED}/sandbox/__pycache__" ]
+    compgen -G "${INSTALLED}/agent-hooks/claude-code/__pycache__/area-guard.*.pyc" > /dev/null
+    compgen -G "${INSTALLED}/scanners/__pycache__/corpus-scan.*.pyc" > /dev/null
+}
+
 @test "install: an unknown argument is refused before anything is linked" {
     run bash "${GUARD_ROOT}/scripts/install.sh" --settings x
     [ "${status}" -eq 2 ]

@@ -170,3 +170,21 @@ path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
 PY
     echo "[global-hooks] agent entry guard registered in ${settings}"
 done
+
+# Pre-compile the installed tree's bytecode with the python3 the hook itself invokes
+# (PATH's), so its dynamic imports (area-guard.py's corpus-scan.py and outgoing.py,
+# sort-sessions.py's cage-config.py, ...) do not recompile on every call: the install
+# is not writable from inside a cage (see sandbox/cage-config.py's denyWrite), so a
+# session cannot leave its own __pycache__ there. Best-effort: never blocks the install.
+if command -v python3 >/dev/null 2>&1; then
+    # Only the folders that hold Python: sandbox/node_modules has none, and walking it
+    # tripled the time of an install.
+    if python3 -m compileall -q -x node_modules \
+        "${GUARD_ROOT}/agent-hooks" "${GUARD_ROOT}/scanners" "${GUARD_ROOT}/sandbox"; then
+        echo "[global-hooks] pre-compiled ${GUARD_ROOT} bytecode"
+    else
+        echo "[global-hooks] warning: bytecode pre-compile failed (non-fatal)" >&2
+    fi
+else
+    echo "[global-hooks] warning: python3 not found on PATH — skipping bytecode pre-compile" >&2
+fi
