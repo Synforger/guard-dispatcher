@@ -278,34 +278,106 @@ def upto_break(words: list[str]) -> list[str]:
     return words[:next((i for i, w in enumerate(words) if w in breaks), len(words))]
 
 
+# git options that take a value before the subcommand (`git -C dir -c k=v push`).
+GIT_VALUED = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
+SHELLS = {"bash", "sh", "zsh", "dash"}
+KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}", "time"}
+WRAPPERS = {"sudo", "env", "command", "exec", "builtin", "nohup", "nice", "caffeinate", "xargs"}
+
+
 def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
     """Every send in a command (git commit / push, a sending gh call) as
     (repository it runs in, arguments naming its destination for corpus-scan).
-    A commit stays local, so its arguments are empty."""
-    words = shell_words(command)
-    target = cwd
-    m = re.search(r"\bgit\s+-C\s+(\S+)", command) or re.search(r"(?:^|&&|;)\s*cd\s+(\S+)", command)
-    if m:
-        target = m.group(1).rstrip(";&|").strip("'\"")   # in `cd ~/x; git commit` the `;` is not part of the path
-    target_path = real(target, cwd)
+    A commit stays local, so its arguments are empty.
+
+    The command is read in order, following where it stands: `cd`, `pushd` / `popd` and a
+    `( ... )` subshell move it, and each git runs where the command stands at that point, moved
+    again by its own `-C`. So `cd a; cd b && git push` pushes from b, and `(cd a); git commit`
+    commits where it started. A shell's -c string is read the same way from where it runs."""
+    try:
+        words = shell_words(command)
+    except ValueError:
+        return []
+    breaks = outgoing_module().SHELL_BREAK
     found: list[tuple[Path, list[str]]] = []
-    kinds = {k.group(1) for k in GIT_SEND.finditer(command)}
-    if "commit" in kinds:
-        found.append((target_path, []))
-    for i, w in enumerate(words):
-        if w == "push" and "push" in kinds:
-            after = upto_break(words[i + 1:])
-            named = next((a for a in after if not a.startswith("-")), None)
-            found.append((target_path, ["--dest", push_url(target_path, named)]))
-        elif w == "gh":
-            gh_args = upto_break(words[i + 1:])
-            rest = [a for a in gh_args if not a.startswith("-")]
+    here, previous, dirs, subshells = real(cwd), real(cwd), [], []
+
+    def run(argv: list[str]) -> None:
+        nonlocal here, previous
+        # Skip what stands before the command: shell keywords (`do git push`), assignments
+        # (`FOO=1 git ...`) and commands that run the next one (`sudo`, `env`, `nohup`, ...).
+        while argv:
+            if argv[0] in KEYWORDS or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0]):
+                argv = argv[1:]
+            elif os.path.basename(argv[0]) in WRAPPERS:
+                argv = argv[1:]
+                while argv and argv[0].startswith("-"):
+                    argv = argv[1:]
+            else:
+                break
+        if not argv:
+            return
+        name, args = os.path.basename(argv[0]), argv[1:]
+        if name in ("cd", "pushd"):
+            target = next((a for a in args if not a.startswith("-") or a == "-"), None)
+            if name == "pushd":
+                dirs.append(here)
+            new = previous if target == "-" else real(target or str(Path.home()), str(here))
+            previous, here = here, new
+        elif name == "popd" and dirs:
+            previous, here = here, dirs.pop()
+        elif name in SHELLS and "-c" in args[:-1]:
+            found.extend(sends_of(args[args.index("-c") + 1], str(here)))
+        elif name == "eval" and args:
+            found.extend(sends_of(" ".join(args), str(here)))
+        elif name == "git":
+            repo, i = here, 0
+            while i < len(args) and args[i].startswith("-"):
+                flag, eq, value = args[i].partition("=")
+                if flag in GIT_VALUED and not eq:
+                    value, i = (args[i + 1] if i + 1 < len(args) else ""), i + 1
+                if flag == "-C" and value:
+                    repo = real(value, str(repo))
+                elif flag == "--work-tree" and value:
+                    repo = real(value, str(here))
+                i += 1
+            sub, rest = (args[i], args[i + 1:]) if i < len(args) else ("", [])
+            if sub == "commit":
+                found.append((repo, []))
+            elif sub == "push":
+                named = next((a for a in rest if not a.startswith("-")), None)
+                found.append((repo, ["--dest", push_url(repo, named)]))
+        elif name == "gh":
+            rest = [a for a in args if not a.startswith("-")]
             if rest[:1] == ["api"]:   # GET by default; it sends only with a body or a method
-                sends = any(re.match(r"-[XfF]|--(method|field|raw-field|input)(=|$)", a) for a in gh_args)
+                sends = any(re.match(r"-[XfF]|--(method|field|raw-field|input)(=|$)", a) for a in args)
             else:
                 sends = len(rest) >= 2 and rest[0] != "search" and rest[1] not in GH_READONLY
             if sends:
-                found.append((target_path, ["--gh-argv-inline", *gh_args]))
+                found.append((here, ["--gh-argv-inline", *args]))
+
+    def pieces(word: str) -> list[str]:
+        """Control operators glued together by the lexer (`);` `)&&`) as separate words."""
+        if not word or word in breaks or not set(word) <= set(";&|()"):
+            return [word]
+        out, rest = [], word
+        while rest:
+            op = next((o for o in ("&&", "||", ";;", "|&") if rest.startswith(o)), rest[0])
+            out.append(op)
+            rest = rest[len(op):]
+        return out
+
+    current: list[str] = []
+    for w in [p for word in words for p in pieces(word)] + [";"]:
+        if w not in breaks:
+            current.append(w)
+            continue
+        run(current)
+        current = []
+        if w == "(":
+            subshells.append((here, previous, list(dirs)))
+        elif w == ")" and subshells:
+            here, previous, dirs = subshells.pop()
     return found
 
 

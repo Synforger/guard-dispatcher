@@ -142,6 +142,44 @@ origin() { git -C "$1" remote add origin "git@github.com:$2.git"; }
     bash_in "${CASE_REPO}" "gh pr create --fill"; passed
 }
 
+# --- each git runs where the command stands at that point -------------------
+
+@test "area-guard: a push after a cd elsewhere is judged by the repository it runs in" {
+    read_case
+    origin "${CASE_REPO}" acme/pipeline
+    seed_visibility acme/pipeline public
+    local c
+    for c in "cd ${PERSONAL}; ls; cd ${CASE_REPO} && git push origin main" \
+             "cd ${PERSONAL} && git -C ${CASE_REPO} push origin main" \
+             "bash -c 'cd ${PERSONAL}; cd ${CASE_REPO} && git push origin main'" \
+             "for r in pipeline; do git -C ${CASE_REPO} push origin main; done" \
+             "sudo -E git -C ${CASE_REPO} push origin main"; do
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+    done
+}
+
+@test "area-guard: a push from a repository the hooks do not reach is refused after a cd elsewhere" {
+    origin "${CASE_REPO}" acme/pipeline
+    git -C "${CASE_REPO}" config guard.scope exempt
+    bash_in "${H}" "cd ${PERSONAL}; ls; cd ${CASE_REPO} && git push origin main"; denied
+    [[ "${output}" == *"guard.scope = exempt"* ]]
+    bash_in "${H}" "cd ${CASE_REPO}; cd ${PERSONAL} && git push origin main"; passed
+}
+
+@test "area-guard: a commit after a cd elsewhere is judged by the repository it runs in" {
+    read_case
+    bash_in "${H}" "cd ${PERSONAL} && ls; cd ${CASE_REPO} && git commit -m x"; passed
+    bash_in "${H}" "cd ${CASE_REPO} && git commit -m x; cd ${PERSONAL} && git commit -m y"; denied
+}
+
+@test "area-guard: a cd inside a subshell does not move the commands after it" {
+    read_case
+    bash_in "${CASE_REPO}" "(cd ${PERSONAL} && ls); git commit -m x"; passed
+    bash_in "${CASE_REPO}" "(cd ${PERSONAL} && git commit -m x)"; denied
+    bash_in "${CASE_REPO}" "pushd ${PERSONAL} && popd && git commit -m x"; passed
+}
+
 @test "area-guard: commit then push on one line is judged by the push" {
     read_case
     origin "${CASE_REPO}" acme/pipeline
