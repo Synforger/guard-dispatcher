@@ -13,6 +13,10 @@ Areas are defined on this machine only (never in a repository):
         <prefix>* <path>/* ...         one area per sub-folder of <path>, named
                                        <prefix><folder> (= a client folder made
                                        tomorrow is an area from the moment it exists)
+        <name> <path>/* ...            every sub-folder of <path> joins <name>, one
+                                       made tomorrow too (hidden folders do not)
+        _outside <path> ...            folders in no area, whatever holds them
+                                       (a personal folder on the company's machine)
         _exempt <path> ...             repositories that are never scanned
     ~/.config/guard/patterns/<name>.txt
         one regular expression per line (case-insensitive) for identifiers of
@@ -118,6 +122,9 @@ BACKGROUND_MAX_AGE = 7 * 24 * 3600
 CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
 CACHE = Path(os.environ.get("GUARD_CORPUS_CACHE", Path.home() / ".cache/guard-corpus"))
 EXEMPT = "_exempt"
+NO_AREA = "_outside"
+# Names on areas.txt that hold no documents of their own.
+UNSCANNED = {EXEMPT, NO_AREA}
 OFFICE = {".pptx", ".docx", ".xlsx", ".pptm", ".docm", ".xlsm"}
 TEXT = {".md", ".csv", ".tsv", ".txt"}
 LOCKFILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock", "uv.lock",
@@ -234,9 +241,11 @@ def read_lines(path: Path) -> list[str]:
 
 def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
     """Areas by name. A line whose name holds `*` and whose paths end in `/*` makes one
-    area per sub-folder (`client-* /srv/company/clients/*` -> `client-acme` for `clients/acme`),
-    so a folder created tomorrow is guarded from the moment it exists. A path already
-    named on an explicit line keeps that line's name."""
+    area per sub-folder (`client-* /srv/company/clients/*` -> `client-acme` for `clients/acme`);
+    on a line whose name does not, every sub-folder of such a path joins the line's area
+    (`company ~/*`). Either way a folder created tomorrow is guarded from the moment it exists.
+    A path already named on an explicit line keeps that line's name, so `_outside ~/personal`
+    keeps `~/personal` out of `company ~/*`."""
     explicit: dict[str, list[Path]] = {}
     templates: list[tuple[str, list[Path]]] = []
     for line in read_lines(source or CONFIG / "areas.txt"):
@@ -250,7 +259,9 @@ def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
         if "*" in parts[0]:
             templates.append((parts[0], [expand(p[:-2]) for p in parts[1:] if p.endswith("/*")]))
         else:
-            explicit.setdefault(parts[0], []).extend(expand(p) for p in parts[1:])
+            explicit.setdefault(parts[0], []).extend(expand(p) for p in parts[1:] if not p.endswith("/*"))
+            if joined := [expand(p[:-2]) for p in parts[1:] if p.endswith("/*")]:
+                templates.append((parts[0], joined))
     areas = dict(explicit)
     named = {r for roots in explicit.values() for r in roots}
     for template, parents in templates:
@@ -541,10 +552,10 @@ def inner_roots(areas: dict[str, list[Path]], name: str) -> list[Path]:
 
 
 def area_of_path(areas: dict[str, list[Path]], path: Path) -> str | None:
-    """The innermost area holding path (= the one whose root is longest)."""
+    """The innermost area holding path (= the one whose root is longest); None inside `_outside`."""
     best = max(((len(r.parts), n) for n, rs in areas.items() for r in rs if path == r or r in path.parents),
                default=None)
-    return best[1] if best else None
+    return best[1] if best and best[1] != NO_AREA else None
 
 
 def document_prints(path: Path, stamp: str, read, known: dict, index: dict, area: str) -> tuple[bool, str | None]:
@@ -624,7 +635,7 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
     summary = {"built": started, "checked": started, "run": [RUN, LATIN_RUN], "areas": {}, "unreadable": []}
     folders: dict = {}
     for name, roots in areas.items():
-        if name == EXEMPT:
+        if name in UNSCANNED:
             continue
         fids, changed = [], []
         for path, stamp, read in documents(roots, inner_roots(areas, name), ignored, repos, folders):
@@ -802,7 +813,7 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
         if not acquired:
             return summary
         index = json.loads(INDEX.read_text()) if INDEX.is_file() else {}
-        roots = [r for n, rs in areas.items() if n != EXEMPT for r in rs]
+        roots = [r for n, rs in areas.items() if n not in UNSCANNED for r in rs]
         changed = spotlight_changes(roots, summary["checked"], index)
         removed: list[Path] = []
         if changed is None:
@@ -860,7 +871,7 @@ def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
     if summary_path.is_file() and not refresh:
         summary = json.loads(summary_path.read_text())
         current = (summary.get("checked") and summary["run"] == [RUN, LATIN_RUN]
-                   and set(summary["areas"]) == {n for n in areas if n != EXEMPT})
+                   and set(summary["areas"]) == {n for n in areas if n not in UNSCANNED})
         full = not current
         if not current or time.time() - summary["built"] >= MAX_AGE:
             summary = None
@@ -952,7 +963,7 @@ def clones(areas: dict[str, list[Path]]) -> dict[str, list[str]]:
     except (OSError, ValueError, KeyError):
         pass
     found: dict[str, list[str]] = {}
-    for root in {r for rs in areas.values() for r in rs}:
+    for root in {r for n, rs in areas.items() if n != NO_AREA for r in rs}:
         for folder, dirs, _ in os.walk(root):
             here = Path(folder)
             if (here / ".git").is_dir():
@@ -965,8 +976,12 @@ def clones(areas: dict[str, list[Path]]) -> dict[str, list[str]]:
     return found
 
 
-def containing(place: Path, areas: dict[str, list[Path]]) -> frozenset[str]:
-    return frozenset(n for n, roots in areas.items() if contains(roots, place))
+def holding(place: Path, areas: dict[str, list[Path]]) -> frozenset[str]:
+    """Every area place is inside (a client inside the company is inside both), less those an
+    `_outside` folder cuts it off from: an area whose root holds that folder."""
+    cut = max((len(r.parts) for r in areas.get(NO_AREA, []) if contains([r], place)), default=0)
+    return frozenset(n for n, roots in areas.items() if n != NO_AREA
+                     and any(len(r.parts) > cut and contains([r], place) for r in roots))
 
 
 def destination(slugs: set[str], sender: Path, areas: dict[str, list[Path]]) -> Path | None:
@@ -989,7 +1004,7 @@ def destination(slugs: set[str], sender: Path, areas: dict[str, list[Path]]) -> 
             return None
         places.update(local)
     # Clones that sit in different areas may carry different things: only agreement decides.
-    if len({containing(p, areas) for p in places}) != 1:
+    if len({holding(p, areas) for p in places}) != 1:
         say(f"destination {', '.join(sorted(slugs))} has clones in different areas -- checked against every area")
         return None
     return sorted(places)[0]
@@ -1189,10 +1204,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.where:
         print(here or OUTSIDE)
         return 0
-    if here is not None and contains(areas.get(EXEMPT, []), here) and not any(
-            contains(rs, here) for n, rs in areas.items() if n != EXEMPT):
+    held = holding(here, areas) if here is not None else frozenset()
+    if held == {EXEMPT}:
         return 0
-    checked = [n for n, roots in areas.items() if n != EXEMPT and (here is None or not contains(roots, here))]
+    checked = [n for n in areas if n not in UNSCANNED and n not in held]
     if not checked:
         return 0
 
