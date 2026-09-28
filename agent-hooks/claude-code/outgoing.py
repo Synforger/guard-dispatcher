@@ -10,6 +10,7 @@ judgement in `scanners/send-scan.py`, which decides as for a push (see there for
   of an Office document or a PDF is taken out of it). A file whose text cannot be taken out
   (too large, or not text) is refused once the session has read inside an area or when the file
   sits inside one; otherwise it passes unscanned.
+- WebFetch and WebSearch are named by the tool; their payload is the URL, the prompt and the query.
 - A `curl` / `wget` with a body or an upload (`-d`, `--data*`, `--json`, `-F`, `-T`, `--post-*`,
   or `-X POST|PUT|PATCH`) is named `host:<host>`; its payload is the body and the files it sends.
 
@@ -35,8 +36,9 @@ from urllib.parse import urlsplit
 # says the call only reads.
 READING = re.compile(r"(^|_)(get|list|search|read|fetch|query|view|find|describe|lookup|guide|export|"
                      r"download|authenticate|complete_authentication|open|status|whoami|help)(_|$)", re.I)
-# Tools of the host (not MCP) that send to a service.
-HOST_SENDERS = {"Artifact", "ArtifactData", "ArtifactComments"}
+# Tools of the host (not MCP) that send to a service. WebFetch and WebSearch fetch, but the URL,
+# the prompt and the query they carry reach the search or fetch service, so they are sends.
+HOST_SENDERS = {"Artifact", "ArtifactData", "ArtifactComments", "WebFetch", "WebSearch"}
 ARTIFACT_READING = {"read", "list", "open", "quickstart"}
 ARTIFACT_DATA_READING = {"get", "list", "query"}
 # Keys of a tool's input that name local files whose contents are uploaded.
