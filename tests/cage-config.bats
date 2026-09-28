@@ -188,6 +188,25 @@ JSON
     done
 }
 
+@test "no cage writes the hook scripts a project's own settings name, from the project or relative to it" {
+    P="${H}/repos/app"
+    mkdir -p "${P}/.claude/hooks" "${H}/a/b/c/d/e/deep/.claude"
+    cat > "${P}/.claude/settings.local.json" <<'JSON'
+{"hooks": {"PreToolUse": [{"matcher": "mcp__*", "hooks": [
+  {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/ask-before-delete.py\""},
+  {"type": "command", "command": "bash .claude/hooks/relative.sh"}]}]}}
+JSON
+    printf '{"statusLine": {"type": "command", "command": "bash ${CLAUDE_PROJECT_DIR}/line.sh"}}\n' \
+        > "${H}/a/b/c/d/e/deep/.claude/settings.json"
+    for cage in personal company client; do
+        build "${cage}"
+        lists denyWrite "${P}/.claude/hooks/ask-before-delete.py"
+        lists denyWrite "${P}/.claude/hooks/relative.sh"
+        lists denyWrite "${H}/a/b/c/d/e/deep/line.sh"
+        lacks denyWrite "${P}/.claude/hooks"
+    done
+}
+
 @test "a cage carries the digest of the files it was built from, and it follows them" {
     build personal
     first="$(env_of GUARD_CAGE_BUILD)"

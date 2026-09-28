@@ -98,7 +98,12 @@ LOADED_GLOBS = ["{home}/**/.mcp.json", "{home}/**/.claude/commands", "{home}/**/
 # (scripts/pre-launch.sh), where the agent keeps working on them through commits.
 USER_EXTENSIONS = ["{home}/.claude*/skills", "{home}/.claude*/commands", "{home}/.claude*/agents"]
 # A script path in a settings command: what Claude Code runs by itself in every session.
-SCRIPT_IN_COMMAND = re.compile(r"(?:\$HOME|\$\{HOME\}|~|/)[^\s\"';|&]*\.(?:sh|py|js|mjs|ts|rb|pl)\b")
+# (absolute, from HOME or from the project, or relative to the project).
+SCRIPT_IN_COMMAND = re.compile(r"(?:\$\{?(?:HOME|CLAUDE_PROJECT_DIR)\}?|~|/|[\w.-]+/)[^\s\"';|&]*\.(?:sh|py|js|mjs|ts|rb|pl)\b")
+# How deep under HOME a project's `.claude/settings*.json` is looked for (a subproject folder in an
+# agent's repository sits at 7), and the folders not looked into.
+PROJECT_DEPTH = 7
+NOT_PROJECTS = {"Library", "node_modules", "Applications", "Movies", "Music", "Pictures"}
 # Seatbelt rules every cage adds on macOS that sandbox-runtime has no setting for (run.mjs puts them
 # at the end of the profile). Security.framework reads this sysctl before it writes a keychain item;
 # refused, every keychain write fails -- and Claude Code keeps its login there, so /login and each
@@ -167,9 +172,11 @@ def load_areas() -> dict[str, list[Path]]:
 
 
 def hook_scripts(home: Path) -> list[Path]:
-    """The scripts Claude Code runs by itself (hooks, the status line), as the config directories'
-    settings name them. They run in every session: one a cage rewrote would run in the next session
-    of every other cage, and outside any cage."""
+    """The scripts Claude Code runs by itself (hooks, the status line), as the settings name them:
+    the config directories' (they run in every session: one a cage rewrote would run in the next
+    session of every other cage, and outside any cage) and each project's under HOME (they run in
+    every session started there, and the session itself could drop a check it relies on, such as a
+    hook that asks before deleting)."""
     def commands(node):
         if isinstance(node, dict):
             for key, value in node.items():
@@ -181,16 +188,36 @@ def hook_scripts(home: Path) -> list[Path]:
             for value in node:
                 yield from commands(value)
 
+    def projects(folder: Path, depth: int):
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            return
+        for entry in entries:
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            if entry.name == ".claude":
+                yield from ((s, folder) for s in sorted(Path(entry.path).glob("settings*.json")))
+            elif not entry.name.startswith(".") and entry.name not in NOT_PROJECTS and depth < PROJECT_DEPTH:
+                yield from projects(Path(entry.path), depth + 1)
+
     found: list[Path] = []
-    for settings in sorted(home.glob(".claude*/settings*.json")):
+    config = [(s, None) for s in sorted(home.glob(".claude*/settings*.json"))]
+    for settings, project in [*config, *((s, p) for s, p in projects(home, 1) if p != home)]:
         try:
             data = json.loads(settings.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         for command in commands(data):
             for word in SCRIPT_IN_COMMAND.findall(command):
-                path = expand(word.replace("${HOME}", "$HOME"))
-                if inside(path, [home]):
+                word = word.replace("${HOME}", "$HOME").replace("${CLAUDE_PROJECT_DIR}", "$CLAUDE_PROJECT_DIR")
+                if word.startswith("$CLAUDE_PROJECT_DIR/"):
+                    path = expand(project / word.split("/", 1)[1]) if project else None
+                elif word.startswith(("$HOME", "~", "/")):
+                    path = expand(word)
+                else:
+                    path = expand(project / word) if project else None
+                if path is not None and inside(path, [home]):
                     found.append(path)
     return list(dict.fromkeys(found))
 
