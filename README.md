@@ -265,7 +265,11 @@ step earlier, before each tool call, from the same `areas.txt`:
   it marks nothing. Marks are kept per session under
   `~/.cache/area-guard/`, so they outlive the agent compacting its context.
 - A marked session cannot `Edit` / `Write` a file inside a git repository
-  outside its marks, and cannot `git commit`, `git push` or send through `gh`
+  outside its marks, nor write one from the shell where the command names it
+  (a `>` / `>>` redirection, `tee`, `touch`, the destination of `cp` / `mv`
+  / `install` / `ln`, `sed -i`, `dd of=`, or a path inside inline code such as
+  `python3 -c` or `bash -c`, which cannot be told apart from a read). A script
+  run from a file is not read, so what it writes is not judged. It also cannot `git commit`, `git push` or send through `gh`
   to a destination outside them. Destinations are judged exactly as the
   push-time scan judges them (`corpus-scan.py --where`). Files outside any
   repository and `_exempt` areas stay writable.
