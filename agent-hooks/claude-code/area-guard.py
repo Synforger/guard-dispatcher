@@ -9,8 +9,7 @@ them.
 
 - Marking: the target of Read / Grep / Glob, a Bash cwd, an area path named in a Bash command
            (unless the command only checks it: a lone test / [ / stat / realpath / readlink /
-           ls -d with every argument literal), and only when this session can read the area
-           (the OS refusing the read means naming it told the session nothing)
+           ls -d with every argument literal)
 - Refused: Edit / Write / NotebookEdit on a file inside a git repository outside the marks;
            a Bash `git commit` / `git push` / sending `gh` call (reads pass) whose destination is
            outside the marks
@@ -140,24 +139,6 @@ def area_of(path: Path, areas) -> str | None:
     for name, root in areas:
         if path == root or root in path.parents:
             return name
-    return None
-
-
-def readable_mark(path: Path, areas) -> str | None:
-    """The area a touched path marks, or None when this session cannot read that area at all.
-
-    The hook runs as the session does, so an area the OS keeps from this process (its folder
-    cannot be listed) is one the session cannot have read inside either. Naming such a path in
-    a command marks nothing."""
-    for name, root in areas:
-        if path == root or root in path.parents:
-            try:
-                with os.scandir(root):
-                    return name
-            except NotADirectoryError:
-                return name if os.access(root, os.R_OK) else None
-            except OSError:
-                return None
     return None
 
 
@@ -671,7 +652,7 @@ def main() -> int:
                  f"write {target} (areas: {AREAS}). Do it in another session")
             return 0
 
-    new = {a for a in (readable_mark(p, areas) for p in touched) if a and a != EXEMPT}
+    new = {a for a in (area_of(p, areas) for p in touched) if a and a != EXEMPT}
     if new - marks:
         state["areas"] = sorted(marks | new)
         save_state(session, state)
