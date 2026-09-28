@@ -68,10 +68,19 @@ denied() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"permissionDecision": "d
     passed
 }
 
-@test "outgoing: a reading call is not scanned" {
+@test "outgoing: a reading call's own strings are scanned: a search term reaches the service" {
     send mcp__acme__drive_search_files "${CLIENT_TEXT}"
-    passed
+    denied
+    [[ "${output}" == *"mcp__acme__drive_search_files (outside every area)"* ]]
     send mcp__acme__slack_read_channel "${CLIENT_TEXT}"
+    denied
+    send mcp__acme__drive_search_files "quarterly report template"
+    passed
+}
+
+@test "outgoing: a reading call does not upload the files it names" {
+    printf '%s\n' "${CLIENT_TEXT}" > "${H}/repos/tool/local.md"
+    call mcp__acme__drive_read_file "$(jq -n --arg f "${H}/repos/tool/local.md" '{file_path: $f}')"
     passed
 }
 
@@ -84,6 +93,10 @@ denied() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"permissionDecision": "d
     passed
     send mcp__acme__drive_upload_file "hello"
     passed
+    # A read through a blocked service is judged as outside every area.
+    send mcp__claude_ai_Slack__slack_search_messages "${CLIENT_TEXT}"
+    denied
+    [[ "${output}" == *"(outside every area)"* ]]
 }
 
 @test "outgoing: the contents of a local file a tool uploads are scanned" {
