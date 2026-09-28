@@ -58,6 +58,8 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     lists denyWrite "${H}/notes/projects/org/clients/acme"
     lists allowWrite "${H}/.claude@company"
     lists allowWrite "${T}/claude-cage/company"
+    # The login keychain's folder: a token refresh rewrites the keychain file (401 without it).
+    lists allowWrite "${H}/Library/Keychains"
     lacks allowWrite "${H}"
     lists denyWrite "${H}/org/clients/acme"
 }
@@ -174,6 +176,13 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     build personal --account-dir "${H}/.claude-work"
     [ "$(env_of CLAUDE_CONFIG_DIR)" = "${H}/.claude-work" ]
     jq -e '.env | has("CLAUDE_SECURESTORAGE_CONFIG_DIR") | not' <<< "${output}" > /dev/null
+}
+
+@test "every cage lets Security.framework learn it is sandboxed, so keychain writes (the login) work" {
+    for cage in personal company; do
+        build "${cage}"
+        jq -e '.seatbelt | index("(allow sysctl-read (sysctl-name \"security.mac.sandbox.sentinel\"))") != null' <<< "${output}" > /dev/null
+    done
 }
 
 @test "the network is left open (no allowlist), the session keeps a terminal, and file-watch mach lookups pass" {
