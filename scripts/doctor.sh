@@ -103,15 +103,6 @@ check_agent() {
     for settings in ${CLAUDE_CONFIG_DIR:+"${CLAUDE_CONFIG_DIR}/settings.json"} "${HOME}"/.claude*/settings.json; do
         [ -f "${settings}" ] || continue
         found=1
-        # A config dir left by the retired cages is named after its area (`<account>@<area>`): this
-        # line runs under bootstrap and agents, so the area is not printed.
-        local label="${settings}" fix="install.sh --claude-settings ${settings}"
-        case "$(basename "$(dirname "${settings}")")" in
-            *@*)
-                label="$(dirname "$(dirname "${settings}")")/$(basename "$(dirname "${settings}")" | sed 's/@.*//')@<cage>/settings.json"
-                fix="install.sh --claude-settings for each ~/.claude*@*/settings.json"
-                ;;
-        esac
         if python3 - "${settings}" <<'PY'
 import json
 import sys
@@ -129,15 +120,15 @@ if not groups:
 sys.exit(0 if any(g.get("matcher") in ("*", "", None) for g in groups) else 3)
 PY
         then
-            printf '  %s✓%s agent entry guard registered (%s)\n' "${GRN}" "${NC}" "${label}"
+            printf '  %s✓%s agent entry guard registered (%s)\n' "${GRN}" "${NC}" "${settings}"
         elif [ "$?" -eq 3 ]; then
-            printf '  %s✗%s agent entry guard registered for some tools only (%s) — sends through the others are not judged; run %s\n' "${RED}" "${NC}" "${label}" "${fix}"
+            printf '  %s✗%s agent entry guard registered for some tools only (%s) — sends through the others are not judged; run install.sh --claude-settings %s\n' "${RED}" "${NC}" "${settings}" "${settings}"
             findings=$((findings + 1))
         elif [ -f "${areas}" ]; then
-            printf '  %s✗%s agent entry guard not registered (%s) — an agent can carry area text out; run %s\n' "${RED}" "${NC}" "${label}" "${fix}"
+            printf '  %s✗%s agent entry guard not registered (%s) — an agent can carry area text out; run install.sh --claude-settings %s\n' "${RED}" "${NC}" "${settings}" "${settings}"
             findings=$((findings + 1))
         else
-            printf '  %s-%s agent entry guard not registered (%s) — no areas to keep it inside\n' "${DIM}" "${NC}" "${label}"
+            printf '  %s-%s agent entry guard not registered (%s) — no areas to keep it inside\n' "${DIM}" "${NC}" "${settings}"
         fi
     done
     if [ "${found}" -eq 0 ]; then

@@ -51,20 +51,6 @@ if [ ! -d "${HOOKS_SRC}/lib" ]; then
     exit 1
 fi
 
-# An older install ran the guards from a copy of the clone (for the retired session cage, see
-# _archive/README.md). The guards run from the clone again: move the operator word lists that
-# copy held (gitignored, see scanners/anon-sync-truth.sh) into the clone unless it has its own,
-# then drop the copy.
-OLD_COPY="${HOME}/.local/share/guard-dispatcher"
-if [ -d "${OLD_COPY}" ] && [ "$(cd -P "${OLD_COPY}" && pwd)" != "${GUARD_ROOT}" ]; then
-    for keep in scanners/anon-words.txt anon-words.local.txt scanners/anon-words.local.txt; do
-        if [ -f "${OLD_COPY}/${keep}" ] && [ ! -e "${GUARD_ROOT}/${keep}" ]; then
-            cp -p "${OLD_COPY}/${keep}" "${GUARD_ROOT}/${keep}"
-        fi
-    done
-    rm -rf "${OLD_COPY}"
-fi
-
 mkdir -p "${TARGET_DIR}"
 
 # Replace any prior entries — a plain overwrite is safer than trying to
@@ -104,12 +90,6 @@ for entry in scanners scripts agent-hooks; do
     fi
     ln -s "${GUARD_ROOT}/${entry}" "${dst}"
 done
-
-# The session cage is retired (see _archive/README.md): drop the entry an older
-# install left, so a launcher that looks for it starts without a cage.
-if [ -e "${TARGET_DIR}/sandbox" ] || [ -L "${TARGET_DIR}/sandbox" ]; then
-    rm -rf "${TARGET_DIR}/sandbox"
-fi
 
 git config --global core.hooksPath "${TARGET_DIR}"
 
