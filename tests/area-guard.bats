@@ -306,6 +306,9 @@ spec.loader.exec_module(m); print(m.cage_build())' "${GUARD_ROOT}/sandbox/cage-c
     bash_in "${PERSONAL}" "git push"; denied
     git -C "${PERSONAL}" config --unset core.hooksPath
     bash_in "${PERSONAL}" "git push"; passed
+    # the operator's own opt-out stands against the areas; with none, an exempt repository still sends
+    git -C "${PERSONAL}" config guard.scope exempt
+    bash_in "${PERSONAL}" "git commit -m x && git push"; passed
 }
 
 @test "area-guard: no global hooks means the repository is unguarded" {
