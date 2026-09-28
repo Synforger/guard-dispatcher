@@ -281,6 +281,8 @@ step earlier, before each tool call, from the same `areas.txt`:
   `git -c core.hooksPath=…`, setting `core.hooksPath` / `guard.scope` /
   `guard.exemptPrefix`, clearing the marks, or sending from a repository the
   git hooks do not reach. The operator types those; the agent does not.
+  A commit in a repository with no remote is the one send let through there:
+  it stays in the repository and has nowhere to go. Its push is still refused.
 
 The hook is registered for every tool (`matcher: "*"`): a send can go through any tool, and a call the
 guard is not asked about is one it cannot judge. A call that passes prints nothing, so nothing is added to the agent's context.

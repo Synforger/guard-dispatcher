@@ -437,6 +437,15 @@ def unguarded(repo: Path) -> str | None:
     return None
 
 
+def has_remote(repo: Path) -> bool:
+    """Whether the repository names any remote (a push needs one or a URL typed out)."""
+    top = repo_root(repo)
+    if top is None:
+        return False
+    r = subprocess.run(["git", "-C", str(top), "remote"], capture_output=True, text=True)
+    return r.returncode != 0 or bool(r.stdout.strip())
+
+
 def bypass(command: str, cwd: str, areas) -> str | None:
     """Why a command switches the guards off or around, or None. The operator may; the agent may not."""
     expanded = spell_home(command)
@@ -462,6 +471,10 @@ def bypass(command: str, cwd: str, areas) -> str | None:
                     return "git commit -n (= --no-verify)"
     for target, dest_args in sends:
         if dest_args[:1] == ["--gh-argv-inline"] or not areas or area_of(target, areas) == EXEMPT:
+            continue
+        # A commit stays in its repository; with no remote there is nowhere for it to go. A push
+        # (to a remote or a URL typed out) is still held to the hooks.
+        if not dest_args and not has_remote(target):
             continue
         if reason := unguarded(target):
             return f"{repo_root(target)}: {reason}"

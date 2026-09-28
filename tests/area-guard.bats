@@ -220,6 +220,7 @@ origin() { git -C "$1" remote add origin "git@github.com:$2.git"; }
 }
 
 @test "area-guard: a send from a repository the hooks do not reach is refused" {
+    origin "${PERSONAL}" o/r
     git -C "${PERSONAL}" config core.hooksPath .husky
     bash_in "${PERSONAL}" "git commit -m x"; denied
     git -C "${PERSONAL}" config --unset core.hooksPath
@@ -229,8 +230,28 @@ origin() { git -C "$1" remote add origin "git@github.com:$2.git"; }
 }
 
 @test "area-guard: no global hooks means the repository is unguarded" {
+    origin "${PERSONAL}" o/r
     : > "${H}/.gitconfig"
     bash_in "${PERSONAL}" "git commit -m x"; denied
+}
+
+# A commit stays in its repository. With no remote there is nowhere for it to go, so a repository
+# the hooks do not reach may still commit; its push is held as before.
+@test "area-guard: a commit in a repository with no remote is not held to the hooks" {
+    git -C "${COMPANY_REPO}" config guard.scope exempt
+    agent Read file_path "${COMPANY_REPO}/notes.md"        # a company session, as the case that asked
+    bash_in "${COMPANY_REPO}" "git add -A && git commit -m x"; passed
+    bash_in "${H}" "git -C ${COMPANY_REPO} commit -m x"; passed
+    git -C "${COMPANY_REPO}" config core.hooksPath .husky
+    bash_in "${COMPANY_REPO}" "git commit -m x"; passed
+}
+
+@test "area-guard: a repository with no remote still cannot push past the hooks" {
+    git -C "${COMPANY_REPO}" config guard.scope exempt
+    bash_in "${COMPANY_REPO}" "git push git@github.com:o/r.git HEAD"; denied
+    [[ "${output}" == *"guard.scope = exempt"* ]]
+    origin "${COMPANY_REPO}" o/r
+    bash_in "${COMPANY_REPO}" "git commit -m x"; denied
 }
 
 @test "area-guard: the exempt notes are not held to it" {
