@@ -12,7 +12,8 @@ attempts them -- a tool call, a shell redirection or a script's own `open()`. A 
             inside itself and `_exempt`
 - any cage  has its own Claude Code config and temp directories, and neither reads nor
             writes another cage's; it does not write the guards themselves (the install
-            the hooks run from, the hooks directory, the global git config, `areas.txt`)
+            the hooks run from, the hooks directory, the global git config, `areas.txt`),
+            and starts its session knowing when the cage was entered (`GUARD_CAGED_SINCE`)
 
 The sandbox refuses a write whenever a write-deny covers the path, whatever allows it, so an
 area around this one is kept out of the writable set rather than denied: where it sits inside
@@ -43,6 +44,7 @@ import importlib.util
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
@@ -57,6 +59,8 @@ PERSONAL = "personal"
 CAGE_MARK = "@"
 # `/tmp` as the sandbox sees it (on macOS a link to /private/tmp).
 TMP = Path(os.path.realpath("/tmp"))
+# The session learns the moment its cage was entered from this variable (agent-hooks/ keeps it).
+CAGED_SINCE = "GUARD_CAGED_SINCE"
 # Each cage's temp directory is `<TMP_ROOT>/<cage>`. GUARD_TMP_ROOT moves the root so a test whose
 # throwaway HOME lives in the running cage's own temp directory does not find that HOME hidden as
 # another cage's temp. It is read here, before any cage starts, never from inside one.
@@ -199,7 +203,11 @@ def build(cage: str, account_dir: Path) -> dict:
         # The session's own terminal (Claude Code's interface) needs a pty.
         "allowPty": True,
     }
-    env = {"CLAUDE_CODE_TMPDIR": str(tmp_dir), "TMPDIR": str(tmp_dir)}
+    # zsh puts a here-document's temp file under TMPPREFIX (default /tmp/zsh), not TMPDIR.
+    env = {"CLAUDE_CODE_TMPDIR": str(tmp_dir), "TMPDIR": str(tmp_dir), "TMPPREFIX": str(tmp_dir / "zsh"),
+           # When the cage was entered, in the form Claude Code stamps on a record's rows: the entry
+           # guard keeps it with the session, so a later sort knows which rows ran in a cage.
+           CAGED_SINCE: datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")}
     if own_config != default_config:
         env["CLAUDE_CONFIG_DIR"] = str(own_config)
     if own_config != account_dir:

@@ -32,6 +32,9 @@ repository the hooks do not reach) is refused: the operator types those, the age
 
 Nothing is printed when a call passes, so nothing lands in the agent's context. A refusal is one
 line. Marks are kept in `~/.cache/area-guard/<session_id>.json`, so they outlive compaction.
+The same file keeps when the session ran in a cage (`sandbox/`): from the moment the cage was
+entered (`GUARD_CAGED_SINCE`) to the last call the hook saw there. A cage refuses what it hides
+whatever is named, so `sandbox/sort-sessions.py` leaves those rows of the record to the marks.
 """
 
 from __future__ import annotations
@@ -44,6 +47,7 @@ import re
 import shlex
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
@@ -52,6 +56,7 @@ STATE = Path(os.environ.get("AREA_GUARD_STATE", Path.home() / ".cache/area-guard
 CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus-scan.py"
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/send-scan.py"
 EXEMPT = "_exempt"
+CAGED_SINCE = "GUARD_CAGED_SINCE"
 READS = {"Read", "Grep", "Glob"}
 WRITES = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 GIT_SEND = re.compile(r"\bgit\b[^|;&]*?\s(commit|push)\b")
@@ -417,17 +422,31 @@ def destination(target: Path, dest_args: list[str]) -> Path | None:
     return None if out[0] == "OUTSIDE" else real(out[0])
 
 
-def load_marks(session: str) -> set[str]:
-    f = STATE / f"{session}.json"
+def load_state(session: str) -> dict:
+    """A session's marks and its runs in a cage: {"areas": [...], "caged": [[since, last], ...]}.
+    A bare list is the older file (marks only)."""
     try:
-        return set(json.loads(f.read_text()))
+        data = json.loads((STATE / f"{session}.json").read_text())
     except (OSError, ValueError):
-        return set()
+        data = []
+    if isinstance(data, list):
+        return {"areas": sorted(data), "caged": []}
+    return {"areas": sorted(data.get("areas") or []), "caged": list(data.get("caged") or [])}
 
 
-def save_marks(session: str, marks: set[str]) -> None:
+def save_state(session: str, state: dict) -> None:
     STATE.mkdir(parents=True, exist_ok=True)
-    (STATE / f"{session}.json").write_text(json.dumps(sorted(marks)))
+    (STATE / f"{session}.json").write_text(json.dumps(state))
+
+
+def stamp_cage(state: dict, since: str) -> None:
+    """Extend this cage run to now (a run is known by the moment its cage was entered)."""
+    now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    for run in state["caged"]:
+        if run[0] == since:
+            run[1] = now
+            return
+    state["caged"].append([since, now])
 
 
 def allowed(target: Path, marks: set[str], areas) -> bool:
@@ -563,6 +582,13 @@ def main() -> int:
     event = json.load(sys.stdin)
     areas = load_areas()
     tool, args, cwd = event.get("tool_name", ""), event.get("tool_input", {}), event.get("cwd", os.getcwd())
+    session = event.get("session_id", "unknown")
+    state = load_state(session) if areas else {"areas": [], "caged": []}
+    marks = set(state["areas"])
+    # Every call made in a cage, refused or not, falls inside the run it extends.
+    if areas and (since := os.environ.get(CAGED_SINCE)):
+        stamp_cage(state, since)
+        save_state(session, state)
     # Switching the guards off or around is refused even on a machine with no areas
     if tool == "Bash" and (reason := bypass(args.get("command", ""), cwd, areas)):
         deny(f"area-guard: an agent does not switch the guards off or around ({reason}). "
@@ -571,8 +597,6 @@ def main() -> int:
     if tool in WRITES and ".cache/area-guard" in str(real(args.get("file_path") or args.get("notebook_path") or "", cwd)):
         deny("area-guard: an agent does not rewrite the entry guard's marks")
         return 0
-    session = event.get("session_id", "unknown")
-    marks = load_marks(session) if areas else set()
 
     def private_area(path: Path) -> str | None:
         area = area_of(real(path), areas)
@@ -615,7 +639,8 @@ def main() -> int:
 
     new = {a for a in (readable_mark(p, areas) for p in touched) if a and a != EXEMPT}
     if new - marks:
-        save_marks(session, marks | new)
+        state["areas"] = sorted(marks | new)
+        save_state(session, state)
     return 0
 
 

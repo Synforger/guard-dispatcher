@@ -462,3 +462,44 @@ hidden() {
     bash_in "${CASE}" "test -d received"
     write_to "${PERSONAL}/a.py"; denied
 }
+
+# --- when the session ran in a cage -------------------------------------------
+# The cage tells the session when it was entered (GUARD_CAGED_SINCE). The hook keeps each run with
+# the marks, from that moment to the last call it saw, for sandbox/sort-sessions.py.
+
+state_of() { cat "${AREA_GUARD_STATE}/${1:-s1}.json"; }
+
+@test "area-guard: a caged session keeps its run from the moment the cage was entered to its last call" {
+    export GUARD_CAGED_SINCE=2026-09-28T03:00:00.000Z
+    write_to "${PERSONAL}/a.md"
+    passed
+    jq -e '.areas == [] and (.caged | length) == 1 and .caged[0][0] == "2026-09-28T03:00:00.000Z"' <<< "$(state_of)" > /dev/null
+    first="$(jq -r '.caged[0][1]' <<< "$(state_of)")"
+    sleep 0.01
+    write_to "${PERSONAL}/b.md"
+    jq -e --arg f "${first}" '(.caged | length) == 1 and .caged[0][1] > $f' <<< "$(state_of)" > /dev/null
+    # A new cage (a resumed conversation) is a second run.
+    export GUARD_CAGED_SINCE=2026-09-28T05:00:00.000Z
+    write_to "${PERSONAL}/c.md"
+    jq -e '(.caged | length) == 2 and .caged[1][0] == "2026-09-28T05:00:00.000Z"' <<< "$(state_of)" > /dev/null
+}
+
+@test "area-guard: a refused call in a cage still extends the run" {
+    export GUARD_CAGED_SINCE=2026-09-28T03:00:00.000Z
+    bash_in "${H}" "git commit --no-verify -m x"
+    denied
+    jq -e '(.caged | length) == 1' <<< "$(state_of)" > /dev/null
+}
+
+@test "area-guard: outside a cage no run is kept, and marks still land" {
+    unset GUARD_CAGED_SINCE
+    read_case
+    jq -e '.areas == ["client"] and .caged == []' <<< "$(state_of)" > /dev/null
+}
+
+@test "area-guard: a marks file of the older form (a bare list) is still read" {
+    mkdir -p "${AREA_GUARD_STATE}"
+    printf '["client"]' > "${AREA_GUARD_STATE}/s1.json"
+    write_to "${PERSONAL}/a.md"
+    denied
+}

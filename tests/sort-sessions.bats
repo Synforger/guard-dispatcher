@@ -180,3 +180,40 @@ at() { [ -f "$1/projects/-work/$2.jsonl" ]; }
     sort_sessions --apply --quiet
     [ -z "${output}" ]
 }
+
+# line_at <time> <cwd> <content item> — one assistant row written at <time>.
+line_at() { printf '{"timestamp":"%s","cwd":"%s","message":{"content":[%s]}}\n' "$1" "$2" "$3"; }
+# caged_run <session> <areas JSON> — the entry guard's file: those marks and one run in a cage, 03:00-03:20.
+caged_run() {
+    printf '{"areas": %s, "caged": [["2026-09-28T03:00:00.000Z", "2026-09-28T03:20:00.000Z"]]}' "$2" \
+        > "${AREA_GUARD_STATE}/$1.json"
+}
+
+@test "sort: a row written in a cage counts for nothing; a row written outside it still does" {
+    # Both named the company in a command. s-caged did it inside a cage that hid the company (the
+    # entry guard kept the run and marked nothing); s-before did it before its cage was entered.
+    local company='{"type":"tool_use","name":"Bash","input":{"command":"ls ~/org/plan.md"}}'
+    line_at 2026-09-28T03:10:00.000Z "${H}/repos/tool" "${company}" > "${A}/projects/-work/s-caged.jsonl"
+    caged_run s-caged '[]'
+    line_at 2026-09-28T02:10:00.000Z "${H}/repos/tool" "${company}" > "${A}/projects/-work/s-before.jsonl"
+    caged_run s-before '[]'
+    # A subagent's row inside the run counts for nothing either.
+    mkdir -p "${A}/projects/-work/s-caged/subagents"
+    line_at 2026-09-28T03:15:00.000Z "${H}/repos/tool" '{"type":"tool_use","name":"Grep","input":{"path":"'"${H}"'/org"}}' \
+        > "${A}/projects/-work/s-caged/subagents/agent-1.jsonl"
+    sort_sessions --apply
+    [ "${status}" -eq 0 ]
+    at "${A}" s-caged
+    at "${A}@company" s-before
+    # What the guard marked inside the cage still moves it.
+    caged_run s-caged '["company"]'
+    sort_sessions --apply
+    at "${A}@company" s-caged
+}
+
+@test "sort: a marks file of the older form (a bare list) still moves its conversation" {
+    record s-old "${H}/repos/tool" '{"type":"text","text":"nothing named"}'
+    printf '["company"]' > "${AREA_GUARD_STATE}/s-old.json"
+    sort_sessions --apply
+    at "${A}@company" s-old
+}
