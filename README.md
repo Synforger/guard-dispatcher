@@ -296,6 +296,10 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
 - **What is scanned**: every string of the tool call and the contents of the
   local files it uploads; for `curl` / `wget`, the body and the files it sends
   (`-d`, `--data*`, `--json`, `-F`, `-T`, `--post-*`, or `-X POST|PUT|PATCH`).
+  The text of an Office document or a PDF is taken out of it first. A file
+  whose text cannot be taken out (over 8 MB, or not text, like an image)
+  cannot be scanned: it is refused once the session has read inside an area,
+  or when the file itself sits inside one, and passes otherwise.
   Reading calls pass unscanned: a tool whose name says it reads (get, list,
   search, read, fetch, query, view, find, export, ...), a fetch without a body,
   and anything sent to the loopback host.
