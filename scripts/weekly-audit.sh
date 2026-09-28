@@ -16,6 +16,11 @@
 #                                                  # findings exist, a markdown
 #                                                  # report lands there
 #
+# Known findings (optional, operator-private):
+#   $HOME/.config/guard-dispatcher/known/<repo folder name>.known
+#   written by `weekly-audit.sh --accept <repo>...`; a repository with one is
+#   audited for what appeared after it was recorded (anon-audit-deep.sh --known)
+#
 # Output:
 #   - full log:  $HOME/.local/state/guard-dispatcher/weekly-audit-<date>.log
 #   - findings:  $MESSAGE_DIR/<date>-weekly-anon-audit.md  (only on findings)
@@ -32,6 +37,22 @@ CONF="${HOME}/.config/guard-dispatcher/weekly-audit.conf"
 STATE_DIR="${HOME}/.local/state/guard-dispatcher"
 GUARD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCANNER="${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+# Findings accepted as known, one file per repository (named after its folder). The audit then
+# reports only what appears after the recording; see anon-audit-deep.sh --known.
+KNOWN_DIR="${HOME}/.config/guard-dispatcher/known"
+
+# weekly-audit.sh --accept <repo>... — record each repository's current findings as known.
+# For findings that will not be rewritten (history, PR text); a file in the tree is fixed instead.
+if [ "${1:-}" = "--accept" ]; then
+    shift
+    [ $# -gt 0 ] || { echo "usage: weekly-audit.sh --accept <repo>..." >&2; exit 2; }
+    status=0
+    for repo in "$@"; do
+        known="${KNOWN_DIR}/$(basename "$(cd "${repo}" && pwd)").known"
+        (cd "${repo}" && bash "${SCANNER}" --record-known "${known}") || status=1
+    done
+    exit "${status}"
+fi
 
 if [ ! -f "${CONF}" ]; then
     echo "error: config not found at ${CONF}" >&2
@@ -75,9 +96,16 @@ summary=""
         if [ "${full_sweep}" -eq 0 ] && [ -f "${state_file}" ]; then
             since_args=(--github-since "$(cat "${state_file}")")
         fi
+        sweep="${since_args[1]:-full}"
+        known="${KNOWN_DIR}/$(basename "${repo}").known"
+        known_note=""
+        if [ -f "${known}" ]; then
+            since_args+=(--known "${known}")
+            known_note=", known findings accepted"
+        fi
 
         echo ""
-        echo "--- ${repo} (${since_args[1]:-full}) ---"
+        echo "--- ${repo} (${sweep}${known_note}) ---"
         if (cd "${repo}" && bash "${SCANNER}" ${since_args[@]+"${since_args[@]}"}) 2>&1; then
             echo "--- ${repo}: clean ---"
             printf '%s' "${run_started}" > "${state_file}"

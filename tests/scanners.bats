@@ -321,3 +321,110 @@ STUB
     longest=$(printf '%s\n' "$output" | awk '{ if (length($0) > m) m = length($0) } END { print m }')
     [ "$longest" -lt 500 ]
 }
+
+# --- findings accepted as known ------------------------------------------------
+# Old findings that will not be rewritten (history, PR text) are recorded once as known; the
+# audit then reports only what appears later. New history carrying a known word is still red.
+
+known_file() { echo "${BATS_TEST_TMPDIR}/known/repo.known"; }
+audit() { run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh" "$@"; }
+# leak_in_history <name> — a commit that adds the sentinel and one that removes it again.
+leak_in_history() {
+    echo "text ${SENTINEL}" > "$1.txt" && git add "$1.txt" && commit_bypassing_hooks "feat: $1"
+    git rm -q "$1.txt" && commit_bypassing_hooks "chore: drop $1"
+}
+
+@test "deep audit: history recorded as known is not red again; a new commit with the same word is" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    leak_in_history old
+    audit
+    [ "$status" -ne 0 ]
+    audit --record-known "$(known_file)"
+    [ "$status" -eq 0 ]
+    [ -f "$(known_file)" ]
+    audit --known "$(known_file)"
+    [ "$status" -eq 0 ]
+    leak_in_history new
+    audit --known "$(known_file)"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"git history blob"* ]]
+}
+
+@test "deep audit: a known branch name stays quiet; a new branch with the same word is red" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    git branch "feat-${SENTINEL}"
+    audit --record-known "$(known_file)"
+    [ "$status" -eq 0 ]
+    audit --known "$(known_file)"
+    [ "$status" -eq 0 ]
+    git branch "other-${SENTINEL}"
+    audit --known "$(known_file)"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"branch names"* ]]
+}
+
+@test "deep audit: a file in the tree is never accepted as known" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    echo "${SENTINEL}" > leak.txt && git add leak.txt && commit_bypassing_hooks "feat: leak"
+    audit --record-known "$(known_file)"
+    [ "$status" -ne 0 ]
+    audit --known "$(known_file)"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"tracked files: leak found"* ]]
+}
+
+@test "deep audit: GitHub records are read from the time the known findings were recorded" {
+    mk_repo synforger
+    local bindir="${BATS_TEST_TMPDIR}/stub-bin"
+    export GH_LOG="${BATS_TEST_TMPDIR}/gh.log"
+    mkdir -p "${bindir}"
+    printf '#!/usr/bin/env bash\necho "$*" >> "${GH_LOG}"\n[ "$1" = repo ] && [ "$2" = view ] && echo "{}"\nexit 0\n' > "${bindir}/gh"
+    chmod +x "${bindir}/gh"
+    export PATH="${bindir}:${PATH}"
+    audit --record-known "$(known_file)"
+    [ "$status" -eq 0 ]
+    : > "${GH_LOG}"
+    audit --known "$(known_file)"
+    [ "$status" -eq 0 ]
+    local since
+    since="$(sed -n 's/^since //p' "$(known_file)")"
+    [ -n "${since}" ]
+    grep -qF "issues?state=all&per_page=100&since=${since}" "${GH_LOG}"
+}
+
+@test "deep audit: --known is refused with a push range, and a missing known file is an error" {
+    mk_repo synforger
+    audit --known "$(known_file)" --range "HEAD~0..HEAD"
+    [ "$status" -eq 2 ]
+    audit --known "${BATS_TEST_TMPDIR}/missing.known"
+    [ "$status" -eq 2 ]
+}
+
+@test "weekly audit: --accept records a repository, and the next run reports only what is new" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    leak_in_history old
+    local repo
+    repo="$(pwd)"
+    export HOME="${BATS_TEST_TMPDIR}/home"
+    mkdir -p "${HOME}/.config/guard-dispatcher"
+    printf 'REPOS_GLOB="%s"\n' "${repo}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -ne 0 ]
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh" --accept "${repo}"
+    [ "$status" -eq 0 ]
+    [ -f "${HOME}/.config/guard-dispatcher/known/$(basename "${repo}").known" ]
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -eq 0 ]
+    grep -q "known findings accepted" "${HOME}"/.local/state/guard-dispatcher/weekly-audit-*.log
+    leak_in_history new
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -ne 0 ]
+}
