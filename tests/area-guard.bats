@@ -287,6 +287,21 @@ spec.loader.exec_module(m); print(m.cage_build())' "${GUARD_ROOT}/sandbox/cage-c
     agent Read file_path "${H}/notes/a.md"; passed
 }
 
+@test "area-guard: a heredoc's body is text, not the command's words, unless the program it feeds runs it" {
+    bash_in "${PERSONAL}" $'bash -n run.sh && echo ok; git add -A && git commit -q -F - <<\'EOF\'\nchecked with bash -n and -nq\nEOF'
+    passed
+    bash_in "${PERSONAL}" $'git commit -m "$(cat <<\'EOF\'\nfix: the -n flag\nEOF\n)"'
+    passed
+    bash_in "${PERSONAL}" $'cat > notes.md <<\'EOF\'\ngit config core.hooksPath /dev/null\nEOF'
+    passed
+    bash_in "${PERSONAL}" $'bash <<\'EOF\'\ngit config core.hooksPath /dev/null\nEOF'
+    denied
+    bash_in "${PERSONAL}" $'sudo python3 - <<-EOF\n\tgit config core.hooksPath /dev/null\n\tEOF'
+    denied
+    bash_in "${PERSONAL}" $'git commit -n -F - <<\'EOF\'\ntext\nEOF'
+    denied
+}
+
 @test "area-guard: a hooksPath brought in past the global config (an include) is refused" {
     origin "${PERSONAL}" o/r
     mkdir -p "${H}/elsewhere"

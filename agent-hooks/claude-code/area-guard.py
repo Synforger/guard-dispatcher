@@ -88,9 +88,42 @@ def outgoing_module():
     return module
 
 
+# A heredoc: `<<` or `<<-`, an optional quote and the delimiter (not a `<<<` here-string).
+HEREDOC = re.compile(r"(?<!<)<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2(?!<)")
+# Programs that run what a heredoc feeds them as code, and those that only pass on to the next word.
+RUNS_BODY = re.compile(r"(?:\S*/)?(?:(?:ba|z|da|k)?sh|python[\d.]*|node|perl|ruby|osascript|eval|xargs|source|\.)")
+PASSES_ON = {"sudo", "env", "command", "exec", "nohup", "time", "nice"}
+
+
+def strip_heredocs(command: str) -> str:
+    """The command without the bodies of its heredocs, unless the program they feed runs them as
+    code (a shell, python, ...). A commit message or a file's text written through a heredoc is
+    not the command's own words: read as words, `-n` in a message was a `git commit -n`."""
+    out, pos = [], 0
+    while (m := HEREDOC.search(command, pos)):
+        line_end = command.find("\n", m.end())
+        if line_end < 0:
+            break
+        tabs = r"\t*" if m.group(1) else ""
+        end = re.compile(rf"^{tabs}{re.escape(m.group(3))}[ \t]*$", re.M).search(command, line_end + 1)
+        body_end = end.start() if end else len(command)
+        segment = re.split(r"[;&|(\n]", command[:m.start()])[-1].split()
+        program = next((w for w in segment if "=" not in w and w not in PASSES_ON), "")
+        if RUNS_BODY.fullmatch(program):
+            out.append(command[pos:body_end])
+        else:
+            out.append(command[pos:line_end + 1])
+        pos = body_end
+    out.append(command[pos:])
+    return "".join(out)
+
+
 def shell_words(command: str) -> list[str]:
     """The command's words, split in one place for every judgement (outgoing.shell_words):
-    a `;` glued to a word is still a break. Falls back to plain spaces on an unclosed quote."""
+    a `;` glued to a word is still a break, and a heredoc's body is not words of the command
+    unless the program it feeds runs it (strip_heredocs). Falls back to plain spaces on an
+    unclosed quote."""
+    command = strip_heredocs(command)
     try:
         return outgoing_module().shell_words(command)
     except ValueError:
