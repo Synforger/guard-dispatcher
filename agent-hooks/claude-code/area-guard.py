@@ -19,6 +19,8 @@ them.
            where its local clone is, and an unknown one is outside
 - Several marks allow writing only inside all of them (company > client means inside the client)
 - `_exempt` is never refused (the operator's own notes; their commits are scanned by the hooks)
+- `_outside` folders are in no area, whatever holds them: reading there marks nothing, and a
+  marked session may not write a repository there
 
 What a call sends out -- a tool that sends to a service, a `curl` / `wget` with a body -- is
 found by `outgoing.py` (next to this file) and judged like a push by `scanners/send-scan.py`: its
@@ -51,6 +53,7 @@ STATE = Path(os.environ.get("AREA_GUARD_STATE", Path.home() / ".cache/area-guard
 CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus-scan.py"
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/send-scan.py"
 EXEMPT = "_exempt"
+NO_AREA = "_outside"
 READS = {"Read", "Grep", "Glob"}
 WRITES = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 GIT_SEND = re.compile(r"\bgit\b[^|;&]*?\s(commit|push)\b")
@@ -138,12 +141,15 @@ def load_areas() -> list[tuple[str, Path]]:
 def area_of(path: Path, areas) -> str | None:
     for name, root in areas:
         if path == root or root in path.parents:
-            return name
+            return None if name == NO_AREA else name
     return None
 
 
 def inside(path: Path, name: str, areas) -> bool:
-    return any(n == name and (path == r or r in path.parents) for n, r in areas)
+    """A root of name holds path, and no `_outside` folder inside that root holds it too."""
+    held = [(n, r) for n, r in areas if path == r or r in path.parents]
+    cut = max((len(r.parts) for n, r in held if n == NO_AREA), default=0)
+    return any(n == name and len(r.parts) > cut for n, r in held)
 
 
 def repo_root(path: Path) -> Path | None:

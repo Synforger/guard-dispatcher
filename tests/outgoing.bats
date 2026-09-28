@@ -226,6 +226,14 @@ mk_binary() { printf '\x89PNG\r\n\x1a\n\0\0\0\rIHDR' > "$1"; }
     [[ "${output}" == *"destinations.txt:1"* ]]
 }
 
+@test "outgoing: _outside is not an area a destination can sit in" {
+    printf '_outside ~/personal\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    destinations 'mcp__*drive* _outside'
+    send mcp__acme__drive_upload_file "hello"
+    denied
+    [[ "${output}" == *"destinations.txt:1"* ]]
+}
+
 # --- a network command ------------------------------------------------------------------
 
 bash_call() { call Bash "$(jq -n --arg c "$1" '{command: $c}')"; }

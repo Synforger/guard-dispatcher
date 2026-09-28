@@ -522,6 +522,71 @@ print(c.join_wrapped(['採寸表の三段目は夜', '明けに読み直すこ�
     [[ "$output" != *"client-acme"* ]]
 }
 
+# --- a machine that is the company's, less the folders in no area ---------------------
+
+HOME_TEXT="the loading dock opens only after the second bell"
+
+# home_is_company — every folder of a home directory joins the company; its repos folder is in no area.
+home_is_company() {
+    HOMEDIR="${BATS_TEST_TMPDIR}/home"
+    mkdir -p "${HOMEDIR}/repos"
+    printf 'company %s/*\n_outside %s/repos\n' "${HOMEDIR}" "${HOMEDIR}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+}
+
+@test "corpus: a folder made later under a <name> <path>/* line joins that area" {
+    home_is_company
+    mkdir -p "${HOMEDIR}/Desktop"
+    printf '%s\n' "${HOME_TEXT}" > "${HOMEDIR}/Desktop/memo.md"
+    mk_repo other
+    commit_line "${HOME_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a hidden folder under a <name> <path>/* line stays out of the area" {
+    home_is_company
+    mkdir -p "${HOMEDIR}/.config"
+    printf '%s\n' "${HOME_TEXT}" > "${HOMEDIR}/.config/memo.md"
+    mk_repo other
+    commit_line "${HOME_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a folder on an _outside line holds no documents" {
+    home_is_company
+    printf '%s\n' "${HOME_TEXT}" > "${HOMEDIR}/repos/memo.md"
+    mk_repo other
+    commit_line "${HOME_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: an _outside folder inside an area is cut out of it" {
+    printf '_outside %s/public\n' "${WORK}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mkdir -p "${WORK}/public"
+    printf '%s\n' "${HOME_TEXT}" > "${WORK}/public/notes.md"
+    mk_repo_at "${WORK}/public/site"
+    commit_line "${HOME_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]                   # its notes are not the company's documents
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]                   # and a repository there is outside the company
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a private destination cloned in an _outside folder inside the company is outside it" {
+    printf '_outside %s/public\n' "${WORK}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    seed_visibility acme/site private
+    mk_clone_at "${WORK}/public/site" acme/site
+    commit_line "${COMPANY_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/site.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
 # --- a document changed after the build is checked at once --------------------------
 
 # spotlight_stub <reported-file> — mdutil says indexing is on; mdfind finds any probe

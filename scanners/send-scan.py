@@ -58,7 +58,7 @@ def area_names() -> set[str]:
     spec.loader.exec_module(module)
     areas = CONFIG / "areas.txt"
     try:
-        return set(module.load_areas(areas)) - {"_exempt"} if areas.is_file() else set()
+        return set(module.load_areas(areas)) - module.UNSCANNED if areas.is_file() else set()
     except ValueError as error:
         raise Broken(str(error)) from error
 

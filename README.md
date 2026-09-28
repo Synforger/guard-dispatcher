@@ -160,6 +160,8 @@ documents themselves. Everything it reads is configured on this machine only:
 ```
 ~/.config/guard/areas.txt               <name> <path> [<path> ...]   one area per line
                                         <prefix>* <path>/* ...       one area per sub-folder
+                                        <name> <path>/* ...          every sub-folder joins <name>
+                                        _outside <path> ...          in no area
                                         _exempt <path> ...           never scanned
 ~/.config/guard/patterns/<name>.txt     regular expressions for identifiers of a shape
                                         (product codes, client names), case-insensitive
@@ -174,6 +176,14 @@ documents themselves. Everything it reads is configured on this machine only:
 (`client-acme`, `client-beta`, ...), so a client folder created tomorrow is
 guarded from the moment it exists. A folder already named on an explicit line
 keeps that name.
+
+On a machine that is the company's, `company ~/*` puts every folder of the home
+directory in the company, one made tomorrow included (hidden folders, which hold
+tools and their settings, stay out). `_outside ~/personal ~/Library` names the
+folders that belong to no area: a personal folder, or one that holds only
+applications. Nothing read there marks a session, nothing there is a document,
+and a session marked by the company may not write a repository there. An `_outside` folder
+inside an area is cut out of it too.
 
 An area's documents are everything under it that holds its words:
 

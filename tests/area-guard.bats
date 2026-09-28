@@ -349,6 +349,48 @@ origin() { git -C "$1" remote add origin "git@github.com:$2.git"; }
     write_to "${beta}/repos/tool/a.py"; passed
 }
 
+# --- a machine that is the company's, less the folders in no area ------------
+
+# home_is_company — every folder of the home directory joins the company; its repos folder is in no area.
+home_is_company() {
+    cat > "${GUARD_CONFIG_DIR}/areas.txt" <<AREAS
+company  ~/*
+client   ~/org/clients/acme
+_outside ${H}/repos
+_exempt  ~/notes
+AREAS
+}
+
+@test "area-guard: a folder made later in a home that is the company's joins the company" {
+    home_is_company
+    mkdir -p "${H}/Desktop"
+    agent Read file_path "${H}/Desktop/shot.png"; passed
+    write_to "${PERSONAL}/a.py"; denied
+    write_to "${COMPANY_REPO}/a.py"; passed
+}
+
+@test "area-guard: a hidden folder of a home that is the company's marks nothing" {
+    home_is_company
+    agent Read file_path "${H}/.config/guard/areas.txt"; passed
+    write_to "${PERSONAL}/a.py"; passed
+}
+
+@test "area-guard: reading an _outside folder marks nothing" {
+    home_is_company
+    agent Read file_path "${PERSONAL}/README.md"; passed
+    write_to "${COMPANY_REPO}/a.py"; passed
+    write_to "${CASE_REPO}/a.py"; passed
+}
+
+@test "area-guard: a company reader cannot write a repository in an _outside folder inside the company" {
+    printf '_outside ~/org/public\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mkdir -p "${H}/org/public/site"
+    git init -q "${H}/org/public/site"
+    agent Read file_path "${COMPANY_REPO}/notes.md"
+    write_to "${H}/org/public/site/a.py"; denied
+    write_to "${COMPANY_REPO}/b.py"; passed
+}
+
 # --- how a session is marked ------------------------------------------------
 
 @test "area-guard: a Bash command naming an area with ~ marks the session" {
