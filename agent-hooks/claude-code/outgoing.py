@@ -44,6 +44,30 @@ CURL_TAKES_VALUE = CURL_BODY | {"-X", "--request", "-H", "--header", "-o", "--ou
                                 "--url", "-x", "--proxy", "-m", "--max-time", "-w", "--write-out"}
 WGET_BODY = {"--post-data", "--post-file", "--body-data", "--body-file"}
 SENDING_METHODS = {"POST", "PUT", "PATCH"}
+# Words of a shell command that end one command and start the next.
+SHELL_BREAK = {"&&", "||", ";", "|", "&", "|&", ";;", "(", ")"}
+
+
+def shell_words(command: str) -> list[str]:
+    """The words of a shell command, with each control operator (SHELL_BREAK) a word of its own
+    and each redirection (`> f`, `2>&1`, `< f`) left out. `shlex.split` keeps `a;` as one word, so
+    a break glued to a word was read as an argument of the command before it. Raises ValueError
+    on an unclosed quote, as `shlex.split` does."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    words: list[str] = []
+    target = False
+    for word in lexer:
+        if target:
+            target = False
+            continue
+        if word and set(word) <= set("<>&") and set(word) & set("<>"):
+            if words and words[-1].isdigit():   # the fd of `2>`: split off by the lexer
+                words.pop()
+            target = True
+            continue
+        words.append(word)
+    return words
 
 
 def reads_only(tool: str, args: dict) -> bool:
@@ -121,7 +145,7 @@ def body_text(tool: str, flag: str, value: str, cwd: str) -> str:
 def curl_sends(command: str, cwd: str) -> list[tuple[str, str]]:
     """(host:<name>, payload) for each curl / wget in the command that sends a body or a file."""
     try:
-        words = shlex.split(command)
+        words = shell_words(command)
     except ValueError:
         return []
     out = []
@@ -134,7 +158,7 @@ def curl_sends(command: str, cwd: str) -> list[tuple[str, str]]:
         body_flags = CURL_BODY if tool == "curl" else WGET_BODY
         takes_value = CURL_TAKES_VALUE if tool == "curl" else WGET_BODY
         j, body, urls, method = i + 1, [], [], None
-        while j < len(words) and words[j] not in ("|", "||", "&&", ";"):
+        while j < len(words) and words[j] not in SHELL_BREAK:
             w = words[j]
             flag, eq, inline = w.partition("=") if w.startswith("--") else (w, "", "")
             takes = flag in takes_value and not eq
