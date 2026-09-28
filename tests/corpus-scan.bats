@@ -555,31 +555,154 @@ SH
     [[ "$output" != *"walking the private documents"* ]]
 }
 
-@test "corpus: when Spotlight cannot answer, everything is walked again" {
+# index_has <path> — the index (docs/index.json) still names <path> as a document.
+index_has() {
+    python3 -c "
+import json, sys
+with open('${GUARD_CORPUS_CACHE}/docs/index.json') as fh:
+    index = json.load(fh)
+sys.exit(0 if sys.argv[1] in index else 1)" "$1"
+}
+
+@test "corpus: when Spotlight cannot answer, an edited document is caught without a full rebuild" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last               # first look: nothing built yet, a full walk either way
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"walking the private documents"* ]]
+    printf 'the dye lot for the spring run arrives on the ninth\n' >> "${CLIENT}/received/notes.md"
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last               # Spotlight is down: the stat fallback finds the edit
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"walking the private documents"* ]]
+}
+
+@test "corpus: when Spotlight does not index an area, an edited document is still caught by the stat fallback" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    printf '#!/bin/sh\nexit 0\n' > "${STUB}/mdfind"   # finds nothing, not even a known document
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    printf 'the dye lot for the spring run arrives on the ninth\n' >> "${CLIENT}/received/notes.md"
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"walking the private documents"* ]]
+}
+
+@test "corpus: when Spotlight cannot answer, a deleted document drops from the index (its prints stay the safe side)" {
     export GUARD_CORPUS_MAX_AGE=3600
     spotlight_stub ""
     printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
     mk_repo other
     commit_line "nothing private"
     PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    run index_has "${CLIENT}/received/notes.md"
+    [ "$status" -eq 0 ]
+    rm "${CLIENT}/received/notes.md"
+    commit_line "the file is gone now"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"walking the private documents"* ]]
+    run index_has "${CLIENT}/received/notes.md"
+    [ "$status" -ne 0 ]
+    # the safe side: the area's merged table is not rebuilt until the next full walk, so the
+    # text the deleted document held is still caught
+    commit_line "expected: ${CLIENT_TEXT}"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: when Spotlight cannot answer, a brand new document waits for the next full walk" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
     printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
     commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    # the stat fallback only re-checks documents the index already knows: it names no folder to
+    # have missed a new one in, so a document created since the last look waits -- for Spotlight
+    # to come back, or for the walk MAX_AGE forces regardless
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"walking the private documents"* ]]
+    export GUARD_CORPUS_MAX_AGE=0
+    commit_line "confirm: the dye lot for the spring run arrives on the ninth"
     PATH="${STUB}:${PATH}" scan_last
     [ "$status" -eq 1 ]
     [[ "$output" == *"walking the private documents"* ]]
 }
 
-@test "corpus: when Spotlight does not index an area, everything is walked again" {
-    export GUARD_CORPUS_MAX_AGE=3600
-    spotlight_stub ""
-    printf '#!/bin/sh\nexit 0\n' > "${STUB}/mdfind"     # finds nothing, not even a known document
+# --- only one process at a time builds or writes the fingerprints -------------------
+
+# hold_lock <cache-dir> <seconds> — take the build lock in a background process and wait
+# until it is really held, so the test that follows races a lock it is sure to lose.
+hold_lock() {
+    python3 -c "
+import fcntl, os, sys, time
+cache = sys.argv[1]
+os.makedirs(cache, exist_ok=True)
+fh = open(os.path.join(cache, 'build.lock'), 'a+')
+fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+open(os.path.join(cache, 'lock-held'), 'w').close()
+time.sleep(float(sys.argv[2]))
+" "$1" "$2" &
+    LOCK_PID=$!
+    for _ in $(seq 1 50); do
+        [ -f "$1/lock-held" ] && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+@test "corpus: a process that cannot take the build lock uses the summary already on disk instead of waiting" {
+    export GUARD_CORPUS_MAX_AGE=0      # would rebuild on every look, if it got the chance
     mk_repo other
     commit_line "nothing private"
-    PATH="${STUB}:${PATH}" scan_last
-    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
-    commit_line "the dye lot for the spring run arrives on the ninth"
-    PATH="${STUB}:${PATH}" scan_last
-    [ "$status" -eq 1 ]
+    scan_last
+    [ "$status" -eq 0 ]
+    before="$(cat "${GUARD_CORPUS_CACHE}/summary.json")"
+    hold_lock "${GUARD_CORPUS_CACHE}" 6
+    started="$(date +%s)"
+    scan_last
+    elapsed=$(( $(date +%s) - started ))
+    [ "$status" -eq 0 ]
+    [ "${elapsed}" -lt 3 ]
+    [ "$(cat "${GUARD_CORPUS_CACHE}/summary.json")" = "${before}" ]
+}
+
+@test "corpus: with nothing built yet, a second process waits for the one holding the lock" {
+    rm -rf "${GUARD_CORPUS_CACHE}"
+    # The git setup happens before the lock is taken, so a loaded machine being slow at that does
+    # not eat into the window the test measures.
+    mk_repo other
+    commit_line "nothing private"
+    hold_lock "${GUARD_CORPUS_CACHE}" 3
+    started="$(date +%s)"
+    scan_last
+    elapsed=$(( $(date +%s) - started ))
+    [ "$status" -eq 0 ]
+    [ "${elapsed}" -ge 2 ]
+    [ -f "${GUARD_CORPUS_CACHE}/summary.json" ]
+}
+
+@test "corpus: a summary.json read back is never a half-written file" {
+    mk_repo other
+    commit_line "nothing private"
+    scan_last
+    [ "$status" -eq 0 ]
+    python3 -c "import json; json.load(open('${GUARD_CORPUS_CACHE}/summary.json'))"
+    [ -z "$(find "${GUARD_CORPUS_CACHE}" -maxdepth 1 -name '.summary.json.*')" ]
+    [ -z "$(find "${GUARD_CORPUS_CACHE}/docs" -maxdepth 1 -name '.index.json.*')" ]
 }
 
 @test "corpus: a broken areas.txt line refuses instead of guessing" {
@@ -648,6 +771,8 @@ shut() {
 teardown() {
     local d
     for d in "${SHUT[@]}"; do chmod 755 "${d}"; done
+    [ -n "${LOCK_PID:-}" ] && kill "${LOCK_PID}" 2>/dev/null
+    true
 }
 
 update_prints() {
@@ -753,4 +878,64 @@ update_prints() {
     [[ "$output" != *"broken.pptx"* ]]
     run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --status
     [[ "$output" == *"could not read (not checked): "*"/received/broken.pptx"* ]]
+}
+
+# --- why a document could not be read ---------------------------------------------
+
+@test "corpus: a time-out, a missing extractor and an exit code are told apart, not just OSError" {
+    run python3 -c "
+import importlib.util, subprocess
+spec = importlib.util.spec_from_file_location('c', '${GUARD_ROOT}/scanners/corpus-scan.py')
+c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
+
+cases = [
+    (subprocess.TimeoutExpired(cmd='pdftotext', timeout=30), 'timed out'),
+    (FileNotFoundError(2, 'No such file or directory'), 'the extractor is not installed'),
+    (OSError('pdftotext exited 1'), 'pdftotext exited 1'),
+]
+failures = []
+for i, (exc, expect) in enumerate(cases):
+    def reader(exc=exc):
+        raise exc
+    ok, why = c.document_prints(f'/nowhere/doc{i}.pdf', 'STAMP', ('runs', reader), {}, {}, 'area')
+    if ok or why != expect:
+        failures.append((i, ok, why))
+print('ALL_OK' if not failures else f'FAILED: {failures}')
+"
+    [[ "$output" == *"ALL_OK"* ]]
+}
+
+@test "corpus: a PDF pdftotext cannot parse is unreadable, its reason names the exit code" {
+    command -v pdftotext >/dev/null || skip "pdftotext is not installed"
+    printf 'not a real pdf file at all\n' > "${CLIENT}/received/broken.pdf"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --update
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"1 documents could not be read (see --status): pdftotext exited"* ]]
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --status
+    [[ "$output" == *"could not read (not checked): "*"/received/broken.pdf (pdftotext exited"* ]]
+}
+
+@test "corpus: a PDF whose extractor times out is unreadable within the PDF budget, not the full 300s" {
+    STUB="${BATS_TEST_TMPDIR}/pdf-stub"; mkdir -p "${STUB}"
+    printf '#!/bin/sh\nsleep 5\n' > "${STUB}/pdftotext"
+    chmod +x "${STUB}/pdftotext"
+    printf 'placeholder\n' > "${CLIENT}/received/slow.pdf"
+    export GUARD_CORPUS_PDF_TIMEOUT=1
+    started="$(date +%s)"
+    PATH="${STUB}:${PATH}" run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --update
+    elapsed=$(( $(date +%s) - started ))
+    [ "$status" -eq 0 ]
+    [ "${elapsed}" -lt 4 ]
+    [[ "$output" == *"1 documents could not be read (see --status): timed out"* ]]
+}
+
+@test "corpus: --summary groups documents that could not be read by why, still naming no file" {
+    printf 'broken' > "${CLIENT}/received/broken.pptx"
+    command -v pdftotext >/dev/null && printf 'not a real pdf file at all\n' > "${CLIENT}/received/broken.pdf"
+    update_prints
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --summary
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"not a valid Office document: 1"* ]]
+    [[ "$output" != *"broken.pptx"* ]]
+    [[ "$output" != *"broken.pdf"* ]]
 }
