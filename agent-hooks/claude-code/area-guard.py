@@ -522,9 +522,14 @@ def unguarded(repo: Path) -> str | None:
         return None
     if git_config(top, "--local", "--get", "core.hooksPath"):
         return "the repository overrides core.hooksPath (husky and the like switch the hooks off)"
-    hooks = git_config(top, "--get", "core.hooksPath")
-    if not hooks or not (real(hooks, str(top)) / "pre-push").exists():
+    armed = git_config(top, "--global", "--get", "core.hooksPath")
+    if not armed or not (real(armed, str(top)) / "pre-push").exists():
         return "no global core.hooksPath points at the guard hooks"
+    # `--local` does not follow includes, and a worktree config or GIT_CONFIG_* sits outside it too:
+    # what git will run is the value it resolves, and that has to be the global one.
+    hooks = git_config(top, "--get", "core.hooksPath")
+    if not hooks or real(hooks, str(top)) != real(armed, str(top)):
+        return "core.hooksPath is set again past the global config (an include, a worktree config or the environment)"
     if git_config(top, "--get", "guard.scope") == "exempt":
         return "guard.scope = exempt"
     prefix = git_config(top, "--get", "guard.exemptPrefix")
@@ -566,7 +571,8 @@ def bypass(command: str, cwd: str, areas) -> str | None:
                 if (re.fullmatch(r"-[a-zA-Z]*n[a-zA-Z]*", a) and not (j and after[j - 1] in GIT_VALUE_FLAGS)):
                     return "git commit -n (= --no-verify)"
     for target, dest_args in sends:
-        if dest_args[:1] == ["--gh-argv-inline"] or not areas or area_of(target, areas) == EXEMPT:
+        # A machine with no areas still has the hooks' word scan to keep, so it is held to them too.
+        if dest_args[:1] == ["--gh-argv-inline"] or (areas and area_of(target, areas) == EXEMPT):
             continue
         # A commit stays in its repository; with no remote there is nowhere for it to go. A push
         # (to a remote or a URL typed out) is still held to the hooks.
