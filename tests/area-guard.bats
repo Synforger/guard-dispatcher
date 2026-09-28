@@ -323,6 +323,44 @@ cat ${c}/received/memo.md" "[ -d ${c} ] && cat ${c}/received/memo.md" "stat ${c}
     done
 }
 
+# --- writes a Bash command names ---------------------------------------------
+# Edit and Write are judged by their target; a shell command writes too. Its named targets are
+# judged the same way: a redirection, tee / touch, cp / mv, sed -i, dd of=, and paths inside
+# inline code.
+
+@test "area-guard: a client reader cannot write a personal repository from the shell" {
+    printf 'x\n' > "${PERSONAL}/existing.txt"
+    read_case
+    local c n=0
+    for c in "echo x > ${PERSONAL}/a.txt" "echo x >> ${PERSONAL}/a.txt" "date &> ${PERSONAL}/a.txt" \
+             "echo x | tee ${PERSONAL}/a.txt" "touch ${PERSONAL}/a.txt" \
+             "cp ${CASE}/received/memo.md ${PERSONAL}/" "mv /tmp/x ${PERSONAL}/b.txt" \
+             "sed -i '' s/x/y/ ${PERSONAL}/existing.txt" "dd if=/dev/zero of=${PERSONAL}/z bs=1 count=1" \
+             "python3 -c \"open('${PERSONAL}/c.txt','w').write('x')\"" \
+             "node -e \"require('fs').writeFileSync('${PERSONAL}/d.txt','x')\"" \
+             "bash -c 'echo x > ${PERSONAL}/e.txt'" "cd /tmp && echo x > \$HOME/repos/public-tool/f.txt"; do
+        n=$((n + 1))
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+    done
+}
+
+@test "area-guard: a client reader still writes from the shell inside the client, the notes and outside repositories" {
+    read_case
+    local c
+    for c in "echo x > ${CASE_REPO}/ok.txt" "echo x > ${NOTES}/n.md" "echo x > ${H}/scratch.txt" \
+             "ls ${PERSONAL} > ${H}/list.txt" "cat ${PERSONAL}/README 2>&1" "echo x 2>&1 >/dev/null" \
+             "sed -n 1p ${PERSONAL}/x" "python3 build.py"; do
+        bash_in "${H}" "${c}"
+        passed || { echo "refused: ${c}"; return 1; }
+    done
+}
+
+@test "area-guard: an unmarked session writes anywhere from the shell" {
+    bash_in "${H}" "echo x > ${PERSONAL}/a.txt; python3 -c \"open('${PERSONAL}/b','w')\""
+    passed
+}
+
 # --- an area this session cannot read ----------------------------------------
 # A cage (sandbox/) hides the areas it does not belong to, and the hook runs inside the same
 # cage. Taking the read permission off a folder stands in for that here: the OS

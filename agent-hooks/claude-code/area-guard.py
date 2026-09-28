@@ -204,6 +204,69 @@ def path_only(command: str) -> bool:
     return name in ATTRIBUTES_ONLY or (name == "ls" and ls_names_only(args))
 
 
+# Commands that write the files they name, and interpreters whose inline code (-c / -e) may.
+CREATES = {"tee", "touch"}
+COPIES = {"cp", "mv", "install", "ln", "gcp", "gmv"}
+IN_PLACE = {"sed", "gsed", "perl"}
+INLINE = {"python", "python3", "node", "perl", "ruby", "bash", "sh", "zsh"}
+# An absolute or home path written inside inline code.
+CODE_PATH = re.compile(r"""(?:~|/)[^\s'"`;|&<>(),]+""")
+
+
+def write_targets(command: str, cwd: str) -> list[Path]:
+    """Paths a Bash command names as a place it writes: a redirection's target (`>`, `>>`), the
+    files of tee / touch, the destination of cp / mv / install / ln, the existing files sed -i
+    edits, dd's of=, and every absolute or home path inside inline code (`python3 -c`, `node -e`,
+    `bash -c`, ...), which cannot be told apart from a read. A script run from a file is not read."""
+    lexer = shlex.shlex(spell_home(command), posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    named: list[str] = []
+    breaks = outgoing_module().SHELL_BREAK
+
+    def one(words: list[str]) -> None:
+        if not words:
+            return
+        tool, args = os.path.basename(words[0]), words[1:]
+        paths = [a for a in args if not a.startswith("-")]
+        if tool in CREATES:
+            named.extend(paths)
+        elif tool in COPIES and len(paths) >= 2:
+            named.append(paths[-1])
+        elif tool in IN_PLACE and any(a.startswith(("-i", "--in-place")) for a in args):
+            named.extend(p for p in paths if Path(real(p, cwd)).is_file())
+        elif tool == "dd":
+            named.extend(a[3:] for a in args if a.startswith("of="))
+        if tool in INLINE:
+            for flag, code in zip(args, args[1:]):
+                if flag in ("-c", "-e"):
+                    named.extend(CODE_PATH.findall(code))
+
+    words: list[str] = []
+    redirect = None
+    for token in tokens:
+        if redirect is not None:
+            if redirect:
+                named.append(token)
+            redirect = None
+            continue
+        if token in breaks:
+            one(words)
+            words = []
+            continue
+        if token and set(token) <= set("<>&|") and set(token) & set("<>"):
+            if words and words[-1].isdigit():   # the fd of `2>`
+                words.pop()
+            redirect = ">" in token and not token.endswith("&")   # `2>&1` names no file
+            continue
+        words.append(token)
+    one(words)
+    return [real(p, cwd) for p in named if p and p not in ("-", "/dev/null")]
+
+
 def bash_marks(command: str, cwd: str, areas) -> list[Path]:
     """What a Bash command reads from: its folder always, and the area paths it names unless
     it only checks them."""
@@ -444,6 +507,11 @@ def main() -> int:
     elif tool == "Bash":
         command = args.get("command", "")
         touched += bash_marks(command, cwd, areas)
+        for target in write_targets(command, cwd) if marks else []:
+            if repo_root(target) is not None and not allowed(target, marks, areas):
+                deny(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
+                     f"write {target} (areas: {AREAS}). Do it in another session")
+                return 0
         for send in sends_of(command, cwd) if marks else []:
             place = destination(*send)
             if place is None or not allowed(place, marks, areas):
