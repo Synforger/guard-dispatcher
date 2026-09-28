@@ -137,14 +137,15 @@ KEYCHAINS = "~/Library/Keychains"
 # second one an area's `ANON_TRUTH_PATH` points at) is a scanner truth a session must not be
 # able to weaken, so its whole folder is carved out below like the guard's own config dir.
 ANON_TRUTH_PATH = Path(os.environ.get("ANON_TRUTH_PATH", str(Path.home() / ".config/anon-words/master.txt")))
-# What runs outside every cage by itself: a login item, and the programs a shell outside finds on
+# What runs outside every cage by itself: a login item, what ssh runs from its config at each
+# connection (ProxyCommand, LocalCommand) and lets in (authorized_keys), and the programs a shell outside finds on
 # PATH. A program a cage could rewrite there runs as the operator the next time anyone types its
 # name -- and `~/.local/bin` comes first on PATH, ahead of git, gh and python. So no cage writes a
 # PATH folder under HOME, the install a link there leads into, a conda base the shell hook runs at
 # every start, nor what this machine lists in OUTSIDE_RUN (one path a line: a server a relay starts
 # outside, an editable install). A conda base keeps envs/ and pkgs/ writable: environments are
 # made from inside a session.
-LOGIN_ITEMS = "~/Library/LaunchAgents"
+LOGIN_ITEMS = ["~/Library/LaunchAgents", "~/.ssh"]
 # Per machine, what a cage writes or reads beyond what its areas give it, one line each:
 # `<cage> writes <path>...` / `<cage> reads <path>...` (quote a path with spaces). A `personal
 # writes` line makes the personal cage write only what it lists, besides what every cage writes
@@ -243,7 +244,7 @@ def outside_run(home: Path) -> list[Path]:
             return [root / name for name in CONDA_BASE if (root / name).exists()]
         return [root]
 
-    found: list[Path] = [expand(LOGIN_ITEMS)]
+    found: list[Path] = [expand(p) for p in LOGIN_ITEMS]
     for entry in os.environ.get("PATH", "").split(os.pathsep):
         folder = expand(entry) if entry else None
         if folder is None or not inside(folder, [home]) or not folder.is_dir():

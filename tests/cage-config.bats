@@ -167,6 +167,7 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     for cage in personal company client; do
         build "${cage}"
         lists denyWrite "${H}/Library/LaunchAgents"
+        lists denyWrite "${H}/.ssh"                                # ssh runs its config's commands outside
         lists denyWrite "${H}/.local/bin"
         lists denyWrite "${H}/.local/pipx/venvs/tool"              # the venv the link's bin/ sits in
         lists denyWrite "${H}/.local/share/claude/versions"        # the folder of versions: no planted next one
