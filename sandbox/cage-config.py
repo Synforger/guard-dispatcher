@@ -9,7 +9,7 @@ attempts them -- a tool call, a shell redirection or a script's own `open()`. A 
 - personal  reads everything but the areas, and writes anywhere in HOME but the areas
 - an area   reads everything but the other areas (the areas around it stay readable, so a
             client session still reads the company notes it sits in), and writes only
-            inside itself and `_exempt`
+            inside itself and `_exempt`, besides the machine's caches and the login keychain
 - any cage  has its own Claude Code config and temp directories, and neither reads nor
             writes another cage's; it does not write the guards themselves (the install
             the hooks run from, the hooks directory, the global git config, `areas.txt`, the
@@ -80,6 +80,11 @@ SETTINGS_GLOB = "{home}/**/.claude*/settings*.json"
 SEATBELT = ['(allow sysctl-read (sysctl-name "security.mac.sandbox.sentinel"))']
 # Machine-wide caches a session writes whichever cage it is in.
 CACHES = ["~/.cache", "~/.npm", "~/Library/Caches", "~/.local/share/claude", "~/.local/state/claude"]
+# The login keychain's folder: Claude Code keeps its login there, and each token refresh rewrites
+# the keychain file (next to it, a temp file swapped in). An area cage that cannot write it keeps
+# a revoked token after the first refresh (401). Readable from every cage already; only whole files
+# can be allowed, not one item.
+KEYCHAINS = "~/Library/Keychains"
 # The operator master word list scanners/anon-scan.sh (and anon-fix.sh, anon-audit-deep.sh)
 # read by default, and anon-sync-truth.sh / bootstrap-machine.sh / doctor.sh treat as the
 # sync source (`ANON_TRUTH_PATH` overrides the file, same default in every one of them). Its
@@ -182,7 +187,7 @@ def build(cage: str, account_dir: Path) -> dict:
     if cage == PERSONAL:
         writable = [home]
     else:
-        opened = [*exempt, *(expand(c) for c in CACHES)]
+        opened = [*exempt, *(expand(c) for c in [*CACHES, KEYCHAINS])]
         writable = [*own, *(p for r in opened for p in carve(r, holding)), own_config]
     writable.append(tmp_dir)
     # With no CLAUDE_CONFIG_DIR, Claude Code keeps its state next to the default directory.

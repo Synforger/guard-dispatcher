@@ -390,7 +390,9 @@ A cage is `personal` or the name of an area in `areas.txt`:
   but the areas.
 - An area reads everything but the other areas — the areas around it stay
   readable, so a client session still reads the company notes it sits in —
-  and writes only inside itself, `_exempt`, a few machine caches and its own
+  and writes only inside itself, `_exempt`, a few machine caches, the login
+  keychain's folder (`~/Library/Keychains`: a token refresh rewrites the
+  keychain file, and a revoked token is left without it) and its own
   directories. An area around it is left out of the writable set (a write-deny
   would also cover the area inside it); where it sits inside `_exempt`, that
   folder is opened entry by entry around it, so a new file directly beside
