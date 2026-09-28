@@ -204,9 +204,10 @@ Documents changed since the last scan are found through Spotlight and added at
 once. When Spotlight cannot answer (indexing off, an area it does not index, or
 a sandbox that can still list the area's folder) the size and modification
 time each document's print was built from are compared with what `stat` gives
-now instead — no folder is listed, so an edited or a deleted document is still
-caught at once, but not one created since the last look (that, and everything
-else, still gets a full walk at least every six hours). Only one process at a
+now instead, and only the folders whose modification time moved are listed
+again (creating, removing or renaming a file changes its folder's time) — an
+edited, deleted or created document is caught at once without walking
+everything, and a full walk still comes at least every six hours. Only one process at a
 time walks or writes the fingerprints; the rest use what is already on disk
 rather than wait or walk beside it, and every file is written whole (a
 temporary file, then renamed into place) so a reader never opens a half-written

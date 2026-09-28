@@ -619,7 +619,7 @@ sys.exit(0 if sys.argv[1] in index else 1)" "$1"
     [ "$status" -eq 1 ]
 }
 
-@test "corpus: when Spotlight cannot answer, a brand new document waits for the next full walk" {
+@test "corpus: when Spotlight cannot answer, a new document and a new folder are caught without a full walk" {
     export GUARD_CORPUS_MAX_AGE=3600
     spotlight_stub ""
     printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
@@ -627,19 +627,20 @@ sys.exit(0 if sys.argv[1] in index else 1)" "$1"
     commit_line "nothing private"
     PATH="${STUB}:${PATH}" scan_last
     [ "$status" -eq 0 ]
+    # created since the last look: its folder's modification time moved, so only that folder is
+    # listed again -- found at once, without walking everything
     printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
     commit_line "the dye lot for the spring run arrives on the ninth"
     PATH="${STUB}:${PATH}" scan_last
-    # the stat fallback only re-checks documents the index already knows: it names no folder to
-    # have missed a new one in, so a document created since the last look waits -- for Spotlight
-    # to come back, or for the walk MAX_AGE forces regardless
-    [ "$status" -eq 0 ]
+    [ "$status" -eq 1 ]
     [[ "$output" != *"walking the private documents"* ]]
-    export GUARD_CORPUS_MAX_AGE=0
-    commit_line "confirm: the dye lot for the spring run arrives on the ninth"
+    # a folder that did not exist at the last look is walked whole
+    mkdir -p "${CLIENT}/received/new-batch/inner"
+    printf 'the loom in bay four is retuned every second tuesday\n' > "${CLIENT}/received/new-batch/inner/note.md"
+    commit_line "the loom in bay four is retuned every second tuesday"
     PATH="${STUB}:${PATH}" scan_last
     [ "$status" -eq 1 ]
-    [[ "$output" == *"walking the private documents"* ]]
+    [[ "$output" != *"walking the private documents"* ]]
 }
 
 # --- only one process at a time builds or writes the fingerprints -------------------

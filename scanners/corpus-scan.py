@@ -44,10 +44,11 @@ document is unchanged; documents changed since the last look are found through
 Spotlight and added at once. When Spotlight cannot answer (disabled, an area it
 does not index, or inside a sandbox that can still list the area's folder) the
 size and modification time each document's print was built from are compared
-with what `stat` gives now instead -- no folder is listed, so a document edited
-or deleted since the last look is still caught at once, but not one created
-since then; that, and everything else, waits for the walk MAX_AGE still forces
-at least every six hours. Only one process at a time walks or writes the
+with what `stat` gives now instead, and only the folders whose modification time
+moved are listed again (a file created, removed or renamed changes its folder's
+time): a document edited, deleted or created since the last look is caught at
+once without walking everything. A full walk still comes at least every six
+hours (MAX_AGE). Only one process at a time walks or writes the
 fingerprints (a lock file in the cache); the rest use what is already there
 rather than wait or walk beside it.
 
@@ -137,6 +138,10 @@ VENDORED = {"vendor", "vendors", "external", "extern", "third_party", "thirdpart
 PRINT_FORMAT = 3
 DOCS = CACHE / "docs"
 INDEX = DOCS / "index.json"
+# Every folder the last full walk went through, with its modification time: a file created, removed
+# or renamed in a folder changes that folder's time, so the stat fallback of catch_up() finds new
+# documents by listing only the folders whose time moved.
+FOLDERS = DOCS / "folders.json"
 # Past this many changed documents since the last full walk, walk again instead of growing the delta.
 MAX_DELTA = 200
 # One PDF's extractor gets far less than the judgement's own budget (send-scan.py's 120s for the
@@ -472,8 +477,10 @@ def document(path: Path, repos: Repos, repo: Path | None | bool = False, root: P
     return f"{PRINT_FORMAT}:{reader[0]}:{st.st_mtime_ns}:{st.st_size}", reader
 
 
-def documents(roots: list[Path], inner: list[Path], ignored: list[Path], repos: Repos):
-    """(path, stamp, read) for every document under roots, skipping nested areas and ignored folders."""
+def documents(roots: list[Path], inner: list[Path], ignored: list[Path], repos: Repos,
+              folders: dict | None = None):
+    """(path, stamp, read) for every document under roots, skipping nested areas and ignored folders.
+    Every folder walked goes into `folders` with its modification time (for catch_up())."""
     for root in roots:
         repo_of = {root: repos.of(root)}     # a folder's repository is its own, or its parent's
         for folder, dirs, files in os.walk(root):
@@ -482,6 +489,9 @@ def documents(roots: list[Path], inner: list[Path], ignored: list[Path], repos: 
                 repo_of[here] = here if (here / ".git").exists() else repo_of[here.parent]
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")
                        and here / d not in inner and here / d not in ignored]
+            if folders is not None:
+                with contextlib.suppress(OSError):
+                    folders[folder] = here.stat().st_mtime_ns
             for name in files:
                 found = document(here / name, repos, repo_of[here], root)
                 if found:
@@ -651,11 +661,12 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
     ignored = [expand(p) for p in read_lines(CONFIG / "ignore.txt")]
     repos = Repos()
     summary = {"built": started, "checked": started, "run": [RUN, LATIN_RUN], "areas": {}, "unreadable": []}
+    folders: dict = {}
     for name, roots in areas.items():
         if name == EXEMPT:
             continue
         fids, changed = [], []
-        for path, stamp, read in documents(roots, inner_roots(areas, name), ignored, repos):
+        for path, stamp, read in documents(roots, inner_roots(areas, name), ignored, repos, folders):
             key = str(path)
             fresh = key not in old or old[key][0] != stamp or old[key][2] != name
             ok, why = document_prints(path, stamp, read, old, index, name)
@@ -685,6 +696,7 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
     for stale in {v[1] for v in old.values()} - kept:
         (DOCS / f"{stale}.bin").unlink(missing_ok=True)
     atomic_write(INDEX, json.dumps(index))
+    atomic_write(FOLDERS, json.dumps(folders))
     summary["seconds"] = round(time.time() - started, 1)
     atomic_write(CACHE / "summary.json", json.dumps(summary, indent=1))
     return summary
@@ -756,10 +768,9 @@ def stat_changes(index: dict) -> tuple[list[Path], list[Path]]:
     """(changed, removed) among the documents the index already knows, found by comparing the
     size and modification time it recorded with what `stat` gives now -- no folder is listed and
     no file is opened. This is the fallback for when Spotlight cannot answer (disabled, or inside
-    a sandbox): it catches every one of them edited or deleted since the last look, but -- unlike
-    Spotlight -- never a document created since then; that waits for the next full walk (MAX_AGE
-    still bounds how stale that can get). A stamp this cannot parse counts as changed: its print
-    is rebuilt rather than trusted on faith."""
+    a sandbox): it catches every one of them edited or deleted since the last look; the documents
+    created since then are folder_changes()'. A stamp this cannot parse counts as changed: its
+    print is rebuilt rather than trusted on faith."""
     changed, removed = [], []
     for key, entry in index.items():
         path = Path(key)
@@ -772,6 +783,49 @@ def stat_changes(index: dict) -> tuple[list[Path], list[Path]]:
         if known is None or (st.st_mtime_ns, st.st_size) != known:
             changed.append(path)
     return changed, removed
+
+
+def folder_changes(index: dict) -> list[Path] | None:
+    """Files the index does not know yet in the folders whose modification time moved since the
+    last look -- the documents created since then, which stat_changes() cannot see (creating,
+    removing or renaming a file changes its folder's time). Only those folders are listed; a new
+    folder is walked whole. The folder list is brought up to date. None when there is no folder
+    list yet (a cache from before it was kept): the caller then walks everything once."""
+    if not FOLDERS.is_file():
+        return None
+    folders = json.loads(FOLDERS.read_text())
+    new: list[Path] = []
+    moved = False
+    for folder, mtime in list(folders.items()):
+        here = Path(folder)
+        try:
+            now = here.stat().st_mtime_ns
+        except OSError:
+            folders.pop(folder)
+            moved = True
+            continue
+        if now == mtime:
+            continue
+        folders[folder] = now
+        moved = True
+        with contextlib.suppress(OSError):
+            for entry in os.scandir(here):
+                if entry.name.startswith(".") or entry.name in SKIP_DIRS:
+                    continue
+                path = here / entry.name
+                if entry.is_dir(follow_symlinks=False):
+                    if str(path) in folders:
+                        continue
+                    for sub, dirs, files in os.walk(path):
+                        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+                        with contextlib.suppress(OSError):
+                            folders[sub] = Path(sub).stat().st_mtime_ns
+                        new += [Path(sub) / f for f in files]
+                elif entry.is_file(follow_symlinks=False) and str(path) not in index:
+                    new.append(path)
+    if moved:
+        atomic_write(FOLDERS, json.dumps(folders))
+    return new
 
 
 def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
@@ -791,7 +845,11 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
         changed = spotlight_changes(roots, summary["checked"], index)
         removed: list[Path] = []
         if changed is None:
+            created = folder_changes(index)
+            if created is None:
+                return None
             changed, removed = stat_changes(index)
+            changed += created
         started = time.time()
         ignored = [expand(p) for p in read_lines(CONFIG / "ignore.txt")]
         repos = Repos()
