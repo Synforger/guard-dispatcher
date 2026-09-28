@@ -516,8 +516,10 @@ def git_config(repo: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(repo), "config", *args], capture_output=True, text=True).stdout.strip()
 
 
-def unguarded(repo: Path) -> str | None:
-    """Why the git hooks do not reach this repository, or None (also when it is not a repository)."""
+def unguarded(repo: Path, scope: bool = True) -> str | None:
+    """Why the git hooks do not reach this repository, or None (also when it is not a repository).
+    `scope=False` leaves out the operator's own opt-outs (guard.scope, guard.exemptPrefix): they stand
+    against the areas, and a machine with none has no area text to keep out of an exempt repository."""
     top = repo_root(repo)
     if top is None:
         return None
@@ -531,6 +533,8 @@ def unguarded(repo: Path) -> str | None:
     hooks = git_config(top, "--get", "core.hooksPath")
     if not hooks or real(hooks, str(top)) != real(armed, str(top)):
         return "core.hooksPath is set again past the global config (an include, a worktree config or the environment)"
+    if not scope:
+        return None
     if git_config(top, "--get", "guard.scope") == "exempt":
         return "guard.scope = exempt"
     prefix = git_config(top, "--get", "guard.exemptPrefix")
@@ -579,7 +583,7 @@ def bypass(command: str, cwd: str, areas) -> str | None:
         # (to a remote or a URL typed out) is still held to the hooks.
         if not dest_args and not has_remote(target):
             continue
-        if reason := unguarded(target):
+        if reason := unguarded(target, scope=bool(areas)):
             return f"{repo_root(target)}: {reason}"
     return None
 
