@@ -232,26 +232,17 @@ the current folder's remote — never the folder the command was typed in:
 Visibility is asked without credentials first (only a public repository
 answers), then as each account `gh` holds, and remembered for ten minutes.
 
-`corpus-scan.py --refresh` walks everything now; `--update` brings the prints
-up to date (the changed documents, everything when a full walk is due) and
-says only how many documents could not be read; `--status` shows what is
-loaded and names what could not be read; `--summary` (what `doctor.sh` runs)
-shows the same in counts. A machine with no `areas.txt` prints
-`NOT CHECKED` and passes.
+`corpus-scan.py --refresh` walks everything now and says only how many
+documents could not be read; `--status` shows what is loaded and names what
+could not be read; `--summary` (what `doctor.sh` runs) shows the same in
+counts. A machine with no `areas.txt` prints `NOT CHECKED` and passes.
 
-Every line printed without being asked — a clean scan, a rebuild, the notice
-for an area that cannot be opened, `--update`, `--summary`, `doctor.sh` and so bootstrap —
-counts areas and documents and names none: it lands in whatever reads the
-output — an agent's conversation, a CI log — and an area's name or a
-document's path says what the area holds. A refusal names the area, for the
-operator to act on; `--status`, typed by the operator, names everything.
-
-In a process the OS keeps from some area (macOS privacy settings, folder
-permissions), the scan compares with the prints last built where the area could
-be read and says when they were built. It walks nothing there and rewrites
-nothing cached: such a walk would build the areas it cannot open empty. An area
-whose folder cannot be listed is taken from the areas those prints were built
-for, and an area with no prints at all is a refusal.
+Every line printed without being asked — a clean scan, a rebuild, `--summary`,
+`doctor.sh` and so bootstrap — counts areas and documents and names none: it
+lands in whatever reads the output — an agent's conversation, a CI log — and
+an area's name or a document's path says what the area holds. A refusal names
+the area, for the operator to act on; `--status`, typed by the operator, names
+everything.
 
 ### Agent entry guard
 
@@ -265,11 +256,8 @@ step earlier, before each tool call, from the same `areas.txt`:
   nothing: `test`, `[ … ]`, `stat`, `realpath`, `readlink` or `ls -d` run on
   its own, every argument literal (no second command, pipe, redirect,
   substitution, glob or variable other than `$HOME`). Anything else is taken
-  to read what it names. Only an area the session can read marks it: the hook
-  runs as the session does, and where the OS keeps it from an area (macOS
-  privacy settings, folder permissions) naming a path in it marks nothing.
-  Marks are kept per session under `~/.cache/area-guard/`, so they outlive the
-  agent compacting its context.
+  to read what it names. Marks are kept per session under
+  `~/.cache/area-guard/`, so they outlive the agent compacting its context.
 - A marked session cannot `Edit` / `Write` a file inside a git repository
   outside its marks, nor write one from the shell where the command names it
   (a `>` / `>>` redirection, `tee`, `touch`, the destination of `cp` / `mv`

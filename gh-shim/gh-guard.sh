@@ -114,7 +114,7 @@ if [ ! -f "${SCANNER}" ]; then
 fi
 
 # --- collect everything this call would transmit -----------------------------
-payload="$(mktemp "${TMPDIR:-/tmp}/gh-guard-payload.XXXXXX")"
+payload="$(mktemp)"
 stdin_file=""
 cleanup() { rm -f "${payload}" "${stdin_file}"; }
 trap cleanup EXIT
@@ -169,7 +169,7 @@ for arg in "$@"; do
 done
 
 if [ "${wants_stdin}" -eq 1 ]; then
-    stdin_file="$(mktemp "${TMPDIR:-/tmp}/gh-guard-stdin.XXXXXX")"
+    stdin_file="$(mktemp)"
     cat > "${stdin_file}"
     cat "${stdin_file}" >> "${payload}"
 fi
@@ -224,7 +224,7 @@ if [ "${GUARD_CORPUS_SKIP:-0}" != "1" ]; then
         printf '[gh-guard] corpus scanner not found at %s — refusing to send.\n' "${CORPUS}" >&2
         exit 1
     fi
-    argv_file="$(mktemp "${TMPDIR:-/tmp}/gh-guard-argv.XXXXXX")"
+    argv_file="$(mktemp)"
     trap 'cleanup; rm -f "${argv_file}"' EXIT
     printf '%s\0' "$@" > "${argv_file}"
     if ! python3 "${CORPUS}" --text "${payload}" --gh-argv "${argv_file}"; then

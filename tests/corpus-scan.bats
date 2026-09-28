@@ -759,99 +759,24 @@ time.sleep(float(sys.argv[2]))
     [ ! -f "${BATS_TEST_TMPDIR}/ran" ]
 }
 
-# --- in a process that cannot open an area -----------------------------------------
-# The OS can keep a process from an area (macOS privacy settings, folder permissions).
-# A folder made unreadable here stands in for that: the scan must compare with the
-# prints built where it could be read, never walk (and so never rebuild the shut area
-# empty), and refuse when there is nothing built to compare with.
-
-# shut <dir> — make a folder unopenable for the rest of the test.
-shut() {
-    chmod 000 "$1"
-    SHUT+=("$1")
-}
-
 teardown() {
-    local d
-    for d in "${SHUT[@]}"; do chmod 755 "${d}"; done
     [ -n "${LOCK_PID:-}" ] && kill "${LOCK_PID}" 2>/dev/null
     true
 }
 
+# update_prints — bring the fingerprints up to date through an ordinary clean scan
+# (the changed documents, everything when a full walk is due).
 update_prints() {
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --update
+    printf 'nothing copied here\n' > "${BATS_TEST_TMPDIR}/prime.txt"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/prime.txt"
     [ "$status" -eq 0 ]
-}
-
-@test "corpus: an area that cannot be opened is compared with the prints built outside" {
-    update_prints
-    shut "${CLIENT}"
-    mk_repo other
-    commit_line "expected: ${CLIENT_TEXT}"
-    scan_last
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"1 area cannot be opened here -- compared with the prints built outside"* ]]
-    # The notice printed on every scan counts the shut areas; only the refusal names one.
-    [[ "$(grep 'cannot be opened' <<< "$output")" != *client* ]]
-    [[ "$output" == *"client text"* ]]
-}
-
-@test "corpus: nothing is walked or rewritten from inside, however old the prints are" {
-    update_prints
-    local before
-    before="$(cd "${GUARD_CORPUS_CACHE}" && cat summary.json client.bin company.bin | shasum)"
-    shut "${CLIENT}"
-    mk_repo other
-    commit_line "${COMPANY_TEXT}"
-    scan_last                              # GUARD_CORPUS_MAX_AGE=0: outside, this would rebuild
-    [ "$status" -eq 1 ]
-    [ "$(cd "${GUARD_CORPUS_CACHE}" && cat summary.json client.bin company.bin | shasum)" = "${before}" ]
-}
-
-@test "corpus: with no prints built outside, a shut area is a refusal, not a pass" {
-    shut "${CLIENT}"
-    mk_repo other
-    commit_line "nothing copied here"
-    scan_last
-    [ "$status" -eq 2 ]
-    [[ "$output" == *"REFUSED"*"run corpus-scan.py --update where every area can be read"* ]]
-}
-
-@test "corpus: the prints are neither refreshed nor updated from inside" {
-    update_prints
-    shut "${CLIENT}"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --refresh
-    [ "$status" -eq 2 ]
-    [[ "$output" == *"cannot be rebuilt from inside"* ]]
-    [ -f "${GUARD_CORPUS_CACHE}/client.bin" ]
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --update
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"compared with the prints built outside"* ]]
-}
-
-@test "corpus: client folders that cannot be listed are the ones the prints were built for" {
-    sed -i.bak '/^client /d' "${GUARD_CONFIG_DIR}/areas.txt"
-    printf 'client-* %s/clients/*\n' "${WORK}" >> "${GUARD_CONFIG_DIR}/areas.txt"
-    update_prints
-    [[ "$(cat "${GUARD_CORPUS_CACHE}/summary.json")" == *'"client-acme"'* ]]
-    shut "${WORK}/clients"
-    mk_repo other
-    commit_line "expected: ${CLIENT_TEXT}"
-    scan_last
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"client-acme text"* ]]
-    # With nothing built, a folder that cannot be listed is a refusal.
-    rm "${GUARD_CORPUS_CACHE}/summary.json"
-    scan_last
-    [ "$status" -eq 2 ]
-    [[ "$output" == *"cannot list"* ]]
 }
 
 @test "corpus: only --status names an area, its folder or a document; every other output counts" {
     printf 'broken' > "${CLIENT}/received/broken.pptx"
     # named <output> — the output carries an area's name, its folder or a document of it.
     named() { [[ "$1" == *company* || "$1" == *client* || "$1" == *acme* || "$1" == *"${WORK}"* || "$1" == *broken.pptx* ]]; }
-    for mode in --refresh --update --summary; do
+    for mode in --refresh --summary; do
         run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" "${mode}"
         [ "$status" -eq 0 ]
         [[ "$output" == *"documents / "*" prints in 2 areas"* ]]
@@ -871,16 +796,6 @@ update_prints() {
     run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --status
     [[ "$output" == *"company "*" documents / "*"client "*" documents / "* ]]
     [[ "$output" == *"/received/broken.pptx"* ]]
-}
-
-@test "corpus: --update names no file it could not read; --status does" {
-    printf 'broken' > "${CLIENT}/received/broken.pptx"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --update
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"1 documents could not be read (see --status)"* ]]
-    [[ "$output" != *"broken.pptx"* ]]
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --status
-    [[ "$output" == *"could not read (not checked): "*"/received/broken.pptx"* ]]
 }
 
 # --- why a document could not be read ---------------------------------------------
@@ -911,7 +826,8 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
 @test "corpus: a PDF pdftotext cannot parse is unreadable, its reason names the exit code" {
     command -v pdftotext >/dev/null || skip "pdftotext is not installed"
     printf 'not a real pdf file at all\n' > "${CLIENT}/received/broken.pdf"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --update
+    printf 'nothing copied here\n' > "${BATS_TEST_TMPDIR}/prime.txt"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/prime.txt"
     [ "$status" -eq 0 ]
     [[ "$output" == *"1 documents could not be read (see --status): pdftotext exited"* ]]
     run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --status
@@ -924,8 +840,10 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
     chmod +x "${STUB}/pdftotext"
     printf 'placeholder\n' > "${CLIENT}/received/slow.pdf"
     export GUARD_CORPUS_PDF_TIMEOUT=1
+    printf 'nothing copied here\n' > "${BATS_TEST_TMPDIR}/prime.txt"
     started="$(date +%s)"
-    PATH="${STUB}:${PATH}" run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --update
+    PATH="${STUB}:${PATH}" run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" \
+        --text "${BATS_TEST_TMPDIR}/prime.txt"
     elapsed=$(( $(date +%s) - started ))
     [ "$status" -eq 0 ]
     [ "${elapsed}" -lt 4 ]

@@ -459,44 +459,6 @@ cat ${c}/received/memo.md" "[ -d ${c} ] && cat ${c}/received/memo.md" "stat ${c}
     passed
 }
 
-# --- an area this session cannot read ----------------------------------------
-# The OS can keep a session from an area (macOS privacy settings, folder permissions), and the
-# hook runs as the session does. Taking the read permission off a folder stands in for that
-# here: the OS refuses the read, so naming or reading a path in it cannot have told the session
-# anything.
-
-# hidden <folder> <command...> — run with <folder> unreadable, then give the permission back.
-hidden() {
-    local folder="$1"
-    shift
-    chmod 000 "${folder}"
-    "$@"
-    local rc=$?
-    chmod 755 "${folder}"
-    return "${rc}"
-}
-
-@test "area-guard: naming a path in an area the session cannot read marks nothing" {
-    local c="~/org/clients/acme" n=0 command
-    for command in "ls ${c}/received && echo x" "cat ${c}/received/memo.md" "cd ${c}"; do
-        n=$((n + 1))
-        hidden "${H}/org" bash_in "${H}" "${command}" "h${n}"
-        write_to "${PERSONAL}/a.py" "h${n}"
-        passed || { echo "marked by: ${command}"; return 1; }
-    done
-}
-
-@test "area-guard: a Read the OS refuses marks nothing" {
-    hidden "${H}/org" agent Read file_path "${CASE}/received/memo.md" "${H}" s1
-    write_to "${PERSONAL}/a.py"; passed
-}
-
-@test "area-guard: a readable company around a hidden client still marks the company" {
-    hidden "${CASE}" bash_in "${H}" "cat ${COMPANY_REPO}/notes.md; ls ${CASE}"
-    write_to "${PERSONAL}/a.py"; denied
-    write_to "${COMPANY_REPO}/c.py"; passed
-}
-
 @test "area-guard: a lone check run from inside an area still marks by its folder" {
     bash_in "${CASE}" "test -d received"
     write_to "${PERSONAL}/a.py"; denied

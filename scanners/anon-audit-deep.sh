@@ -229,7 +229,7 @@ total=0
 RECORD_TMP=""
 if [ -n "${RECORD}" ]; then
     mkdir -p "$(dirname "${RECORD}")" || exit 2
-    RECORD_TMP="$(mktemp "${TMPDIR:-/tmp}/audit-known.XXXXXX")" || exit 2
+    RECORD_TMP="$(mktemp -t audit-known.XXXXXX)" || exit 2
     {
         printf '# findings accepted as known by anon-audit-deep.sh --record-known (%s)\n' "${PROJECT_ROOT}"
         printf 'since %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -399,7 +399,7 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
                     direnv)  run=(direnv exec "${PROJECT_ROOT}" gh) ;;
                     *)       return 1 ;;
                 esac
-                err="$(mktemp "${TMPDIR:-/tmp}/anon-audit-gh.XXXXXX")"
+                err="$(mktemp -t anon-audit-gh.XXXXXX)"
                 out="$("${run[@]}" "$@" 2>"${err}")"; rc=$?
                 if [ "${rc}" -ne 0 ]; then
                     sed 's/^/      /' "${err}" >&2
