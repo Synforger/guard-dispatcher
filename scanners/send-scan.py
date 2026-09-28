@@ -13,9 +13,13 @@ whatever it carries. A destination no line names is outside every area: a new se
 nothing private until it is declared. A line naming an unknown area stops every send until it is
 fixed.
 
+The pattern `browser:<host>` names the page a browser tool types into (see agent-hooks'
+outgoing.py): `browser:*.example.com company`.
+
 The payload is compared by the private-document scan (`corpus-scan.py --dest-area`) with the
 areas the destination sits outside of; a destination outside every area also gets the word-list
-scan (`anon-scan.sh`), as a public repository does.
+scan (`anon-scan.sh`), as a public repository does, and one inside an area gets that area's own
+word list when the machine keeps one next to the master (`company.txt` beside `master.txt`).
 
 Usage:
     send-scan.py --dest NAME --text FILE [--reading]   exit 0 passes, 1 refuses (one line why), 2 cannot judge
@@ -37,6 +41,9 @@ CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
 DESTINATIONS = CONFIG / "destinations.txt"
 CORPUS = HERE / "corpus-scan.py"
 ANON = HERE / "anon-scan.sh"
+# The operator's word lists: master.txt, and one per area that has its own readers (`company.txt`
+# for the company, which works under real names but keeps the operator's handles out).
+WORD_LISTS = Path(os.environ.get("ANON_TRUTH_PATH", Path.home() / ".config/anon-words/master.txt")).parent
 OUTSIDE = "outside"
 BLOCK = "block"
 
@@ -91,7 +98,13 @@ def judge(name: str, payload: Path, reading: bool = False) -> tuple[int, str]:
         return 1, f"{name} is blocked for sending ({DESTINATIONS}); reading through it still works"
     place = "outside every area" if destination == OUTSIDE else f"in {destination}"
     env = {**os.environ, "GUARD_CONFIG_DIR": str(CONFIG)}
-    if destination == OUTSIDE and ANON.is_file():
+    # A destination outside every area gets the operator's word list; one inside an area gets that
+    # area's own list when the machine has one (a service the company reads takes real names, not
+    # the operator's handles), and none otherwise.
+    area_words = WORD_LISTS / f"{destination}.txt" if destination != OUTSIDE else None
+    if area_words is not None and area_words.is_file():
+        env["ANON_WORDS_FILE"] = str(area_words)
+    if (destination == OUTSIDE or env.get("ANON_WORDS_FILE") == str(area_words)) and ANON.is_file():
         try:
             r = subprocess.run(["bash", str(ANON)], capture_output=True, text=True, timeout=60,
                                env={**env, "ANON_SCAN_PATHS": str(payload)})

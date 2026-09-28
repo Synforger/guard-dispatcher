@@ -11,6 +11,10 @@ judgement in `scanners/send-scan.py`, which decides as for a push (see there for
   (too large, or not text) is refused once the session has read inside an area or when the file
   sits inside one; otherwise it passes unscanned.
 - WebFetch and WebSearch are named by the tool; their payload is the URL, the prompt and the query.
+- A browser tool (an MCP call naming a `tabId`) types into the page its tab shows, so it is named
+  `browser:<host>` once this session has opened that tab at a page (an MCP call carrying both the
+  `tabId` and an http(s) `url`, a navigate); until then it is named by the tool. The tab keeps the
+  host it was opened at: a page reached later by a click inside it is not seen.
 - A `curl` / `wget` with a body or an upload (`-d`, `--data*`, `--json`, `-F`, `-T`, `--post-*`,
   or `-X POST|PUT|PATCH`) is named `host:<host>`; its payload is the body and the files it sends.
 
@@ -153,13 +157,44 @@ def file_text(path: Path, send_scan: Path) -> tuple[str | None, str]:
     return data.decode("utf-8", "replace"), ""
 
 
-def tool_send(tool: str, args: dict, cwd: str, send_scan: Path) -> Send | None:
+def tab_ids(value) -> set[str]:
+    """Every `tabId` a tool's input names, at any depth (a batch of browser actions names several)."""
+    if isinstance(value, dict):
+        found = {str(v) for k, v in value.items() if k == "tabId" and isinstance(v, (int, str))}
+        return found.union(*(tab_ids(v) for k, v in value.items() if k != "tabId"))
+    if isinstance(value, list):
+        return set().union(*(tab_ids(v) for v in value))
+    return set()
+
+
+def opened_host(tool: str, args: dict) -> str | None:
+    """The host a browser call opens its tab at (an MCP call with a `tabId` and an http(s) `url`)."""
+    url = args.get("url")
+    if not tool.startswith("mcp__") or not isinstance(url, str) or not tab_ids(args):
+        return None
+    parts = urlsplit(url)
+    return parts.hostname if parts.scheme in ("http", "https") else None
+
+
+def destination_of(tool: str, args: dict, tabs: dict | None) -> str:
+    """A tool's destination name: `browser:<host>` for a browser call whose tabs this session has
+    opened at one host (or that opens its tab now), else the tool's own name."""
+    if not tool.startswith("mcp__") or not (ids := tab_ids(args)):
+        return tool
+    if host := opened_host(tool, args):
+        return f"browser:{host}"
+    hosts = {(tabs or {}).get(i) for i in ids}
+    return f"browser:{hosts.pop()}" if len(hosts) == 1 and None not in hosts else tool
+
+
+def tool_send(tool: str, args: dict, cwd: str, send_scan: Path, tabs: dict | None = None) -> Send | None:
     """The send of a tool call that sends, else None."""
     if not (tool.startswith("mcp__") or tool in HOST_SENDERS):
         return None
+    name = destination_of(tool, args, tabs)
     if reads_only(tool, args):
         # A search term, a query or a URL still reaches the service; the files named are not uploaded.
-        return Send(tool, "\n".join(strings(args)), [], reading=True)
+        return Send(name, "\n".join(strings(args)), [], reading=True)
     texts, unreadable = strings(args), []
     for p in local_files(args, cwd):
         text, why = file_text(p, send_scan)
@@ -167,7 +202,7 @@ def tool_send(tool: str, args: dict, cwd: str, send_scan: Path) -> Send | None:
             unreadable.append((p, why))
         else:
             texts.append(text)
-    return Send(tool, "\n".join(texts), unreadable)
+    return Send(name, "\n".join(texts), unreadable)
 
 
 def body_text(tool: str, flag: str, value: str, cwd: str, send_scan: Path) -> tuple[str, list[tuple[Path, str]]]:
@@ -529,24 +564,24 @@ def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
     return [s for s in out if s.dest.split(":", 1)[-1] not in LOOPBACK]
 
 
-def sends(tool: str, args: dict, cwd: str, send_scan: Path) -> list[Send]:
+def sends(tool: str, args: dict, cwd: str, send_scan: Path, tabs: dict | None = None) -> list[Send]:
     """Every send the call makes."""
     if tool == "Bash":
         command = args.get("command", "")
         return curl_sends(command, cwd, send_scan) + other_sends(command, cwd, send_scan)
-    s = tool_send(tool, args, cwd, send_scan)
+    s = tool_send(tool, args, cwd, send_scan, tabs)
     return [s] if s is not None else []
 
 
 def check(tool: str, args: dict, cwd: str, send_scan: Path,
-          marks: frozenset[str] = frozenset(), area_of=lambda path: None) -> str | None:
+          marks: frozenset[str] = frozenset(), area_of=lambda path: None, tabs: dict | None = None) -> str | None:
     """The one-line refusal for this call, or None when every send in it passes.
 
     A file whose text cannot be taken out (too large, or not text) cannot be scanned. It is
     refused when the session has read inside an area (`marks`) or the file itself sits inside
     one (`area_of`); a file a session that read nothing private sends from outside the areas —
     an image it made — passes."""
-    for name, payload, unreadable, unknown, reading in sends(tool, args, cwd, send_scan):
+    for name, payload, unreadable, unknown, reading in sends(tool, args, cwd, send_scan, tabs):
         if unknown:
             return (f"outgoing: not sent to {name}: its body is only known when the command runs ({unknown}), "
                     f"so it cannot be scanned. Write the body to a file and send that file instead")
@@ -574,5 +609,8 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
             os.unlink(path)
         if r.returncode != 0:
             why = (r.stderr.strip().splitlines() or ["the send scan refused it"])[-1]
+            if name == tool and tab_ids(args):
+                why += (". The guard does not know which page this tab shows: open it with a navigate call "
+                        "in this session first, so the page's host names the destination")
             return "outgoing: " + why.removeprefix("send-scan: ")
     return None

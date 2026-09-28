@@ -462,15 +462,17 @@ def destination(target: Path, dest_args: list[str]) -> tuple[Path | None, str | 
 
 
 def load_state(session: str) -> dict:
-    """A session's marks and its runs in a cage: {"areas": [...], "caged": [[since, last], ...]}.
-    A bare list is the older file (marks only)."""
+    """A session's marks, its runs in a cage and the pages its browser tabs were opened at:
+    {"areas": [...], "caged": [[since, last], ...], "tabs": {tabId: host}}. A bare list is the
+    older file (marks only)."""
     try:
         data = json.loads((STATE / f"{session}.json").read_text())
     except (OSError, ValueError):
         data = []
     if isinstance(data, list):
-        return {"areas": sorted(data), "caged": []}
-    return {"areas": sorted(data.get("areas") or []), "caged": list(data.get("caged") or [])}
+        return {"areas": sorted(data), "caged": [], "tabs": {}}
+    return {"areas": sorted(data.get("areas") or []), "caged": list(data.get("caged") or []),
+            "tabs": dict(data.get("tabs") or {})}
 
 
 def save_state(session: str, state: dict) -> None:
@@ -667,9 +669,14 @@ def main() -> int:
         area = area_of(real(path), areas)
         return area if area != EXEMPT else None
 
-    if reason := outgoing_module().check(tool, args, cwd, SEND_SCAN, frozenset(marks), private_area):
+    tabs = state.setdefault("tabs", {})
+    if reason := outgoing_module().check(tool, args, cwd, SEND_SCAN, frozenset(marks), private_area, tabs):
         deny(reason)
         return 0
+    # A browser call that opens a tab at a page names that page for the tab's later calls.
+    if areas and (host := outgoing_module().opened_host(tool, args)):
+        tabs.update({tab: host for tab in outgoing_module().tab_ids(args)})
+        save_state(session, state)
     if not areas:
         return 0
     touched: list[Path] = []
