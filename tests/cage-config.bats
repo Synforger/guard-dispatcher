@@ -58,6 +58,8 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     lists denyWrite "${H}/notes/projects/org/clients/acme"
     lists allowWrite "${H}/.claude@company"
     lists allowWrite "${T}/claude-cage/company"
+    # The login keychain's folder: a token refresh rewrites the keychain file (401 without it).
+    lists allowWrite "${H}/Library/Keychains"
     lacks allowWrite "${H}"
     lists denyWrite "${H}/org/clients/acme"
 }
