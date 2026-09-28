@@ -267,6 +267,27 @@ origin() { git -C "$1" remote add origin "git@github.com:$2.git"; }
     bash_in "${PERSONAL}" "git push"; denied
 }
 
+@test "area-guard: a hooksPath brought in past the global config (an include) is refused" {
+    origin "${PERSONAL}" o/r
+    mkdir -p "${H}/elsewhere"
+    printf '#!/bin/sh\n' > "${H}/elsewhere/pre-push"
+    printf '[core]\n\thooksPath = %s\n' "${H}/elsewhere" > "${H}/included.cfg"
+    git -C "${PERSONAL}" config include.path "${H}/included.cfg"
+    bash_in "${PERSONAL}" "git commit -m x"; denied
+    [[ "${output}" == *"past the global config"* ]]
+    git -C "${PERSONAL}" config --unset include.path
+    bash_in "${PERSONAL}" "git commit -m x"; passed
+}
+
+@test "area-guard: on a machine with no areas, a repository the hooks do not reach still cannot send" {
+    rm "${GUARD_CONFIG_DIR}/areas.txt"
+    origin "${PERSONAL}" o/r
+    git -C "${PERSONAL}" config core.hooksPath .husky
+    bash_in "${PERSONAL}" "git push"; denied
+    git -C "${PERSONAL}" config --unset core.hooksPath
+    bash_in "${PERSONAL}" "git push"; passed
+}
+
 @test "area-guard: no global hooks means the repository is unguarded" {
     origin "${PERSONAL}" o/r
     : > "${H}/.gitconfig"

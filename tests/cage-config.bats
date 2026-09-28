@@ -129,6 +129,10 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
         lists denyWrite "${GUARD_CONFIG_DIR}"
         lists denyWrite "${H}/.config/anon-words"
         lists denyWrite "${H}/**/.claude*/settings*.json"
+        # What a program loads from the folder it starts in, in every repository, not only the cage's own
+        for g in .mcp.json .claude/commands .claude/agents .idea .ripgreprc; do
+            lists denyWrite "${H}/**/${g}"
+        done
         # The global git config (core.hooksPath) and the shells' startup files (the launchers)
         for f in .gitconfig .zshrc .zshenv .zprofile .zlogin .bashrc .bash_profile .profile; do
             lists denyWrite "${H}/${f}"

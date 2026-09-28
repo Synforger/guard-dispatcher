@@ -73,6 +73,16 @@ SHARED_TMP = [TMP / f"claude-{os.getuid()}", TMP / "claude"]
 # Claude Code settings files anywhere under HOME: `~/.claude/settings.json`, `~/.claude@<cage>/...`,
 # a project's `.claude/settings.local.json` (`**/` matches no folder too).
 SETTINGS_GLOB = "{home}/**/.claude*/settings*.json"
+# Files a program loads by itself from whatever folder it starts in: a project's MCP servers (Claude
+# Code runs their commands, approved by name only), Claude Code's commands and agents, the IDE and
+# ripgrep settings. sandbox-runtime denies these beneath the folder the cage starts in and nowhere
+# else, so a session started in one repository could rewrite them in every other. Kept to the names
+# no repository here tracks: a denied name a repository carries stops its clone and pull in a cage
+# (`.vscode`, `.gitmodules`), and `.git/hooks` stays writable because git copies samples there on
+# init and clone -- the hooks run from the global dispatcher, and a repository pointing its own
+# core.hooksPath elsewhere is refused at commit and push by agent-hooks.
+LOADED_GLOBS = ["{home}/**/.mcp.json", "{home}/**/.claude/commands", "{home}/**/.claude/agents",
+                "{home}/**/.idea", "{home}/**/.ripgreprc"]
 # Seatbelt rules every cage adds on macOS that sandbox-runtime has no setting for (run.mjs puts them
 # at the end of the profile). Security.framework reads this sysctl before it writes a keychain item;
 # refused, every keychain write fails -- and Claude Code keeps its login there, so /login and each
@@ -229,6 +239,7 @@ def build(cage: str, account_dir: Path) -> dict:
                 # registered there, and a `disableAllHooks` or a dropped hook would switch it off from
                 # inside. The launcher writes them before the cage starts. (A glob: macOS only.)
                 SETTINGS_GLOB.format(home=home),
+                *(g.format(home=home) for g in LOADED_GLOBS),
                 # sandbox-runtime keeps this one writable in every sandbox; it is the personal
                 # account's, so only the personal cage writes it.
                 *([cage_configs] if cage == PERSONAL else [str(home / ".claude/debug")]),
