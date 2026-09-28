@@ -140,6 +140,34 @@ env_of() { jq -r ".env.$1 // empty" <<< "${output}"; }
     done
 }
 
+@test "no cage writes what runs outside it: login items, PATH folders under HOME and the installs their links lead into" {
+    mkdir -p "${H}/.local/bin" "${H}/.local/pipx/venvs/tool/bin" "${H}/.local/share/claude/versions" \
+        "${H}/forge/condabin" "${H}/forge/bin" "${H}/forge/lib" "${H}/forge/conda-meta" "${H}/forge/envs" \
+        "${H}/relay/src" "${H}/Library/LaunchAgents"
+    touch "${H}/.local/pipx/venvs/tool/bin/tool" "${H}/.local/share/claude/versions/9.9.9" "${H}/forge/condabin/conda"
+    ln -s "${H}/.local/pipx/venvs/tool/bin/tool" "${H}/.local/bin/tool"
+    ln -s "${H}/.local/share/claude/versions/9.9.9" "${H}/.local/bin/claude"
+    ln -s /usr/bin/true "${H}/.local/bin/outside-home"
+    touch "${H}/forge/bin/mamba"
+    ln -s "${H}/forge/bin/mamba" "${H}/.local/bin/mamba"          # a link into the conda base, not its envs
+    printf '~/relay   # a server a relay starts outside the cage\n\n' > "${GUARD_CONFIG_DIR}/outside-run.txt"
+    export PATH="${H}/.local/bin:${H}/forge/condabin:${PATH}"
+    for cage in personal company client; do
+        build "${cage}"
+        lists denyWrite "${H}/Library/LaunchAgents"
+        lists denyWrite "${H}/.local/bin"
+        lists denyWrite "${H}/.local/pipx/venvs/tool"              # the venv the link's bin/ sits in
+        lists denyWrite "${H}/.local/share/claude/versions"        # the folder of versions: no planted next one
+        [ "$(env_of DISABLE_AUTOUPDATER)" = "1" ]                   # updates happen outside, where the link is written
+        lists denyWrite "${H}/forge/condabin"
+        for base in bin lib conda-meta; do lists denyWrite "${H}/forge/${base}"; done
+        lacks denyWrite "${H}/forge/envs"                          # environments are made from a session
+        lacks denyWrite "${H}/forge"
+        lists denyWrite "${H}/relay"
+        lacks denyWrite /usr/bin/true
+    done
+}
+
 @test "no cage writes the scanners' master word list directory, wherever ANON_TRUTH_PATH points" {
     for cage in personal company client; do
         build "${cage}"
