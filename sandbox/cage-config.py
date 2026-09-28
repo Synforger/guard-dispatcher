@@ -28,7 +28,8 @@ its content, not by where it goes.
 Usage:
     cage-config.py <cage> [--account-dir DIR]   print the cage as JSON: `sandbox` is the
                                                 sandbox-runtime config, `env` the variables
-                                                the session starts with
+                                                the session starts with, `seatbelt` the
+                                                macOS rules sandbox-runtime has no setting for
     cage-config.py --list                       print the cages this machine has
     cage-config.py --of PATH                    print the cage PATH belongs to: the innermost
                                                 area holding it, else personal
@@ -72,6 +73,11 @@ SHARED_TMP = [TMP / f"claude-{os.getuid()}", TMP / "claude"]
 # Claude Code settings files anywhere under HOME: `~/.claude/settings.json`, `~/.claude@<cage>/...`,
 # a project's `.claude/settings.local.json` (`**/` matches no folder too).
 SETTINGS_GLOB = "{home}/**/.claude*/settings*.json"
+# Seatbelt rules every cage adds on macOS that sandbox-runtime has no setting for (run.mjs puts them
+# at the end of the profile). Security.framework reads this sysctl before it writes a keychain item;
+# refused, every keychain write fails -- and Claude Code keeps its login there, so /login and each
+# token refresh fail and the session goes on with a revoked token (401).
+SEATBELT = ['(allow sysctl-read (sysctl-name "security.mac.sandbox.sentinel"))']
 # Machine-wide caches a session writes whichever cage it is in.
 CACHES = ["~/.cache", "~/.npm", "~/Library/Caches", "~/.local/share/claude", "~/.local/state/claude"]
 # The operator master word list scanners/anon-scan.sh (and anon-fix.sh, anon-audit-deep.sh)
@@ -228,7 +234,7 @@ def build(cage: str, account_dir: Path) -> dict:
         # The login stays the account's: Claude Code names the stored credentials after this
         # directory, and after none at all (empty) for the default one.
         env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = "" if account_dir == default_config else str(account_dir)
-    return {"cage": cage, "sandbox": sandbox, "env": env}
+    return {"cage": cage, "sandbox": sandbox, "env": env, "seatbelt": SEATBELT}
 
 
 def main() -> int:
