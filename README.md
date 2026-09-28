@@ -44,17 +44,16 @@ cd guard-dispatcher
 bash scripts/bootstrap-machine.sh
 ```
 
-`bootstrap-machine.sh` installs the clone into `~/.local/share/guard-dispatcher`
-(`$GUARD_HOME`), symlinks the installed hooks (and the `scanners/`, `scripts/`,
-and `agent-hooks/` directories, for stable paths) into
+`bootstrap-machine.sh` symlinks the hooks (and the `scanners/`,
+`scripts/` and `agent-hooks/` directories, for stable paths) into
 `~/.git-hooks/`, points git's global `core.hooksPath` there, installs the
-`gh` shim, verifies your word list and
-external tools, and finishes with a doctor pass. It is idempotent.
+`gh` shim, verifies your word list and external tools, and finishes with a
+doctor pass. It is idempotent.
 
-The guards run from the install, never from the clone: edit the clone freely,
-then re-run the script to install what you changed. Installing copies the clone's tracked files as they are
-on disk and keeps the word lists the install already holds. To run the guards
-from the clone in place instead, set `GUARD_HOME` to the clone.
+The guards run from the clone in place, so keep it on the branch you want to
+run and do work in progress elsewhere (a `git worktree`). An older install ran
+them from a copy under `~/.local/share/guard-dispatcher`; installing again moves
+its word lists into the clone and removes it.
 
 To hold Claude Code to the same areas, name each of its settings files
 (one per config dir):
@@ -150,7 +149,7 @@ exemption is push-only: `pre-commit` still requires `user.email` to be on the
 allowed list, because the operator is never a bot.
 
 Scanners resolve repo-local first (`.tooling/local-ci/`), then fall
-back to the install's `scanners/` — so individual repositories need
+back to this checkout's `scanners/` — so individual repositories need
 no toolkit of their own, but can override it.
 
 ### Private documents

@@ -4,4 +4,3 @@ anon-words.local.txt
 
 # Python bytecode written when the scanners are imported (tests, other guards).
 __pycache__/
-

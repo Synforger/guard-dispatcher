@@ -8,8 +8,8 @@ setup() {
     mkdir -p "${H}/.config/anon-words"
     printf '%s\n' "${SENTINEL}" > "${H}/.config/anon-words/master.txt"
     export HOME="${H}"
-    unset GIT_CONFIG_GLOBAL CLAUDE_CONFIG_DIR GUARD_CONFIG_DIR ANON_TRUTH_PATH GUARD_HOME
-    INSTALLED="${H}/.local/share/guard-dispatcher"
+    unset GIT_CONFIG_GLOBAL CLAUDE_CONFIG_DIR GUARD_CONFIG_DIR ANON_TRUTH_PATH
+    OLD_COPY="${H}/.local/share/guard-dispatcher"
     cd "${H}" || return 1
 }
 
@@ -37,9 +37,9 @@ PY
     [ "${status}" -eq 0 ]
     [[ "${output}" == *"doctor: clean"* ]]
     [ -x "${H}/.git-hooks/pre-push" ]
-    [ "$(readlink "${H}/.local/bin/gh")" = "${INSTALLED}/gh-shim/gh-guard.sh" ]
+    [ "$(readlink "${H}/.local/bin/gh")" = "${GUARD_ROOT}/gh-shim/gh-guard.sh" ]
     [ -f "${H}/.git-hooks/agent-hooks/claude-code/area-guard.py" ]
-    [ "$(readlink "${H}/.git-hooks/doctor.sh")" = "${INSTALLED}/scripts/doctor.sh" ]
+    [ "$(readlink "${H}/.git-hooks/doctor.sh")" = "${GUARD_ROOT}/scripts/doctor.sh" ]
     [ ! -e "${H}/.git-hooks/sandbox" ]
     [[ "${output}" == *"agent entry guard registered (${H}/.claude/settings.json)"* ]]
 }
@@ -71,55 +71,46 @@ JSON
     [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["theme"])' "${H}/.claude/settings.json")" = "light" ]
 }
 
-@test "install: the guards run from the install, which a later edit to the clone does not touch" {
+@test "install: the guards run from the clone in place, so a pulled change runs at once" {
     clone_to "${H}/src"
-    printf 'untracked\n' > "${H}/src/scratch.txt"
     run bash "${H}/src/scripts/install.sh"
-    [ "${status}" -eq 0 ]
-    [ "$(cd -P "${H}/.git-hooks/scripts/.." && pwd)" = "${INSTALLED}" ]
-    [ "$(readlink "${H}/.git-hooks/pre-push")" = "${INSTALLED}/git-hooks/pre-push" ]
-    [ -x "${INSTALLED}/git-hooks/pre-push" ]
-    [ ! -e "${INSTALLED}/.git" ]
-    [ ! -e "${INSTALLED}/scratch.txt" ]
-    printf '# edited\n' >> "${H}/src/scanners/anon-scan.sh"
-    ! grep -q '# edited' "${INSTALLED}/scanners/anon-scan.sh" || return 1
-    bash "${H}/src/scripts/install.sh" >/dev/null
-    grep -q '# edited' "${INSTALLED}/scanners/anon-scan.sh"
-}
-
-@test "install: a reinstall keeps the operator word list the install holds" {
-    clone_to "${H}/src"
-    bash "${H}/src/scripts/install.sh" >/dev/null
-    printf 'operator-word\n' > "${INSTALLED}/scanners/anon-words.txt"
-    bash "${H}/src/scripts/install.sh" >/dev/null
-    [ "$(cat "${INSTALLED}/scanners/anon-words.txt")" = "operator-word" ]
-}
-
-@test "install: GUARD_HOME set to the clone runs the guards from it in place" {
-    clone_to "${H}/src"
-    GUARD_HOME="${H}/src" run bash "${H}/src/scripts/install.sh"
     [ "${status}" -eq 0 ]
     [ "$(readlink "${H}/.git-hooks/pre-push")" = "${H}/src/git-hooks/pre-push" ]
-    [ ! -e "${INSTALLED}" ]
+    [ "$(readlink "${H}/.git-hooks/scanners")" = "${H}/src/scanners" ]
+    printf '# edited\n' >> "${H}/src/scanners/anon-scan.sh"
+    grep -q '# edited' "${H}/.git-hooks/scanners/anon-scan.sh"
 }
 
-@test "install: a folder that is not a git clone is refused" {
+@test "install: the copy an older install ran from is dropped, its word list moved to the clone" {
     clone_to "${H}/src"
-    rm -rf "${H}/src/.git"
+    mkdir -p "${OLD_COPY}/scanners"
+    printf 'operator-word\n' > "${OLD_COPY}/scanners/anon-words.txt"
     run bash "${H}/src/scripts/install.sh"
-    [ "${status}" -eq 1 ]
-    [[ "${output}" == *"is not a git clone"* ]]
-    [ ! -e "${H}/.git-hooks" ]
+    [ "${status}" -eq 0 ]
+    [ ! -e "${OLD_COPY}" ]
+    [ "$(cat "${H}/src/scanners/anon-words.txt")" = "operator-word" ]
 }
 
-@test "install: pre-compiles the installed tree's bytecode so the hook does not recompile on every call" {
-    run bash "${GUARD_ROOT}/scripts/install.sh"
+@test "install: the clone's own word list is kept over the older copy's" {
+    clone_to "${H}/src"
+    printf 'clone-word\n' > "${H}/src/scanners/anon-words.txt"
+    mkdir -p "${OLD_COPY}/scanners"
+    printf 'copy-word\n' > "${OLD_COPY}/scanners/anon-words.txt"
+    run bash "${H}/src/scripts/install.sh"
     [ "${status}" -eq 0 ]
-    [[ "${output}" == *"pre-compiled ${INSTALLED} bytecode"* ]]
-    [ -d "${INSTALLED}/agent-hooks/claude-code/__pycache__" ]
-    [ -d "${INSTALLED}/scanners/__pycache__" ]
-    compgen -G "${INSTALLED}/agent-hooks/claude-code/__pycache__/area-guard.*.pyc" > /dev/null
-    compgen -G "${INSTALLED}/scanners/__pycache__/corpus-scan.*.pyc" > /dev/null
+    [ ! -e "${OLD_COPY}" ]
+    [ "$(cat "${H}/src/scanners/anon-words.txt")" = "clone-word" ]
+}
+
+@test "install: pre-compiles the clone's bytecode so the hook does not recompile on every call" {
+    clone_to "${H}/src"
+    run bash "${H}/src/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"pre-compiled ${H}/src bytecode"* ]]
+    [ -d "${H}/src/agent-hooks/claude-code/__pycache__" ]
+    [ -d "${H}/src/scanners/__pycache__" ]
+    compgen -G "${H}/src/agent-hooks/claude-code/__pycache__/area-guard.*.pyc" > /dev/null
+    compgen -G "${H}/src/scanners/__pycache__/corpus-scan.*.pyc" > /dev/null
 }
 
 @test "install: an unknown argument is refused before anything is linked" {
