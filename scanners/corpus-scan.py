@@ -95,8 +95,6 @@ import subprocess
 import sys
 import time
 import unicodedata
-import urllib.error
-import urllib.request
 import zipfile
 from array import array
 from pathlib import Path
@@ -773,6 +771,9 @@ def visibility(slug: str) -> str:
     hit = known.get(slug)
     if hit and time.time() - hit[1] < VISIBILITY_TTL:
         return hit[0]
+    # Loaded here, not at the top: every hook call loads this module to read the areas, and the
+    # network stack (urllib, http.client, ssl) was half of that call's time.
+    import urllib.request
     request = urllib.request.Request(f"https://api.github.com/repos/{slug}",
                                      headers={"Accept": "application/vnd.github+json", "User-Agent": "guard"})
     try:

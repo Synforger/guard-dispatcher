@@ -44,7 +44,6 @@ import re
 import shlex
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
@@ -327,6 +326,7 @@ def destination(target: Path, dest_args: list[str]) -> Path | None:
     When the private-document scan cannot answer, the sending repository stands in."""
     if not dest_args:
         return target
+    import tempfile   # loaded only for a push or a gh send: most hook calls never get here
     with tempfile.NamedTemporaryFile() as argv_file:
         args = dest_args
         if dest_args[0] == "--gh-argv-inline":
