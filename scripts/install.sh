@@ -177,7 +177,10 @@ done
 # is not writable from inside a cage (see sandbox/cage-config.py's denyWrite), so a
 # session cannot leave its own __pycache__ there. Best-effort: never blocks the install.
 if command -v python3 >/dev/null 2>&1; then
-    if python3 -m compileall -q "${GUARD_ROOT}"; then
+    # Only the folders that hold Python: sandbox/node_modules has none, and walking it
+    # tripled the time of an install.
+    if python3 -m compileall -q -x node_modules \
+        "${GUARD_ROOT}/agent-hooks" "${GUARD_ROOT}/scanners" "${GUARD_ROOT}/sandbox"; then
         echo "[global-hooks] pre-compiled ${GUARD_ROOT} bytecode"
     else
         echo "[global-hooks] warning: bytecode pre-compile failed (non-fatal)" >&2
