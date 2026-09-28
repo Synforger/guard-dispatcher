@@ -165,7 +165,8 @@ origin() { git -C "$1" remote add origin "git@github.com:$2.git"; }
 @test "area-guard: skip flags on a send are refused" {
     for command in "GH_GUARD_SKIP=1 gh pr create --fill" "GUARD_CORPUS_SKIP=1 git push" \
                    "git push --no-verify" "git commit --no-verify -m x" "git commit -nm x" \
-                   "git -c core.hooksPath=/dev/null commit -m x" "HUSKY=0 git commit -m x"; do
+                   "git -c core.hooksPath=/dev/null commit -m x" "HUSKY=0 git commit -m x" \
+                   "echo x;git commit -n -m x" "git commit -nm x;echo done"; do
         bash_in "${PERSONAL}" "${command}"
         denied || { echo "not refused: ${command}"; return 1; }
     done
@@ -189,7 +190,10 @@ origin() { git -C "$1" remote add origin "git@github.com:$2.git"; }
     for command in "git config core.hooksPath" "git config --global core.hooksPath" \
                    "git config get core.hooksPath" "git config --show-origin guard.scope" \
                    "git -C ${PERSONAL} config --list" "git config --get-regexp 'guard\\..*'" \
-                   "git config --file .gitmodules core.hooksPath"; do
+                   "git config --file .gitmodules core.hooksPath" \
+                   "git config --global core.hooksPath; echo done" "git config core.hooksPath&&echo x" \
+                   "git config core.hooksPath|cat" "git config --global core.hooksPath 2>/dev/null" \
+                   "(git config core.hooksPath)" "git config core.hooksPath >out.txt 2>&1"; do
         bash_in "${PERSONAL}" "${command}"
         passed || { echo "refused: ${command}"; return 1; }
     done
@@ -202,7 +206,9 @@ origin() { git -C "$1" remote add origin "git@github.com:$2.git"; }
                    "git config --type=path core.hooksPath /dev/null" \
                    "git config --list; git config core.hooksPath /dev/null" \
                    "git config --get core.hooksPath && git config --global core.hooksPath /dev/null" \
-                   "git -C ${PERSONAL} config guard.scope exempt"; do
+                   "git -C ${PERSONAL} config guard.scope exempt" \
+                   "echo x;git config core.hooksPath /dev/null" "git config core.hooksPath /dev/null;echo x" \
+                   "(git config --global guard.scope exempt)" "git config core.hooksPath /dev/null 2>&1"; do
         bash_in "${PERSONAL}" "${command}"
         denied || { echo "not refused: ${command}"; return 1; }
     done

@@ -35,6 +35,7 @@ line. Marks are kept in `~/.cache/area-guard/<session_id>.json`, so they outlive
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import json
 import os
@@ -55,7 +56,6 @@ READS = {"Read", "Grep", "Glob"}
 WRITES = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 GIT_SEND = re.compile(r"\bgit\b[^|;&]*?\s(commit|push)\b")
 GH_READONLY = {"view", "list", "status", "checks", "diff", "download", "clone", "watch", "token", "show"}
-SHELL_BREAK = {"&&", "||", ";", "|"}
 
 
 def real(path: str | Path, base: str | None = None) -> Path:
@@ -74,11 +74,21 @@ def corpus_module():
     return module
 
 
+@functools.cache
 def outgoing_module():
     spec = importlib.util.spec_from_file_location("outgoing", Path(__file__).with_name("outgoing.py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def shell_words(command: str) -> list[str]:
+    """The command's words, split in one place for every judgement (outgoing.shell_words):
+    a `;` glued to a word is still a break. Falls back to plain spaces on an unclosed quote."""
+    try:
+        return outgoing_module().shell_words(command)
+    except ValueError:
+        return command.split()
 
 
 def load_areas() -> list[tuple[str, Path]]:
@@ -182,17 +192,15 @@ def bash_marks(command: str, cwd: str, areas) -> list[Path]:
 
 
 def upto_break(words: list[str]) -> list[str]:
-    return words[:next((i for i, w in enumerate(words) if w in SHELL_BREAK), len(words))]
+    breaks = outgoing_module().SHELL_BREAK
+    return words[:next((i for i, w in enumerate(words) if w in breaks), len(words))]
 
 
 def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
     """Every send in a command (git commit / push, a sending gh call) as
     (repository it runs in, arguments naming its destination for corpus-scan).
     A commit stays local, so its arguments are empty."""
-    try:
-        words = shlex.split(command)
-    except ValueError:
-        words = command.split()
+    words = shell_words(command)
     target = cwd
     m = re.search(r"\bgit\s+-C\s+(\S+)", command) or re.search(r"(?:^|&&|;)\s*cd\s+(\S+)", command)
     if m:
@@ -293,13 +301,10 @@ def config_writes_guard_key(command: str) -> bool:
     """True when any `git config` in the command writes core.hooksPath, guard.scope or
     guard.exemptPrefix. Each invocation is judged on its own words, so a read beside a write
     does not excuse the write."""
-    try:
-        words = shlex.split(command)
-    except ValueError:
-        words = command.split()
+    words = shell_words(command)
     start = 0
     for i, w in enumerate(words):
-        if w in SHELL_BREAK:
+        if w in outgoing_module().SHELL_BREAK:
             start = i + 1
             continue
         if w != "config" or "git" not in words[start:i]:
@@ -365,10 +370,7 @@ def bypass(command: str, cwd: str, areas) -> str | None:
         return "--no-verify"
     if re.search(r"\bgit\b[^|;&]*\s-c\s*core\.hookspath", command, re.I):
         return "git -c core.hooksPath"
-    try:
-        words = shlex.split(command)
-    except ValueError:
-        words = command.split()
+    words = shell_words(command)
     for i, w in enumerate(words):
         if w == "commit":
             after = upto_break(words[i + 1:])
