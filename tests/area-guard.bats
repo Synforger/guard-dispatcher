@@ -267,6 +267,26 @@ origin() { git -C "$1" remote add origin "git@github.com:$2.git"; }
     bash_in "${PERSONAL}" "git push"; denied
 }
 
+# cage_build — the digest of the files a cage is built from, as this checkout holds them.
+cage_build() {
+    python3 -c 'import importlib.util, sys
+spec = importlib.util.spec_from_file_location("c", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m); print(m.cage_build())' "${GUARD_ROOT}/sandbox/cage-config.py"
+}
+
+@test "area-guard: a session in a cage built from other files than the installed ones is stopped, whatever it calls" {
+    export GUARD_CAGE_BUILD=0000000000000000
+    agent Read file_path "${H}/notes/a.md"; denied
+    [[ "${output}" == *"cage built from an older guard"* ]]
+    write_to "${PERSONAL}/a.py"; denied
+    rm "${GUARD_CONFIG_DIR}/areas.txt"                     # on a machine with no areas too
+    bash_in "${PERSONAL}" "ls"; denied
+    export GUARD_CAGE_BUILD="$(cage_build)"
+    agent Read file_path "${H}/notes/a.md"; passed
+    unset GUARD_CAGE_BUILD                                 # a session outside any cage
+    agent Read file_path "${H}/notes/a.md"; passed
+}
+
 @test "area-guard: a hooksPath brought in past the global config (an include) is refused" {
     origin "${PERSONAL}" o/r
     mkdir -p "${H}/elsewhere"

@@ -471,6 +471,11 @@ shell start (its `envs/` and `pkgs/` stay writable), and each path listed in
 `$GUARD_CONFIG_DIR/outside-run.txt` (one a line: a server a relay starts outside
 the cage, an editable install).
 
+A session keeps the cage it started in. Each cage carries a digest of the files
+it was built from (`GUARD_CAGE_BUILD`); once the install holds other files, the
+entry guard stops every call of a session still running in the older cage, since
+it lacks what was fixed since, until it is resumed through the launcher.
+
 The launcher that builds a cage runs outside it, from a repository the agent
 edits inside one. `scripts/pre-launch.sh` stands in front of it, called from the
 shell's launch function (a startup file no cage writes): it pulls the repository
