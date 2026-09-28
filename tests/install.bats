@@ -9,8 +9,6 @@ setup() {
     printf '%s\n' "${SENTINEL}" > "${H}/.config/anon-words/master.txt"
     export HOME="${H}"
     unset GIT_CONFIG_GLOBAL CLAUDE_CONFIG_DIR GUARD_CONFIG_DIR ANON_TRUTH_PATH GUARD_HOME
-    # The session sandbox runtime is fetched by npm: keep the suite offline.
-    export npm_config_offline=true
     INSTALLED="${H}/.local/share/guard-dispatcher"
     cd "${H}" || return 1
 }
@@ -42,8 +40,16 @@ PY
     [ "$(readlink "${H}/.local/bin/gh")" = "${INSTALLED}/gh-shim/gh-guard.sh" ]
     [ -f "${H}/.git-hooks/agent-hooks/claude-code/area-guard.py" ]
     [ "$(readlink "${H}/.git-hooks/doctor.sh")" = "${INSTALLED}/scripts/doctor.sh" ]
-    [ -f "${H}/.git-hooks/sandbox/cage-config.py" ]
+    [ ! -e "${H}/.git-hooks/sandbox" ]
     [[ "${output}" == *"agent entry guard registered (${H}/.claude/settings.json)"* ]]
+}
+
+@test "install: the session cage an older install linked is removed" {
+    mkdir -p "${H}/.git-hooks" "${H}/old-install/sandbox"
+    ln -s "${H}/old-install/sandbox" "${H}/.git-hooks/sandbox"
+    run bash "${GUARD_ROOT}/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    [ ! -e "${H}/.git-hooks/sandbox" ] && [ ! -L "${H}/.git-hooks/sandbox" ]
 }
 
 @test "install: registering twice leaves one entry, replaces an old copy, keeps other hooks" {
@@ -112,7 +118,6 @@ JSON
     [[ "${output}" == *"pre-compiled ${INSTALLED} bytecode"* ]]
     [ -d "${INSTALLED}/agent-hooks/claude-code/__pycache__" ]
     [ -d "${INSTALLED}/scanners/__pycache__" ]
-    [ -d "${INSTALLED}/sandbox/__pycache__" ]
     compgen -G "${INSTALLED}/agent-hooks/claude-code/__pycache__/area-guard.*.pyc" > /dev/null
     compgen -G "${INSTALLED}/scanners/__pycache__/corpus-scan.*.pyc" > /dev/null
 }
@@ -164,7 +169,7 @@ JSON
     [[ "${output}" == *"agent entry guard registered (${H}/.claude-work/settings.json)"* ]]
 }
 
-@test "doctor: a cage's config dir is shown without its area's name" {
+@test "doctor: a config dir left by a cage is shown without its area's name" {
     mkdir -p "${H}/org" "${H}/.config/guard" "${H}/.claude@acme"
     printf 'company %s\n' "${H}/org" > "${H}/.config/guard/areas.txt"
     printf '{}\n' > "${H}/.claude@acme/settings.json"

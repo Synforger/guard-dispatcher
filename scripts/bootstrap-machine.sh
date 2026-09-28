@@ -14,9 +14,7 @@
 #      scanner は master 直読するので per-repo 配信は不要)
 #   4. 外部 binary の存在確認 (= gitleaks / git-filter-repo / task / gh /
 #      perl、 不在は install ヒント表示。 hard fail にはしない)
-#   5. session の檻の依存 (= sandbox/ の sandbox-runtime を package-lock.json
-#      どおりに入れる。 npm 不在は install ヒント表示)
-#   6. 総仕上げの診断 (= hooks doctor、 マシン診断軸込み)
+#   5. 総仕上げの診断 (= hooks doctor、 マシン診断軸込み)
 #
 # Exit:
 #   0 = 配備完了 + doctor clean
@@ -132,19 +130,6 @@ if [ "${missing}" -gt 0 ]; then
     log_warn "${missing} optional binaries missing — features degrade gracefully but install them for full coverage"
 fi
 
-# --- 5. session sandbox ------------------------------------------------------
-# sandbox/run.mjs confines a Claude Code session to one area; its runtime is
-# pinned by sandbox/package-lock.json and installed exactly as locked.
-if command -v npm >/dev/null 2>&1; then
-    if npm ci --prefix "${GUARD_ROOT}/sandbox" --silent --no-audit --no-fund; then
-        log_ok "session sandbox runtime installed (sandbox/node_modules)"
-    else
-        log_warn "session sandbox runtime failed to install — run: npm ci --prefix ${GUARD_ROOT}/sandbox"
-    fi
-else
-    log_warn "npm MISSING — brew install node  (session sandbox runtime)"
-fi
-
-# --- 6. final diagnosis -------------------------------------------------------
+# --- 5. final diagnosis -------------------------------------------------------
 echo ""
 bash "${GUARD_ROOT}/scripts/doctor.sh" "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"

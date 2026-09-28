@@ -10,7 +10,7 @@ them.
 - Marking: the target of Read / Grep / Glob, a Bash cwd, an area path named in a Bash command
            (unless the command only checks it: a lone test / [ / stat / realpath / readlink /
            ls -d with every argument literal), and only when this session can read the area
-           (a cage that hides it refuses the read, so naming it marks nothing)
+           (the OS refusing the read means naming it told the session nothing)
 - Refused: Edit / Write / NotebookEdit on a file inside a git repository outside the marks;
            a Bash `git commit` / `git push` / sending `gh` call (reads pass) whose destination is
            outside the marks
@@ -32,9 +32,6 @@ repository the hooks do not reach) is refused: the operator types those, the age
 
 Nothing is printed when a call passes, so nothing lands in the agent's context. A refusal is one
 line. Marks are kept in `~/.cache/area-guard/<session_id>.json`, so they outlive compaction.
-The same file keeps when the session ran in a cage (`sandbox/`): from the moment the cage was
-entered (`GUARD_CAGED_SINCE`) to the last call the hook saw there. A cage refuses what it hides
-whatever is named, so `sandbox/sort-sessions.py` leaves those rows of the record to the marks.
 """
 
 from __future__ import annotations
@@ -47,7 +44,6 @@ import re
 import shlex
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
@@ -55,9 +51,7 @@ AREAS = CONFIG / "areas.txt"
 STATE = Path(os.environ.get("AREA_GUARD_STATE", Path.home() / ".cache/area-guard"))
 CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus-scan.py"
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/send-scan.py"
-CAGE_CONFIG = Path(__file__).resolve().parents[2] / "sandbox/cage-config.py"
 EXEMPT = "_exempt"
-CAGED_SINCE = "GUARD_CAGED_SINCE"
 READS = {"Read", "Grep", "Glob"}
 WRITES = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 GIT_SEND = re.compile(r"\bgit\b[^|;&]*?\s(commit|push)\b")
@@ -152,10 +146,9 @@ def area_of(path: Path, areas) -> str | None:
 def readable_mark(path: Path, areas) -> str | None:
     """The area a touched path marks, or None when this session cannot read that area at all.
 
-    The hook runs inside the session's cage, so a cage that hides the area (sandbox/) refuses
-    this process too: listing the area's folder fails, and the session cannot have read inside
-    it. Naming such a path in a command marks nothing. Outside a cage every area is readable
-    and every touched path marks as before."""
+    The hook runs as the session does, so an area the OS keeps from this process (its folder
+    cannot be listed) is one the session cannot have read inside either. Naming such a path in
+    a command marks nothing."""
     for name, root in areas:
         if path == root or root in path.parents:
             try:
@@ -462,32 +455,20 @@ def destination(target: Path, dest_args: list[str]) -> tuple[Path | None, str | 
 
 
 def load_state(session: str) -> dict:
-    """A session's marks, its runs in a cage and the pages its browser tabs were opened at:
-    {"areas": [...], "caged": [[since, last], ...], "tabs": {tabId: host}}. A bare list is the
-    older file (marks only)."""
+    """A session's marks and the pages its browser tabs were opened at:
+    {"areas": [...], "tabs": {tabId: host}}. A bare list is the older file (marks only)."""
     try:
         data = json.loads((STATE / f"{session}.json").read_text())
     except (OSError, ValueError):
         data = []
     if isinstance(data, list):
-        return {"areas": sorted(data), "caged": [], "tabs": {}}
-    return {"areas": sorted(data.get("areas") or []), "caged": list(data.get("caged") or []),
-            "tabs": dict(data.get("tabs") or {})}
+        return {"areas": sorted(data), "tabs": {}}
+    return {"areas": sorted(data.get("areas") or []), "tabs": dict(data.get("tabs") or {})}
 
 
 def save_state(session: str, state: dict) -> None:
     STATE.mkdir(parents=True, exist_ok=True)
     (STATE / f"{session}.json").write_text(json.dumps(state))
-
-
-def stamp_cage(state: dict, since: str) -> None:
-    """Extend this cage run to now (a run is known by the moment its cage was entered)."""
-    now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    for run in state["caged"]:
-        if run[0] == since:
-            run[1] = now
-            return
-    state["caged"].append([since, now])
 
 
 def allowed(target: Path, marks: set[str], areas) -> bool:
@@ -629,33 +610,13 @@ def deny(reason: str) -> None:
         "permissionDecisionReason": reason}}, ensure_ascii=False))
 
 
-def stale_cage() -> bool:
-    """Whether this session runs in a cage built from other files than the installed ones."""
-    spec = importlib.util.spec_from_file_location("cage_config", CAGE_CONFIG)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    built = os.environ.get(module.CAGE_BUILD)
-    return bool(built) and built != module.cage_build()
-
-
 def main() -> int:
     event = json.load(sys.stdin)
     areas = load_areas()
     tool, args, cwd = event.get("tool_name", ""), event.get("tool_input", {}), event.get("cwd", os.getcwd())
     session = event.get("session_id", "unknown")
-    state = load_state(session) if areas else {"areas": [], "caged": []}
+    state = load_state(session) if areas else {"areas": [], "tabs": {}}
     marks = set(state["areas"])
-    # Every call made in a cage, refused or not, falls inside the run it extends.
-    if areas and (since := os.environ.get(CAGED_SINCE)):
-        stamp_cage(state, since)
-        save_state(session, state)
-    # A session left running in a cage from before the install lacks what was fixed since: stop it
-    # until it is started again (whatever the call, on any machine).
-    if CAGE_CONFIG.is_file() and stale_cage():
-        deny("area-guard: this session runs in a cage built from an older guard than the one installed, "
-             "so it lacks what was fixed since (storing the login among them). End it (/exit) and resume "
-             "it through the launcher, which builds the current cage")
-        return 0
     # Switching the guards off or around is refused even on a machine with no areas
     if tool == "Bash" and (reason := bypass(args.get("command", ""), cwd, areas)):
         deny(f"area-guard: an agent does not switch the guards off or around ({reason}). "

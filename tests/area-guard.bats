@@ -267,26 +267,6 @@ origin() { git -C "$1" remote add origin "git@github.com:$2.git"; }
     bash_in "${PERSONAL}" "git push"; denied
 }
 
-# cage_build — the digest of the files a cage is built from, as this checkout holds them.
-cage_build() {
-    python3 -c 'import importlib.util, sys
-spec = importlib.util.spec_from_file_location("c", sys.argv[1]); m = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(m); print(m.cage_build())' "${GUARD_ROOT}/sandbox/cage-config.py"
-}
-
-@test "area-guard: a session in a cage built from other files than the installed ones is stopped, whatever it calls" {
-    export GUARD_CAGE_BUILD=0000000000000000
-    agent Read file_path "${H}/notes/a.md"; denied
-    [[ "${output}" == *"cage built from an older guard"* ]]
-    write_to "${PERSONAL}/a.py"; denied
-    rm "${GUARD_CONFIG_DIR}/areas.txt"                     # on a machine with no areas too
-    bash_in "${PERSONAL}" "ls"; denied
-    export GUARD_CAGE_BUILD="$(cage_build)"
-    agent Read file_path "${H}/notes/a.md"; passed
-    unset GUARD_CAGE_BUILD                                 # a session outside any cage
-    agent Read file_path "${H}/notes/a.md"; passed
-}
-
 @test "area-guard: a heredoc's body is text, not the command's words, unless the program it feeds runs it" {
     bash_in "${PERSONAL}" $'bash -n run.sh && echo ok; git add -A && git commit -q -F - <<\'EOF\'\nchecked with bash -n and -nq\nEOF'
     passed
@@ -480,12 +460,12 @@ cat ${c}/received/memo.md" "[ -d ${c} ] && cat ${c}/received/memo.md" "stat ${c}
 }
 
 # --- an area this session cannot read ----------------------------------------
-# A cage (sandbox/) hides the areas it does not belong to, and the hook runs inside the same
-# cage. Taking the read permission off a folder stands in for that here: the OS
-# refuses the read, so naming or reading a path in it cannot have told the session anything.
+# The OS can keep a session from an area (macOS privacy settings, folder permissions), and the
+# hook runs as the session does. Taking the read permission off a folder stands in for that
+# here: the OS refuses the read, so naming or reading a path in it cannot have told the session
+# anything.
 
 # hidden <folder> <command...> — run with <folder> unreadable, then give the permission back.
-# Hiding the company folder is what a personal cage does; hiding only the client is a company cage.
 hidden() {
     local folder="$1"
     shift
@@ -522,38 +502,13 @@ hidden() {
     write_to "${PERSONAL}/a.py"; denied
 }
 
-# --- when the session ran in a cage -------------------------------------------
-# The cage tells the session when it was entered (GUARD_CAGED_SINCE). The hook keeps each run with
-# the marks, from that moment to the last call it saw, for sandbox/sort-sessions.py.
+# --- the marks file ------------------------------------------------------------
 
 state_of() { cat "${AREA_GUARD_STATE}/${1:-s1}.json"; }
 
-@test "area-guard: a caged session keeps its run from the moment the cage was entered to its last call" {
-    export GUARD_CAGED_SINCE=2026-09-28T03:00:00.000Z
-    write_to "${PERSONAL}/a.md"
-    passed
-    jq -e '.areas == [] and (.caged | length) == 1 and .caged[0][0] == "2026-09-28T03:00:00.000Z"' <<< "$(state_of)" > /dev/null
-    first="$(jq -r '.caged[0][1]' <<< "$(state_of)")"
-    sleep 0.01
-    write_to "${PERSONAL}/b.md"
-    jq -e --arg f "${first}" '(.caged | length) == 1 and .caged[0][1] > $f' <<< "$(state_of)" > /dev/null
-    # A new cage (a resumed conversation) is a second run.
-    export GUARD_CAGED_SINCE=2026-09-28T05:00:00.000Z
-    write_to "${PERSONAL}/c.md"
-    jq -e '(.caged | length) == 2 and .caged[1][0] == "2026-09-28T05:00:00.000Z"' <<< "$(state_of)" > /dev/null
-}
-
-@test "area-guard: a refused call in a cage still extends the run" {
-    export GUARD_CAGED_SINCE=2026-09-28T03:00:00.000Z
-    bash_in "${H}" "git commit --no-verify -m x"
-    denied
-    jq -e '(.caged | length) == 1' <<< "$(state_of)" > /dev/null
-}
-
-@test "area-guard: outside a cage no run is kept, and marks still land" {
-    unset GUARD_CAGED_SINCE
+@test "area-guard: a read inside an area lands in the marks file" {
     read_case
-    jq -e '.areas == ["client"] and .caged == []' <<< "$(state_of)" > /dev/null
+    jq -e '.areas == ["client"]' <<< "$(state_of)" > /dev/null
 }
 
 @test "area-guard: a marks file of the older form (a bare list) is still read" {

@@ -537,7 +537,7 @@ def socat_sends(words: list[str]) -> list[Send]:
 
 def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
     """The sends of network commands other than curl / wget. A command with no reader here is
-    not seen (see the README: a script's own network calls are the cage's to limit)."""
+    not seen (see the README: a script's own network calls are not seen)."""
     try:
         commands = simple_commands(command)
     except ValueError:

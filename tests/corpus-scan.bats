@@ -759,11 +759,11 @@ time.sleep(float(sys.argv[2]))
     [ ! -f "${BATS_TEST_TMPDIR}/ran" ]
 }
 
-# --- inside a sandbox that cannot open an area -------------------------------------
-# A session caged by sandbox/ cannot open the areas outside its cage. A folder made
-# unreadable here stands in for that: the scan must compare with the prints built
-# outside, never walk (and so never rebuild the shut area empty), and refuse when
-# there is nothing built to compare with.
+# --- in a process that cannot open an area -----------------------------------------
+# The OS can keep a process from an area (macOS privacy settings, folder permissions).
+# A folder made unreadable here stands in for that: the scan must compare with the
+# prints built where it could be read, never walk (and so never rebuild the shut area
+# empty), and refuse when there is nothing built to compare with.
 
 # shut <dir> — make a folder unopenable for the rest of the test.
 shut() {
@@ -814,7 +814,7 @@ update_prints() {
     commit_line "nothing copied here"
     scan_last
     [ "$status" -eq 2 ]
-    [[ "$output" == *"REFUSED"*"run corpus-scan.py --update outside the sandbox"* ]]
+    [[ "$output" == *"REFUSED"*"run corpus-scan.py --update where every area can be read"* ]]
 }
 
 @test "corpus: the prints are neither refreshed nor updated from inside" {
