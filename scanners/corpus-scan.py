@@ -41,12 +41,12 @@ third-party folders do not). A sent line is a hit when it holds a prose run or
 is a whole printed row, and a block of CODE_LINES sent lines is a hit when each
 is a whole printed line. Prints are kept per document and reused while the
 document is unchanged; documents changed since the last look are found through
-Spotlight and added at once. When Spotlight cannot answer (disabled, an area it
-does not index) the size and modification time each document's print was built
-from are compared with what `stat` gives now instead, and only the folders whose modification time
-moved are listed again (a file created, removed or renamed changes its folder's
-time): a document edited, deleted or created since the last look is caught at
-once without walking everything. A full walk still comes at least every six
+Spotlight and added at once. When Spotlight cannot answer (disabled, or an area
+it does not index) the size and modification time each document's print was
+built from are compared with what `stat` gives now instead, and only the folders
+whose modification time moved are listed again (a file created, removed or
+renamed changes its folder's time): a document edited, deleted or created since
+the last look is caught at once without walking everything. A full walk still comes at least every six
 hours (MAX_AGE). Only one process at a time walks or writes the
 fingerprints (a lock file in the cache); the rest use what is already there
 rather than wait or walk beside it.
@@ -1138,14 +1138,10 @@ def main(argv: list[str] | None = None) -> int:
         say(f"NOT CHECKED — no areas defined in {CONFIG / 'areas.txt'} on this machine")
         return 0
     if args.refresh or args.status or args.summary:
-        try:
-            if args.refresh:
-                for stale in ("visibility.json", "clones.json"):
-                    (CACHE / stale).unlink(missing_ok=True)
-                load(areas, refresh=True)
-        except ValueError as error:
-            say(f"REFUSED — {error}")
-            return 2
+        if args.refresh:
+            for stale in ("visibility.json", "clones.json"):
+                (CACHE / stale).unlink(missing_ok=True)
+            load(areas, refresh=True)
         summary = json.loads((CACHE / "summary.json").read_text()) if (CACHE / "summary.json").is_file() else None
         if summary:
             age = (time.time() - summary["built"]) / 3600
@@ -1208,11 +1204,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         lines = [(where, where, line) for where, line in outgoing(args.span)]
 
-    try:
-        prints = load(areas, refresh=False)
-    except ValueError as error:
-        say(f"REFUSED — {error}")
-        return 2
+    prints = load(areas, refresh=False)
     allowed = [normalize(p) for p in read_lines(CONFIG / "allow.txt")]
     public = background_prints()
     found = []
