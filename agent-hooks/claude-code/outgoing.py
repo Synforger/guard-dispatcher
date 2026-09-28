@@ -29,7 +29,6 @@ import os
 import re
 import shlex
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import urlsplit
@@ -557,6 +556,7 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
                 because = (f"this session has read inside {', '.join(sorted(marks))}" if marks
                            else f"the file sits inside {area}")
                 return f"outgoing: not sent to {name}: {path} cannot be scanned ({why}), and {because}"
+        import tempfile   # loaded only when a call sends: most hook calls never get here
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8",
                                          dir=os.environ.get("TMPDIR") or None) as fh:
             fh.write(payload)
