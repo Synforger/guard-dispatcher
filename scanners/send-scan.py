@@ -18,7 +18,7 @@ areas the destination sits outside of; a destination outside every area also get
 scan (`anon-scan.sh`), as a public repository does.
 
 Usage:
-    send-scan.py --dest NAME --text FILE   exit 0 passes, 1 refuses (one line why), 2 cannot judge
+    send-scan.py --dest NAME --text FILE [--reading]   exit 0 passes, 1 refuses (one line why), 2 cannot judge
     send-scan.py --where NAME              print where NAME sits: an area, outside or block
 """
 
@@ -78,12 +78,15 @@ def where(name: str) -> str:
     return OUTSIDE
 
 
-def judge(name: str, payload: Path) -> tuple[int, str]:
-    """(exit status, the line why) for a payload bound for `name`."""
+def judge(name: str, payload: Path, reading: bool = False) -> tuple[int, str]:
+    """(exit status, the line why) for a payload bound for `name`. A reading call to a destination
+    blocked for sending is judged as outside every area: reading through it still works."""
     try:
         destination = where(name)
     except Broken as broken:
         return 2, f"{broken}; nothing is sent until it is fixed"
+    if destination == BLOCK and reading:
+        destination = OUTSIDE
     if destination == BLOCK:
         return 1, f"{name} is blocked for sending ({DESTINATIONS}); reading through it still works"
     place = "outside every area" if destination == OUTSIDE else f"in {destination}"
@@ -112,6 +115,7 @@ def main() -> int:
     parser.add_argument("--dest", help="the destination's name (a tool name, or host:<name>)")
     parser.add_argument("--text", type=Path, help="a file holding the payload")
     parser.add_argument("--where", metavar="NAME", help="print where NAME sits")
+    parser.add_argument("--reading", action="store_true", help="the payload is a reading call's own strings")
     args = parser.parse_args()
     if args.where:
         try:
@@ -122,7 +126,7 @@ def main() -> int:
         return 0
     if not (args.dest and args.text):
         parser.error("give --dest and --text, or --where")
-    status, why = judge(args.dest, args.text)
+    status, why = judge(args.dest, args.text, args.reading)
     if why:
         print(f"send-scan: {why}", file=sys.stderr)
     return status

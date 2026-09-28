@@ -14,9 +14,11 @@ judgement in `scanners/send-scan.py`, which decides as for a push (see there for
 - A `curl` / `wget` with a body or an upload (`-d`, `--data*`, `--json`, `-F`, `-T`, `--post-*`,
   or `-X POST|PUT|PATCH`) is named `host:<host>`; its payload is the body and the files it sends.
 
-Reading calls are not sends: a tool whose name says it reads (get / list / search / read / fetch /
-query / view / find / export / ...), the Artifact tools' reading actions, a network command
-without a body, and anything bound for the loopback host (this machine).
+A reading call (a tool whose name says it reads: get / list / search / read / fetch / query / view /
+find / export / ..., or an Artifact tool's reading action) still hands the service its own
+strings -- a search term, a query, a URL -- so those are scanned, but the files it names are not
+read, and a destination blocked for sending still takes reads. A network command without a body
+and anything bound for the loopback host (this machine) are not sends.
 """
 
 from __future__ import annotations
@@ -120,6 +122,7 @@ class Send(NamedTuple):
     payload: str                         # every text the send carries, files' text included
     unreadable: list[tuple[Path, str]]   # files it uploads whose text cannot be taken out, and why
     unknown: str | None = None          # why the body is only known when the command runs, if it is
+    reading: bool = False                # a reading call: only its own strings reach the service
 
 
 @functools.lru_cache(maxsize=None)
@@ -153,8 +156,11 @@ def file_text(path: Path, send_scan: Path) -> tuple[str | None, str]:
 
 def tool_send(tool: str, args: dict, cwd: str, send_scan: Path) -> Send | None:
     """The send of a tool call that sends, else None."""
-    if not (tool.startswith("mcp__") or tool in HOST_SENDERS) or reads_only(tool, args):
+    if not (tool.startswith("mcp__") or tool in HOST_SENDERS):
         return None
+    if reads_only(tool, args):
+        # A search term, a query or a URL still reaches the service; the files named are not uploaded.
+        return Send(tool, "\n".join(strings(args)), [], reading=True)
     texts, unreadable = strings(args), []
     for p in local_files(args, cwd):
         text, why = file_text(p, send_scan)
@@ -541,7 +547,7 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
     refused when the session has read inside an area (`marks`) or the file itself sits inside
     one (`area_of`); a file a session that read nothing private sends from outside the areas —
     an image it made — passes."""
-    for name, payload, unreadable, unknown in sends(tool, args, cwd, send_scan):
+    for name, payload, unreadable, unknown, reading in sends(tool, args, cwd, send_scan):
         if unknown:
             return (f"outgoing: not sent to {name}: its body is only known when the command runs ({unknown}), "
                     f"so it cannot be scanned. Write the body to a file and send that file instead")
@@ -556,7 +562,8 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
             fh.write(payload)
             path = fh.name
         try:
-            r = subprocess.run(["python3", str(send_scan), "--dest", name, "--text", path],
+            r = subprocess.run(["python3", str(send_scan), "--dest", name, "--text", path,
+                                *(["--reading"] if reading else [])],
                                capture_output=True, text=True, timeout=180)
         except (OSError, subprocess.TimeoutExpired):
             return f"outgoing: not sent to {name}: the send scan could not run"

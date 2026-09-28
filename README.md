@@ -315,9 +315,12 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   whose text cannot be taken out (over 8 MB, or not text, like an image)
   cannot be scanned: it is refused once the session has read inside an area,
   or when the file itself sits inside one, and passes otherwise.
-  Reading calls pass unscanned: a tool whose name says it reads (get, list,
-  search, read, fetch, query, view, find, export, ...), a fetch without a body,
-  and anything sent to the loopback host.
+  A reading call (a tool whose name says it reads: get, list, search, read,
+  fetch, query, view, find, export, ...) still hands the service its own
+  strings, such as a search term, so those are scanned; the files it names are
+  not uploaded and not read, and a service blocked for sending still takes
+  reads, judged as outside every area. A fetch without a body and anything sent
+  to the loopback host are not sends.
 - **Against what**: the private-document scan compares the payload with the
   areas its destination sits outside of, exactly as for a push; a destination
   outside every area also gets the word-list scan, as a public repository does.
