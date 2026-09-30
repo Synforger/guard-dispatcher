@@ -150,14 +150,35 @@ mk_repo_at() {
     [ "$status" -eq 1 ]
 }
 
-@test "corpus: a client repo may carry its own text and the company's" {
+@test "corpus: a client repo may carry its own text, not the company's around it" {
     mk_repo_at "${CLIENT}/repos/pipeline"
     commit_line "${CLIENT_TEXT}"
     scan_last
     [ "$status" -eq 0 ]
     commit_line "${COMPANY_TEXT}"
     scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: text the company's templates also hold is no area's, so a client repo may carry it" {
+    mkdir -p "${BATS_TEST_TMPDIR}/templates"
+    printf '%s\n' "${COMPANY_TEXT}" > "${BATS_TEST_TMPDIR}/templates/README.md"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/templates" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    commit_line "${COMPANY_TEXT}"
+    scan_last
     [ "$status" -eq 0 ]
+}
+
+@test "corpus: a repository declared outside is outside every area, even private and cloned inside" {
+    seed_visibility acme/pipeline private
+    printf 'repo:acme/* outside\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    commit_line "${CLIENT_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"declared outside every area"* ]]
 }
 
 @test "corpus: an exempt repo is never scanned" {

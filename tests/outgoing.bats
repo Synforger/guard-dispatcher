@@ -65,12 +65,12 @@ denied() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"permissionDecision": "d
     [[ "${output}" == *"(in company)"* ]]
 }
 
-@test "outgoing: a service declared inside the client takes the client's text and the company's around it" {
+@test "outgoing: a service declared inside the client takes the client's text, not the company's around it" {
     destinations 'mcp__*drive* client'
     send mcp__acme__drive_upload_file "${CLIENT_TEXT}"
     passed
     send mcp__acme__drive_upload_file "${COMPANY_TEXT}"
-    passed
+    denied
 }
 
 @test "outgoing: a reading call's own strings are scanned: a search term reaches the service" {
