@@ -181,9 +181,14 @@ On a machine that is the company's, `company ~/*` puts every folder of the home
 directory in the company, one made tomorrow included (hidden folders, which hold
 tools and their settings, stay out). `_outside ~/personal ~/Library` names the
 folders that belong to no area: a personal folder, or one that holds only
-applications. Nothing read there marks a session, nothing there is a document,
-and a session marked by the company may not write a repository there. An `_outside` folder
-inside an area is cut out of it too.
+applications. Nothing read there marks a session and nothing there is a document.
+An `_outside` folder inside an area is cut out of it too.
+
+A place's own areas are the innermost ones holding it. An area around them — the
+company around one of its clients — is still one a send there is checked against:
+what goes to a client does not take the company's own text. Text the company's
+templates also hold (the kit a client repository starts from, the deck template)
+is no area's: list the template folders in `background.txt`.
 
 An area's documents are everything under it that holds its words:
 
@@ -265,18 +270,26 @@ step earlier, before each tool call, from the same `areas.txt`:
   substitution, glob or variable other than `$HOME`). Anything else is taken
   to read what it names. Marks are kept per session under
   `~/.cache/area-guard/`, so they outlive the agent compacting its context.
-- A marked session cannot `Edit` / `Write` a file inside a git repository
-  outside its marks, nor write one from the shell where the command names it
-  (a `>` / `>>` redirection, `tee`, `touch`, the destination of `cp` / `mv`
-  / `install` / `ln`, `sed -i`, `dd of=`, or a path inside inline code such as
-  `python3 -c` or `bash -c`, which cannot be told apart from a read). A script
-  run from a file is not read, so what it writes is not judged. It also cannot `git commit`, `git push` or send through `gh`
-  to a destination outside them. Destinations are judged exactly as the
-  push-time scan judges them (`corpus-scan.py --where`). Files outside any
-  repository and `_exempt` areas stay writable.
-- Areas nest as they do for the scan: a session that read only the company may
-  still write the client's repository inside it; one that read the client may
-  not write the company's.
+- A marked session may write a file inside a git repository, commit there,
+  push or send through `gh`, when the place is one it may carry its marks to:
+  - **a place in no area passes** — the guard stops what it knows leaves an
+    area, not what is unlisted — unless the repository publishes outside every
+    area: a public repository, or one `destinations.txt` declares outside
+    (`repo:my-account/* outside`: a personal account, private or not, since
+    its owner may publish it tomorrow);
+  - a place in areas passes when it is inside every mark and in no other area
+    but one around a mark. A session that read the client writes the client's
+    repository (the company around it does not count against it) but not the
+    company's; one that read only the company writes neither a client's
+    repository nor a personal one.
+  The shell's writes are the paths a command names as written (a `>` / `>>`
+  redirection, `tee`, `touch`, the destination of `cp` / `mv` / `install` /
+  `ln`, `sed -i`, `dd of=`); a shell's `-c` string is read as a command line
+  of its own, and every path inside other inline code (`python3 -c`, `node -e`)
+  counts, since it cannot be told apart from a read. A script run from a file
+  is not read, so what it writes is not judged. Destinations are judged
+  exactly as the push-time scan judges them (`corpus-scan.py --where`). Files
+  outside any repository and `_exempt` areas stay writable.
 - On every machine, areas or not, a `Bash` command that switches the guards off
   or around is refused: `--no-verify`, `git commit -n`, the skip variables,
   `git -c core.hooksPath=…`, setting `core.hooksPath` / `guard.scope` /
@@ -349,10 +362,12 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   host:*.corp.example.com   company
   browser:*.corp.example.com company    # a browser tool typing into a page there
   *slack*                   block       # sending refused outright; reading still works
+  repo:my-account/*         outside     # a push or gh call to these GitHub repositories, private or not
   ```
 
   The pattern is a glob over the tool name, over `host:<name>` for a
-  network command, or over `browser:<host>` for a browser tool (an MCP call
+  network command, over `repo:<owner>/<name>` for a GitHub repository a push
+  or a `gh` call sends to, or over `browser:<host>` for a browser tool (an MCP call
   naming a `tabId`) whose tab this session opened at a page there; a tab it did
   not open stays named by the tool, and one opened at a page keeps that host
   after a click takes it elsewhere. A line naming an unknown area stops every

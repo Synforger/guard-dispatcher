@@ -92,6 +92,7 @@ import argparse
 import bisect
 import contextlib
 import fcntl
+import fnmatch
 import hashlib
 import heapq
 import html
@@ -976,6 +977,11 @@ def clones(areas: dict[str, list[Path]]) -> dict[str, list[str]]:
     return found
 
 
+def outer(name: str, inner: str, areas: dict[str, list[Path]]) -> bool:
+    """A root of `name` holds a root of `inner` (the company around one of its clients)."""
+    return any(r != i and r in i.parents for r in areas.get(name, []) for i in areas.get(inner, []))
+
+
 def holding(place: Path, areas: dict[str, list[Path]]) -> frozenset[str]:
     """Every area place is inside (a client inside the company is inside both), less those an
     `_outside` folder cuts it off from: an area whose root holds that folder."""
@@ -984,11 +990,32 @@ def holding(place: Path, areas: dict[str, list[Path]]) -> frozenset[str]:
                      and any(len(r.parts) > cut and contains([r], place) for r in roots))
 
 
+def repo_rules() -> list[tuple[str, str]]:
+    """`repo:<owner>/<name>` lines of destinations.txt: where a GitHub repository sits whatever its
+    visibility and wherever it is cloned (`repo:my-account/* outside`: a personal account is outside
+    every area even for a private repository, which its owner may publish tomorrow)."""
+    path = CONFIG / "destinations.txt"
+    out = []
+    for line in read_lines(path):
+        words = line.split("#", 1)[0].split()
+        if len(words) == 2 and words[0].lower().startswith("repo:"):
+            out.append((words[0][5:].lower(), words[1]))
+    return out
+
+
 def destination(slugs: set[str], sender: Path, areas: dict[str, list[Path]]) -> Path | None:
     """Where the destination lives; None = outside every area."""
     if not slugs:
         say("destination could not be told -- checked against every area")
         return None
+    declared = repo_rules()
+    for slug in sorted(slugs):
+        target = next((t for pattern, t in declared if fnmatch.fnmatchcase(slug.lower(), pattern)), None)
+        if target == "outside":
+            say(f"destination {slug} is declared outside every area -- checked against every area")
+            return None
+        if target in areas and areas[target]:
+            return areas[target][0]
     places: set[Path] = set()
     for slug in sorted(slugs):
         seen = visibility(slug)
@@ -1207,7 +1234,10 @@ def main(argv: list[str] | None = None) -> int:
     held = holding(here, areas) if here is not None else frozenset()
     if held == {EXEMPT}:
         return 0
-    checked = [n for n in areas if n not in UNSCANNED and n not in held]
+    # A place carries its own areas' text; an area holding one of them (the company around a
+    # client) is still checked: what goes to a client does not take the company's own text.
+    own = {n for n in held if not any(n != m and outer(n, m, areas) for m in held)}
+    checked = [n for n in areas if n not in UNSCANNED and n not in own]
     if not checked:
         return 0
 

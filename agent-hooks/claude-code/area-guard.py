@@ -227,6 +227,7 @@ CREATES = {"tee", "touch"}
 COPIES = {"cp", "mv", "install", "ln", "gcp", "gmv"}
 IN_PLACE = {"sed", "gsed", "perl"}
 INLINE = {"python", "python3", "node", "perl", "ruby", "bash", "sh", "zsh"}
+SHELL_INLINE = {"bash", "sh", "zsh"}
 # An absolute or home path written inside inline code.
 CODE_PATH = re.compile(r"""(?:~|/)[^\s'"`;|&<>(),]+""")
 
@@ -234,8 +235,9 @@ CODE_PATH = re.compile(r"""(?:~|/)[^\s'"`;|&<>(),]+""")
 def write_targets(command: str, cwd: str) -> list[Path]:
     """Paths a Bash command names as a place it writes: a redirection's target (`>`, `>>`), the
     files of tee / touch, the destination of cp / mv / install / ln, the existing files sed -i
-    edits, dd's of=, and every absolute or home path inside inline code (`python3 -c`, `node -e`,
-    `bash -c`, ...), which cannot be told apart from a read. A script run from a file is not read."""
+    edits, dd's of=, what a shell's `-c` command line writes (read the same way), and every
+    absolute or home path inside other inline code (`python3 -c`, `node -e`, ...), which cannot be
+    told apart from a read. A script run from a file is not read."""
     lexer = shlex.shlex(spell_home(command), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
@@ -260,7 +262,13 @@ def write_targets(command: str, cwd: str) -> list[Path]:
             named.extend(a[3:] for a in args if a.startswith("of="))
         if tool in INLINE:
             for flag, code in zip(args, args[1:]):
-                if flag in ("-c", "-e"):
+                if flag not in ("-c", "-e"):
+                    continue
+                if tool in SHELL_INLINE:
+                    # A shell's code is a command line: read it the same way (sourcing a file or
+                    # naming one to read is not writing it).
+                    named.extend(str(p) for p in write_targets(code, cwd))
+                else:
                     named.extend(CODE_PATH.findall(code))
 
     words: list[str] = []
@@ -458,10 +466,38 @@ def save_state(session: str, state: dict) -> None:
     (STATE / f"{session}.json").write_text(json.dumps(state))
 
 
+def outer(name: str, inner: str, areas) -> bool:
+    """A root of `name` holds a root of `inner` (the company around one of its clients)."""
+    return any(n == name and m == inner and r != i and r in i.parents for n, r in areas for m, i in areas)
+
+
 def allowed(target: Path, marks: set[str], areas) -> bool:
+    """Whether a session with these marks may write or send to a place it resolved to (a public or
+    personal destination is None and never reaches here). A place in no area passes: the guard stops
+    what it knows leaves an area, not what is unlisted. A place in areas passes when it is inside
+    every mark and in no other area, but an area around a mark (the company around its client)."""
     if area_of(target, areas) == EXEMPT:
         return True
-    return all(inside(target, m, areas) for m in marks)
+    held = {n for n, _ in areas if n not in (EXEMPT, NO_AREA) and inside(target, n, areas)}
+    if not held:
+        return True
+    return (all(inside(target, m, areas) for m in marks)
+            and all(h in marks or any(outer(h, m, areas) for m in marks) for h in held))
+
+
+def may_write(target: Path, marks: set[str], areas) -> bool:
+    """A marked session may write a file inside a git repository when the repository is allowed
+    where it sits, and -- for one in no area -- when what it pushes to is not outside every area
+    (a public repository, or one declared outside such as a personal account's)."""
+    root = repo_root(target)
+    if root is None:
+        return True
+    if not allowed(target, marks, areas):
+        return False
+    if area_of(target, areas) is not None:   # inside an area, or the exempt notes
+        return True
+    url = push_url(root, None)
+    return not url or destination(root, ["--dest", url])[0] is not None
 
 
 BYPASS_ENV = re.compile(r"(?<![\w-])(GH_GUARD_SKIP|GUARD_[A-Z_]+|ANON_WORDS_FILE|HUSKY"
@@ -637,13 +673,19 @@ def main() -> int:
         command = args.get("command", "")
         touched += bash_marks(command, cwd, areas)
         for target in write_targets(command, cwd) if marks else []:
-            if repo_root(target) is not None and not allowed(target, marks, areas):
+            if not may_write(target, marks, areas):
                 deny(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
                      f"write {target} (areas: {AREAS}). Do it in another session")
                 return 0
-        for send in sends_of(command, cwd) if marks else []:
-            place, guess_why = destination(*send)
-            if place is None or not allowed(place, marks, areas):
+        for target, dest_args in sends_of(command, cwd) if marks else []:
+            if not dest_args:
+                # A commit lands in its repository: judged as writing a file there.
+                place, guess_why = target, None
+                refused = not may_write(target, marks, areas)
+            else:
+                place, guess_why = destination(target, dest_args)
+                refused = place is None or not allowed(place, marks, areas)
+            if refused:
                 where = "a public repository or another place outside every area" if place is None \
                     else str(repo_root(place) or place)
                 caveat = f" ({guess_why})" if guess_why else ""
@@ -652,8 +694,7 @@ def main() -> int:
                 return 0
     elif tool in WRITES:
         target = real(args.get("file_path") or args.get("notebook_path") or "", cwd)
-        root = repo_root(target)
-        if root is not None and marks and not allowed(target, marks, areas):
+        if marks and not may_write(target, marks, areas):
             deny(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
                  f"write {target} (areas: {AREAS}). Do it in another session")
             return 0

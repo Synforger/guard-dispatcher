@@ -42,6 +42,9 @@ AREAS
     printf '[core]\n\thooksPath = %s\n' "${H}/hooks" > "${H}/.gitconfig"
     # Whether a destination is public is answered from the scan's cache, never GitHub.
     seed_visibility o/r private
+    # The personal repository is public: what it holds is outside every area.
+    git -C "${PERSONAL}" remote add origin git@github.com:me/public-tool.git
+    seed_visibility me/public-tool public
 }
 
 # agent <tool> <key> <value> [cwd] [session] — run the hook on one tool call.
@@ -65,7 +68,7 @@ read_case() {
     passed
 }
 
-origin() { git -C "$1" remote add origin "git@github.com:$2.git"; }
+origin() { git -C "$1" remote remove origin 2>/dev/null || true; git -C "$1" remote add origin "git@github.com:$2.git"; }
 
 # --- an unmarked session is never refused -----------------------------------
 
@@ -382,13 +385,35 @@ AREAS
     write_to "${CASE_REPO}/a.py"; passed
 }
 
-@test "area-guard: a company reader cannot write a repository in an _outside folder inside the company" {
+@test "area-guard: a repository in an _outside folder is in no area: a marked session writes it unless it publishes outside" {
     printf '_outside ~/org/public\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
     mkdir -p "${H}/org/public/site"
     git init -q "${H}/org/public/site"
     agent Read file_path "${COMPANY_REPO}/notes.md"
-    write_to "${H}/org/public/site/a.py"; denied
+    write_to "${H}/org/public/site/a.py"; passed
+    origin "${H}/org/public/site" me/site
+    seed_visibility me/site public
+    write_to "${H}/org/public/site/b.py"; denied
     write_to "${COMPANY_REPO}/b.py"; passed
+}
+
+# --- a place in no area is not held back ------------------------------------
+
+@test "area-guard: a client reader writes and commits a repository in no area that publishes nowhere outside" {
+    mkdir -p "${H}/scratch/tool"
+    git init -q "${H}/scratch/tool"
+    read_case
+    write_to "${H}/scratch/tool/a.py"; passed
+    bash_in "${H}/scratch/tool" "git commit -m x"; passed
+    origin "${H}/scratch/tool" o/r
+    write_to "${H}/scratch/tool/b.py"; passed
+}
+
+@test "area-guard: a shell's -c line that only reads a file in a personal repository is not a write" {
+    read_case
+    printf 'x=1\n' > "${PERSONAL}/env.sh"
+    bash_in "${H}" "bash -c '. ${PERSONAL}/env.sh; echo \$x'"; passed
+    bash_in "${H}" "bash -c 'echo 1 > ${PERSONAL}/out.txt'"; denied
 }
 
 # --- how a session is marked ------------------------------------------------
@@ -415,10 +440,11 @@ AREAS
 
 # --- a session that read only the company (company > client) ----------------
 
-@test "area-guard: a company reader writes the client but not a personal repository" {
+@test "area-guard: a company reader writes neither a client's repository nor a personal one" {
     agent Read file_path "${COMPANY_REPO}/notes.md"
-    write_to "${CASE_REPO}/ok.py"; passed
+    write_to "${CASE_REPO}/a.py"; denied
     write_to "${PERSONAL}/a.py"; denied
+    write_to "${COMPANY_REPO}/ok.py"; passed
 }
 
 @test "area-guard: reading the exempt notes marks nothing" {
