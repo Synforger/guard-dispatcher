@@ -824,6 +824,37 @@ time.sleep(float(sys.argv[2]))
     [[ "$output" == *"private area"* ]]
 }
 
+# --- guard.scope corpus: an agent's own notes, where the word list does not apply -----
+
+@test "pre-commit: a corpus-scope repository inside the company refuses a client's text staged into it" {
+    mk_repo_at "${WORK}/notes"
+    git config guard.scope corpus
+    printf '%s\n' "${COMPANY_TEXT}" "${SENTINEL} is fine here" > n.md
+    git add n.md
+    run_pre_commit
+    [ "$status" -eq 0 ]
+    printf '%s\n' "${CLIENT_TEXT}" >> n.md
+    git add n.md
+    run_pre_commit
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client text"* ]]
+}
+
+@test "pre-push: a corpus-scope repository runs only the private-document scan" {
+    mk_repo other
+    git config guard.scope corpus
+    base="$(git rev-parse HEAD)"
+    commit_line "${SENTINEL} is a word this repository holds by design"
+    head="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/${SENTINEL} ${head} refs/heads/${SENTINEL} ${base}"
+    [ "$status" -eq 0 ]
+    commit_line "${COMPANY_TEXT}"
+    head2="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/main ${head2} refs/heads/main ${head}"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"company text"* ]]
+}
+
 @test "pre-push: GUARD_CORPUS_SKIP=1 lets one push through" {
     mk_repo other
     base="$(git rev-parse HEAD)"

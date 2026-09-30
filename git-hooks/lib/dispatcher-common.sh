@@ -15,6 +15,11 @@
 #
 # Emits one of:
 #   enforced   — local opt-in via `git config guard.scope enforced`
+#   corpus     — `guard.scope corpus`: a repository whose text holds the word
+#                lists' words by design (an agent's own notes) — no word or
+#                identity scan, but the private-document scan still runs:
+#                on what a commit adds, against the areas the repository sits
+#                outside of, and on what a push sends, against its destination
 #   exempt     — opt-out via `guard.scope=exempt`, or the repo working tree
 #                sits under a prefix configured via `guard.exemptPrefix`
 #                (blanket opt-out for a private state tree whose contents
@@ -55,6 +60,10 @@ dispatcher::detect_repo_kind() {
     fi
     if [ "${scope}" = "exempt" ]; then
         echo "exempt"
+        return 0
+    fi
+    if [ "${scope}" = "corpus" ]; then
+        echo "corpus"
         return 0
     fi
 

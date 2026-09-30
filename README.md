@@ -112,6 +112,11 @@ Every hook follows the same AND-composition:
    every repo under a private state directory — useful when that
    directory's contents include the very words the master list flags,
    which makes the baseline structurally impossible.
+5. Such a directory can still keep what it must not carry out of an area:
+   `git config guard.scope corpus` skips the word and identity scans but
+   runs the private-document scan — on the lines a commit adds, against the
+   areas the repository sits outside of (a client's text staged into the
+   company's notes), and on what a push sends, against its destination.
 
 ### Local scope opt-in (no repo changes)
 
@@ -293,8 +298,13 @@ step earlier, before each tool call, from the same `areas.txt`:
 - On every machine, areas or not, a `Bash` command that switches the guards off
   or around is refused: `--no-verify`, `git commit -n`, the skip variables,
   `git -c core.hooksPath=…`, setting `core.hooksPath` / `guard.scope` /
-  `guard.exemptPrefix`, clearing the marks, or sending from a repository the
-  git hooks do not reach. The operator types those; the agent does not.
+  `guard.exemptPrefix`, clearing the marks, creating the off switch, or
+  sending from a repository the git hooks do not reach. The operator types
+  those; the agent does not.
+- **The operator's switch** is one file: while `$GUARD_CONFIG_DIR/agent-off`
+  exists, the entry guard passes every call. Installing or updating the guard
+  leaves it alone, so a guard switched off stays off until the file is
+  removed; `doctor.sh` reports it.
   A commit in a repository with no remote is the one send let through there:
   it stays in the repository and has nowhere to go. Its push is still refused.
 

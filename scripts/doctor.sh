@@ -92,7 +92,10 @@ check_global() {
 check_agent() {
     local areas="$1"
     local hook="${EXPECTED_HOOKS_DIR}/agent-hooks/claude-code/area-guard.py"
-    if [ -f "${hook}" ]; then
+    local off="${GUARD_CONFIG_DIR:-${HOME}/.config/guard}/agent-off"
+    if [ -f "${hook}" ] && [ -e "${off}" ]; then
+        printf '  %s-%s agent entry guard installed, switched OFF by the operator (%s; remove it to switch on)\n' "${YEL}" "${NC}" "${off}"
+    elif [ -f "${hook}" ]; then
         printf '  %s✓%s agent entry guard installed (%s)\n' "${GRN}" "${NC}" "${hook}"
     else
         printf '  %s✗%s agent entry guard missing (%s) — re-run install.sh\n' "${RED}" "${NC}" "${hook}"
@@ -155,6 +158,10 @@ check_repo() {
         printf ' %slocal-hooksPath=%s%s' "${YEL}" "${local_hp}" "${NC}"
     fi
 
+    if [ "${kind}" = "corpus" ]; then
+        printf ' %s(private-document scan only)%s\n' "${DIM}" "${NC}"
+        return
+    fi
     if [ "${kind}" = "other" ] || [ "${kind}" = "exempt" ]; then
         printf ' %s(no enforcement expected)%s\n' "${DIM}" "${NC}"
         return

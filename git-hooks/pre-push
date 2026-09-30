@@ -58,6 +58,9 @@ enforce_identity=0
 case "${kind}" in
     synforger|no-remote|enforced) enforce_identity=1 ;;
 esac
+# `corpus`: only the private-document scan runs (see dispatcher-common.sh).
+corpus_only=0
+[ "${kind}" = "corpus" ] && corpus_only=1
 
 scanner="$(dispatcher::locate_deep_scanner || true)"
 if [ -z "${scanner}" ]; then
@@ -107,20 +110,22 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
     # Ref-name scan: a branch or tag name is published as-is on the remote,
     # so it crosses the same boundary as file content.
-    ref_scanner="$(dispatcher::locate_anon_scanner || true)"
-    if [ -z "${ref_scanner}" ]; then
-        printf '[pre-push] anon-scan.sh could not be resolved (repo-local or guard bundled) — re-run install.sh from a healthy checkout\n' >&2
-        exit 1
-    fi
-    ref_tmp="$(mktemp)"
-    printf '%s\n' "${local_ref}" > "${ref_tmp}"
-    if ! ANON_SCAN_PATHS="${ref_tmp}" bash "${ref_scanner}" >/dev/null 2>&1; then
-        printf '[pre-push] ref name %s matches the word list — rename the branch/tag before pushing\n' "${local_ref}" >&2
+    if [ "${corpus_only}" = "0" ]; then
+        ref_scanner="$(dispatcher::locate_anon_scanner || true)"
+        if [ -z "${ref_scanner}" ]; then
+            printf '[pre-push] anon-scan.sh could not be resolved (repo-local or guard bundled) — re-run install.sh from a healthy checkout\n' >&2
+            exit 1
+        fi
+        ref_tmp="$(mktemp)"
+        printf '%s\n' "${local_ref}" > "${ref_tmp}"
+        if ! ANON_SCAN_PATHS="${ref_tmp}" bash "${ref_scanner}" >/dev/null 2>&1; then
+            printf '[pre-push] ref name %s matches the word list — rename the branch/tag before pushing\n' "${local_ref}" >&2
+            rm -f "${ref_tmp}"
+            any_leak=1
+            continue
+        fi
         rm -f "${ref_tmp}"
-        any_leak=1
-        continue
     fi
-    rm -f "${ref_tmp}"
 
     if [ "${remote_sha}" = "${zero}" ]; then
         # New remote branch — scan only the truly-outgoing commits, i.e.
@@ -206,6 +211,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             any_leak=1
             continue
         fi
+    fi
+
+    if [ "${corpus_only}" = "1" ]; then
+        [ "${any_leak}" -eq 0 ] && scanned+=("^${local_sha}")
+        continue
     fi
 
     printf '[pre-push] anon-audit-deep --range %s (ref %s)\n' "${revspec}" "${local_ref}" >&2
