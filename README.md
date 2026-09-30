@@ -307,8 +307,8 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   including what they read from standard input (`@-`, `-T -`) when it comes
   from `< file` or a here-string. A body only known when the command runs —
   a `$(…)` or backtick substitution, a variable, or standard input from a
-  pipe or a heredoc — cannot be scanned and is refused unless it goes to this
-  machine; write it to a file and send the file instead.
+  pipe or a heredoc — cannot be scanned and is refused when it goes to a
+  declared destination; write it to a file and send the file instead.
   Other network commands are read the same way: `scp` / `rsync` (the local
   files copied to a remote host; a folder counts as a file that cannot be
   scanned), `ssh` / `nc` (the remote command and standard input), `mail` /
@@ -317,7 +317,10 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   `aws s3` / `gcloud storage` / `gsutil` / `rclone` (local sources copied to
   `s3:<bucket>`, `gs:<bucket>` or `rclone:<remote>`). `socat` and `sftp` to
   another host are refused, since what they send is only known as they run.
-  A command not listed here is not read.
+  Code written into the command — `python -c`, `node -e`, a heredoc fed to an
+  interpreter — sends to each host a URL in it names, carrying the code; a
+  shell's `-c` string is read as a command line of its own. A script in a file
+  and a command not listed here are not read.
   The text of an Office document or a PDF is taken out of it first. A file
   whose text cannot be taken out (over 8 MB, or not text, like an image)
   cannot be scanned: it is refused once the session has read inside an area,
@@ -326,8 +329,11 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   fetch, query, view, find, export, ...) still hands the service its own
   strings, such as a search term, so those are scanned; the files it names are
   not uploaded and not read, and a service blocked for sending still takes
-  reads, judged as outside every area. A fetch without a body and anything sent
-  to the loopback host are not sends.
+  reads, judged as outside every area. A fetch without a body is a reading
+  call whose payload is its URL, decoded (a query string reaches the host).
+  A local path among a call's arguments — a file to upload, a folder to save
+  into — is not scanned as text: the service receives the file, not its name.
+  Anything sent to the loopback host is not a send.
 - **Against what**: the private-document scan compares the payload with the
   areas its destination sits outside of, exactly as for a push; a destination
   outside every area also gets the word-list scan, as a public repository does,
@@ -349,9 +355,16 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   network command, or over `browser:<host>` for a browser tool (an MCP call
   naming a `tabId`) whose tab this session opened at a page there; a tab it did
   not open stays named by the tool, and one opened at a page keeps that host
-  after a click takes it elsewhere. A destination no line names is outside every area, so a new
-  service carries nothing private until it is declared. A line naming an
-  unknown area stops every send until it is fixed.
+  after a click takes it elsewhere. A line naming an unknown area stops every
+  send until it is fixed.
+
+  **A destination no line names is undeclared and passes, unscanned**: the
+  guard stops what it knows leaves an area, and a build machine or an internal
+  service is not stopped for being unlisted. What publishes to the internet or
+  to a personal account is outside every area with no line — the Artifact
+  tools, WebFetch, WebSearch and claude.ai's connectors (`mcp__claude_ai_*`);
+  a line in the file overrides that. To hold every other destination to the
+  scan, end the file with `* outside`.
 
 ## Scan guarantee
 

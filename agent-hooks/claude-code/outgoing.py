@@ -17,11 +17,19 @@ judgement in `scanners/send-scan.py`, which decides as for a push (see there for
   host it was opened at: a page reached later by a click inside it is not seen.
 - A `curl` / `wget` with a body or an upload (`-d`, `--data*`, `--json`, `-F`, `-T`, `--post-*`,
   or `-X POST|PUT|PATCH`) is named `host:<host>`; its payload is the body and the files it sends.
+  One without a body is a reading call whose payload is its URLs (a query string reaches the host).
+- Code written into the command (`python -c`, `node -e`, a heredoc fed to an interpreter) is named
+  `host:<host>` for each URL it names, and its payload is the code. A shell's `-c` string is read
+  as a command line of its own. A script in a file is not read.
+
+Only a destination declared in destinations.txt (or outside by send-scan's defaults) is judged: an
+undeclared one passes, with nothing scanned or refused (see send-scan.py).
 
 A reading call (a tool whose name says it reads: get / list / search / read / fetch / query / view /
 find / export / ..., or an Artifact tool's reading action) still hands the service its own
 strings -- a search term, a query, a URL -- so those are scanned, but the files it names are not
-read, and a destination blocked for sending still takes reads. A network command without a body
+read, and a destination blocked for sending still takes reads. A local path in a call's arguments
+(a file to upload, a folder to save into) is not what the service receives: the files' text is. A network command without a body
 and anything bound for the loopback host (this machine) are not sends.
 """
 
@@ -35,7 +43,7 @@ import shlex
 import subprocess
 from pathlib import Path
 from typing import NamedTuple
-from urllib.parse import urlsplit
+from urllib.parse import unquote_plus, urlsplit
 
 # The last word of a tool name (`mcp__server__slack_read_channel` -> `slack_read_channel`) that
 # says the call only reads.
@@ -103,6 +111,17 @@ def strings(value) -> list[str]:
     return []
 
 
+def is_local_path(text: str) -> bool:
+    """An absolute or ~ path on this machine (its folder exists): a name for a local file, not text sent."""
+    if not text.startswith(("/", "~")) or "\n" in text:
+        return False
+    return Path(os.path.expanduser(text)).parent.is_dir()
+
+
+def sent_strings(args: dict) -> list[str]:
+    return [t for t in strings(args) if not is_local_path(t)]
+
+
 def local_files(args: dict, cwd: str) -> list[Path]:
     """Existing local files the call names under a file key (the Artifact `files` map included)."""
     found = []
@@ -132,6 +151,15 @@ class Send(NamedTuple):
 def corpus_module(send_scan: Path):
     """The private-document scan as a module: Office and PDF text is taken out in that one place."""
     spec = importlib.util.spec_from_file_location("corpus_scan", send_scan.parent / "corpus-scan.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@functools.lru_cache(maxsize=None)
+def send_scan_module(send_scan: Path):
+    """send-scan.py as a module: where a destination sits is decided there, in one place."""
+    spec = importlib.util.spec_from_file_location("send_scan", send_scan)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -194,8 +222,8 @@ def tool_send(tool: str, args: dict, cwd: str, send_scan: Path, tabs: dict | Non
     name = destination_of(tool, args, tabs)
     if reads_only(tool, args):
         # A search term, a query or a URL still reaches the service; the files named are not uploaded.
-        return Send(name, "\n".join(strings(args)), [], reading=True)
-    texts, unreadable = strings(args), []
+        return Send(name, "\n".join(sent_strings(args)), [], reading=True)
+    texts, unreadable = sent_strings(args), []
     for p in local_files(args, cwd):
         text, why = file_text(p, send_scan)
         if text is None:
@@ -320,10 +348,14 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
             elif not w.startswith("-"):
                 urls.append(w)
             j += 2 if takes else 1
-        if not (body or unknown or method in SENDING_METHODS):
-            continue
         hosts = [urlsplit(u if "://" in u else f"http://{u}").hostname or "" for u in urls]
         hosts = [h for h in hosts if h]
+        if not (body or unknown or method in SENDING_METHODS):
+            # A fetch: its URL -- the path and the query -- still reaches the host.
+            # Decoded as well: `+` and `%20` hide the words a query carries.
+            text = "\n".join(urls + [unquote_plus(u) for u in urls])
+            out += [Send(f"host:{h}", text, [], reading=True) for h in hosts if h not in LOOPBACK]
+            continue
         if unknown and not hosts:
             out.append(Send("host:?", "", unreadable, unknown))
         for host in hosts:
@@ -535,6 +567,42 @@ def socat_sends(words: list[str]) -> list[Send]:
     return [Send(f"host:{h}", "", [], "socat relays whatever it reads") for h in hosts if h not in LOOPBACK]
 
 
+INTERPRETERS = {"python", "python3", "node", "ruby", "perl", "deno", "bun", "php"}
+SHELLS = {"bash", "sh", "zsh", "dash"}
+CODE_FLAGS = {"-c", "-e", "--eval", "-E", "-r"}
+URL = re.compile(r"(?i)\b(?:https?|wss?|ftp)://([A-Za-z0-9.-]+)")
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n(.*?)\n\s*\2\s*(?:\n|$)", re.S)
+
+
+def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[Send]:
+    """Code written into the command line: a shell's `-c` string is a command line of its own; an
+    interpreter's `-c` / `-e` code, or a heredoc fed to one, sends to each host a URL in it names."""
+    try:
+        commands = simple_commands(command)
+    except ValueError:
+        return []
+    bodies = [m.group(3) for m in HEREDOC.finditer(command)]
+    out = []
+    for words, stdin in commands:
+        tool = os.path.basename(words[0])
+        codes = [words[i + 1] for i, w in enumerate(words[:-1]) if w in CODE_FLAGS]
+        if tool in SHELLS and depth < 3:
+            for code in codes:
+                out += sends("Bash", {"command": code}, cwd, send_scan, depth=depth + 1)
+            continue
+        if tool not in INTERPRETERS and not tool.startswith("python"):
+            continue
+        if stdin and stdin[0] == "text":
+            codes.append(stdin[1])
+        elif stdin and stdin[1] == "a heredoc":
+            codes += bodies
+        for code in codes:
+            for host in dict.fromkeys(URL.findall(code)):
+                if host not in LOOPBACK:
+                    out.append(Send(f"host:{host}", code, []))
+    return out
+
+
 def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
     """The sends of network commands other than curl / wget. A command with no reader here is
     not seen (see the README: a script's own network calls are not seen)."""
@@ -564,11 +632,12 @@ def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
     return [s for s in out if s.dest.split(":", 1)[-1] not in LOOPBACK]
 
 
-def sends(tool: str, args: dict, cwd: str, send_scan: Path, tabs: dict | None = None) -> list[Send]:
+def sends(tool: str, args: dict, cwd: str, send_scan: Path, tabs: dict | None = None, depth: int = 0) -> list[Send]:
     """Every send the call makes."""
     if tool == "Bash":
         command = args.get("command", "")
-        return curl_sends(command, cwd, send_scan) + other_sends(command, cwd, send_scan)
+        return (curl_sends(command, cwd, send_scan) + other_sends(command, cwd, send_scan)
+                + code_sends(command, cwd, send_scan, depth))
     s = tool_send(tool, args, cwd, send_scan, tabs)
     return [s] if s is not None else []
 
@@ -580,8 +649,14 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
     A file whose text cannot be taken out (too large, or not text) cannot be scanned. It is
     refused when the session has read inside an area (`marks`) or the file itself sits inside
     one (`area_of`); a file a session that read nothing private sends from outside the areas —
-    an image it made — passes."""
+    an image it made — passes. A send to an undeclared destination passes before any of this."""
+    judged = send_scan_module(send_scan)
     for name, payload, unreadable, unknown, reading in sends(tool, args, cwd, send_scan, tabs):
+        try:
+            if judged.where(name) == judged.UNDECLARED:
+                continue
+        except judged.Broken as broken:
+            return f"outgoing: not sent to {name}: {broken}; nothing is sent until it is fixed"
         if unknown:
             return (f"outgoing: not sent to {name}: its body is only known when the command runs ({unknown}), "
                     f"so it cannot be scanned. Write the body to a file and send that file instead")
