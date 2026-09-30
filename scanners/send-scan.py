@@ -9,9 +9,13 @@ first match winning:
 
 The pattern is a glob over the destination's name: a tool name (`mcp__*drive*`, `Artifact`) or
 `host:<host name>` for a network send (`host:*.example.com`). `block` refuses every send to it,
-whatever it carries. A destination no line names is outside every area: a new service carries
-nothing private until it is declared. A line naming an unknown area stops every send until it is
-fixed.
+whatever it carries. A line naming an unknown area stops every send until it is fixed.
+
+A destination no line names is undeclared and passes unscanned: the guard stops what it knows
+leaves an area, and a server or a service at work (a build machine, an internal API) is not
+stopped for being unlisted. What publishes to the internet or to a personal account is outside
+every area without a line (DEFAULTS: the Artifact tools, WebFetch, WebSearch and claude.ai's
+connectors); a line in the file overrides it.
 
 The pattern `browser:<host>` names the page a browser tool types into (see agent-hooks'
 outgoing.py): `browser:*.example.com company`.
@@ -23,7 +27,7 @@ word list when the machine keeps one next to the master (`company.txt` beside `m
 
 Usage:
     send-scan.py --dest NAME --text FILE [--reading]   exit 0 passes, 1 refuses (one line why), 2 cannot judge
-    send-scan.py --where NAME              print where NAME sits: an area, outside or block
+    send-scan.py --where NAME              print where NAME sits: an area, outside, block or undeclared
 """
 
 from __future__ import annotations
@@ -46,6 +50,10 @@ ANON = HERE / "anon-scan.sh"
 WORD_LISTS = Path(os.environ.get("ANON_TRUTH_PATH", Path.home() / ".config/anon-words/master.txt")).parent
 OUTSIDE = "outside"
 BLOCK = "block"
+UNDECLARED = "undeclared"
+# Destinations outside every area with no line in destinations.txt: they publish to the internet
+# (a search, a fetched URL) or to the operator's personal account on claude.ai.
+DEFAULTS = [("Artifact*", OUTSIDE), ("WebFetch", OUTSIDE), ("WebSearch", OUTSIDE), ("mcp__claude_ai_*", OUTSIDE)]
 
 
 class Broken(Exception):
@@ -79,10 +87,10 @@ def rules() -> list[tuple[str, str]]:
 
 
 def where(name: str) -> str:
-    for pattern, target in rules():
+    for pattern, target in rules() + DEFAULTS:
         if fnmatch.fnmatchcase(name.lower(), pattern.lower()):
             return target
-    return OUTSIDE
+    return UNDECLARED
 
 
 def judge(name: str, payload: Path, reading: bool = False) -> tuple[int, str]:
@@ -92,6 +100,8 @@ def judge(name: str, payload: Path, reading: bool = False) -> tuple[int, str]:
         destination = where(name)
     except Broken as broken:
         return 2, f"{broken}; nothing is sent until it is fixed"
+    if destination == UNDECLARED:
+        return 0, ""
     if destination == BLOCK and reading:
         destination = OUTSIDE
     if destination == BLOCK:
