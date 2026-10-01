@@ -294,12 +294,14 @@ step earlier, before each tool call, from the same `areas.txt`:
   counts, since it cannot be told apart from a read. A script run from a file
   is not read, so what it writes is not judged. Destinations are judged
   exactly as the push-time scan judges them (`corpus-scan.py --where`). Files
-  outside any repository and `_exempt` areas stay writable.
+  outside any repository and `_exempt` areas stay writable, and an `_exempt`
+  repository commits and pushes wherever it sends: its git hooks judge what
+  it carries (give it `guard.scope corpus` so they do).
 - On every machine, areas or not, a `Bash` command that switches the guards off
   or around is refused: `--no-verify`, `git commit -n`, the skip variables,
   `git -c core.hooksPath=…`, setting `core.hooksPath` / `guard.scope` /
-  `guard.exemptPrefix`, clearing the marks, creating the off switch, or
-  sending from a repository the git hooks do not reach. The operator types
+  `guard.exemptPrefix`, clearing the marks, creating the off switch, removing
+  the installed hooks, or sending from a repository the git hooks do not reach. The operator types
   those; the agent does not.
 - **The operator's switch** is one file: while `$GUARD_CONFIG_DIR/agent-off`
   exists, the entry guard passes every call. Installing or updating the guard

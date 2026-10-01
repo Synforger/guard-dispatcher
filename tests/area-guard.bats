@@ -431,6 +431,21 @@ AREAS
     write_to "${PERSONAL}/a.py"; denied
 }
 
+@test "area-guard: a marked session commits and pushes the exempt notes, even to a repository declared outside" {
+    git -C "${NOTES}" remote add origin git@github.com:me/notes.git
+    printf 'repo:me/* outside\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    read_case
+    bash_in "${NOTES}" "git commit -m x"; passed
+    bash_in "${NOTES}" "git push origin main"; passed
+    bash_in "${PERSONAL}" "git push origin main"; denied
+}
+
+@test "area-guard: the agent does not remove the installed hooks" {
+    bash_in "${H}" "rm ~/.git-hooks/agent-hooks"; denied
+    bash_in "${H}" "rm -rf ~/.git-hooks"; denied
+    bash_in "${H}" "ls ~/.git-hooks/agent-hooks"; passed
+}
+
 # --- how a session is marked ------------------------------------------------
 
 @test "area-guard: a Bash command naming an area with ~ marks the session" {
