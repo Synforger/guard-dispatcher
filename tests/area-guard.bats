@@ -416,6 +416,21 @@ AREAS
     bash_in "${H}" "bash -c 'echo 1 > ${PERSONAL}/out.txt'"; denied
 }
 
+# --- the operator's switch ---------------------------------------------------
+
+@test "area-guard: while the operator's switch is off every call passes, and the agent cannot switch it" {
+    read_case
+    write_to "${PERSONAL}/a.py"; denied
+    bash_in "${H}" "touch ${GUARD_CONFIG_DIR}/agent-off"; denied
+    agent Write file_path "${GUARD_CONFIG_DIR}/agent-off"; denied
+    bash_in "${H}" "ls ${GUARD_CONFIG_DIR}/agent-off"; passed
+    touch "${GUARD_CONFIG_DIR}/agent-off"
+    write_to "${PERSONAL}/a.py"; passed
+    bash_in "${H}" "git commit --no-verify -m x"; passed
+    rm "${GUARD_CONFIG_DIR}/agent-off"
+    write_to "${PERSONAL}/a.py"; denied
+}
+
 # --- how a session is marked ------------------------------------------------
 
 @test "area-guard: a Bash command naming an area with ~ marks the session" {

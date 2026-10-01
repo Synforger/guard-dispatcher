@@ -50,6 +50,9 @@ from pathlib import Path
 CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
 AREAS = CONFIG / "areas.txt"
 STATE = Path(os.environ.get("AREA_GUARD_STATE", Path.home() / ".cache/area-guard"))
+# The operator's switch: while this file exists the entry guard passes every call. Installing or
+# updating the guard leaves it as it is, so switching off holds until the operator removes it.
+OFF = CONFIG / "agent-off"
 CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus-scan.py"
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/send-scan.py"
 EXEMPT = "_exempt"
@@ -596,6 +599,8 @@ def bypass(command: str, cwd: str, areas) -> str | None:
     expanded = spell_home(command)
     if re.search(r"\b(rm|mv|cp|truncate|tee|touch|ln)\b[^|;&]*\.cache/area-guard|>\s*\S*\.cache/area-guard", expanded):
         return "removes or rewrites the entry guard's marks"
+    if re.search(r"\b(mv|cp|tee|touch|ln|install)\b[^|;&]*agent-off|>\s*\S*agent-off", expanded):
+        return "switches the entry guard off"
     if config_writes_guard_key(command):
         return "a git config that switches the hooks off"
     sends = sends_of(command, cwd)
@@ -635,6 +640,8 @@ def deny(reason: str) -> None:
 
 def main() -> int:
     event = json.load(sys.stdin)
+    if OFF.exists():
+        return 0
     areas = load_areas()
     tool, args, cwd = event.get("tool_name", ""), event.get("tool_input", {}), event.get("cwd", os.getcwd())
     session = event.get("session_id", "unknown")
@@ -645,7 +652,11 @@ def main() -> int:
         deny(f"area-guard: an agent does not switch the guards off or around ({reason}). "
              f"If it is needed, tell the operator why; the operator does it by hand")
         return 0
-    if tool in WRITES and ".cache/area-guard" in str(real(args.get("file_path") or args.get("notebook_path") or "", cwd)):
+    written = str(real(args.get("file_path") or args.get("notebook_path") or "", cwd)) if tool in WRITES else ""
+    if written.endswith("/agent-off"):
+        deny("area-guard: an agent does not switch the entry guard off. If it is needed, tell the operator why")
+        return 0
+    if tool in WRITES and ".cache/area-guard" in written:
         deny("area-guard: an agent does not rewrite the entry guard's marks")
         return 0
 

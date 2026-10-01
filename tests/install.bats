@@ -103,6 +103,18 @@ JSON
     [[ "${output}" == *"agent entry guard registered (${H}/.claude-work/settings.json)"* ]]
 }
 
+@test "doctor: the operator's off switch is reported and survives a reinstall" {
+    mkdir -p "${H}/org" "${H}/.config/guard" "${H}/.claude-work"
+    printf 'company %s\n' "${H}/org" > "${H}/.config/guard/areas.txt"
+    printf '{}\n' > "${H}/.claude-work/settings.json"
+    touch "${H}/.config/guard/agent-off"
+    bash "${GUARD_ROOT}/scripts/install.sh" --claude-settings "${H}/.claude-work/settings.json" >/dev/null
+    [ -e "${H}/.config/guard/agent-off" ]
+    run bash "${H}/.git-hooks/doctor.sh"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"switched OFF by the operator"* ]]
+}
+
 @test "install: the guard is asked about every tool, not only the file and shell tools" {
     mkdir -p "${H}/.claude"
     printf '{}\n' > "${H}/.claude/settings.json"
