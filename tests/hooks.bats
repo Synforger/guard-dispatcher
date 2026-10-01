@@ -126,6 +126,15 @@ setup() {
     [ "$status" -ne 0 ]
 }
 
+@test "commit-msg: a corpus-scope repository's messages are not word-scanned" {
+    mk_repo other
+    git config guard.scope corpus
+    msg="${BATS_TEST_TMPDIR}/msg.txt"
+    echo "feat: mention ${SENTINEL}" > "${msg}"
+    run_commit_msg "${msg}"
+    [ "$status" -eq 0 ]
+}
+
 # --- pre-push -----------------------------------------------------------------
 
 @test "pre-push: clean outgoing range passes" {
