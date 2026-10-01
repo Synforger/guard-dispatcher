@@ -10,7 +10,9 @@
 #      personal identifiers cannot leak via commit subject / body — the gap
 #      that turned `gh run` records into a public leak surface earlier this
 #      week. Default-on; opt-out is explicit only. Missing scanner = hard fail.
-#   3. Only an `exempt` repo is a no-op after delegation.
+#   3. An `exempt` repo, and a `corpus` one (whose text holds the word lists'
+#      words by design; its commits are scanned for area text by pre-commit
+#      and pre-push), are no-ops after delegation.
 #
 # Git invokes this hook as `commit-msg <message-file>`, where <message-file>
 # is the path to a temporary file (typically .git/COMMIT_EDITMSG) whose
@@ -25,7 +27,7 @@ local_status=0
 dispatcher::run_local_hook "commit-msg" "$@" || local_status=$?
 
 kind="$(dispatcher::detect_repo_kind)"
-if [ "${kind}" = "exempt" ]; then
+if [ "${kind}" = "exempt" ] || [ "${kind}" = "corpus" ]; then
     exit "${local_status}"
 fi
 
