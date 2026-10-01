@@ -601,6 +601,8 @@ def bypass(command: str, cwd: str, areas) -> str | None:
         return "removes or rewrites the entry guard's marks"
     if re.search(r"\b(mv|cp|tee|touch|ln|install)\b[^|;&]*agent-off|>\s*\S*agent-off", expanded):
         return "switches the entry guard off"
+    if re.search(r"\b(rm|mv|unlink|ln)\b[^|;&]*\.git-hooks(/agent-hooks)?/?(\s|$|[;&|])", expanded):
+        return "removes the guards' installed hooks"
     if config_writes_guard_key(command):
         return "a git config that switches the hooks off"
     sends = sends_of(command, cwd)
@@ -689,6 +691,9 @@ def main() -> int:
                      f"write {target} (areas: {AREAS}). Do it in another session")
                 return 0
         for target, dest_args in sends_of(command, cwd) if marks else []:
+            if area_of(target, areas) == EXEMPT:
+                # The operator's own notes: their commits and pushes are scanned by the git hooks.
+                continue
             if not dest_args:
                 # A commit lands in its repository: judged as writing a file there.
                 place, guess_why = target, None
