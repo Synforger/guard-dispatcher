@@ -10,7 +10,8 @@ them.
 - Marking: the target of Read / Grep / Glob, a Bash cwd, an area path named in a Bash command
            (unless the command only checks it: a lone test / [ / stat / realpath / readlink /
            ls -d with every argument literal)
-- Refused: Edit / Write / NotebookEdit on a file inside a git repository outside the marks;
+- Refused: Edit / Write / NotebookEdit on a file inside a git repository outside the marks, and
+           a Bash command that names one as written (see named);
            a Bash `git commit` / `git push` / sending `gh` call (reads pass) whose destination is
            outside the marks
 - Destination: a commit lands in its repository. A push or `gh` call lands in the GitHub
@@ -31,6 +32,10 @@ Separately, and on every machine, a Bash command that switches the guards off or
 (skip variables, `--no-verify`, a hooksPath / exempt setting, clearing the marks, sending from a
 repository the hooks do not reach) is refused: the operator types those, the agent does not.
 
+What an order for a send is judged from (`order.py`) is the operator's to write as well: the
+agent writes neither `destinations.txt` nor `orders.txt`, nor removes them, nor writes a
+session's transcript (`~/.claude*/projects/**/*.jsonl`), through Edit / Write or the shell.
+
 Nothing is printed when a call passes, so nothing lands in the agent's context. A refusal is one
 line. Marks are kept in `~/.cache/area-guard/<session_id>.json`, so they outlive compaction.
 """
@@ -38,6 +43,7 @@ line. Marks are kept in `~/.cache/area-guard/<session_id>.json`, so they outlive
 from __future__ import annotations
 
 import functools
+import glob
 import importlib.util
 import json
 import os
@@ -94,24 +100,29 @@ RUNS_BODY = re.compile(r"(?:\S*/)?(?:(?:ba|z|da|k)?sh|python[\d.]*|node|perl|rub
 PASSES_ON = {"sudo", "env", "command", "exec", "nohup", "time", "nice"}
 
 
+def heredocs(command: str):
+    """Each heredoc of the command, in order: (where the line that opens it ends, where its body
+    ends, the program it feeds)."""
+    pos = 0
+    while (m := HEREDOC.search(command, pos)):
+        line_end = command.find("\n", m.end())
+        if line_end < 0:
+            return
+        tabs = r"\t*" if m.group(1) else ""
+        end = re.compile(rf"^{tabs}{re.escape(m.group(3))}[ \t]*$", re.M).search(command, line_end + 1)
+        body_end = end.start() if end else len(command)
+        segment = re.split(r"[;&|(\n]", command[:m.start()])[-1].split()
+        yield line_end, body_end, next((w for w in segment if "=" not in w and w not in PASSES_ON), "")
+        pos = body_end
+
+
 def strip_heredocs(command: str) -> str:
     """The command without the bodies of its heredocs, unless the program they feed runs them as
     code (a shell, python, ...). A commit message or a file's text written through a heredoc is
     not the command's own words: read as words, `-n` in a message was a `git commit -n`."""
     out, pos = [], 0
-    while (m := HEREDOC.search(command, pos)):
-        line_end = command.find("\n", m.end())
-        if line_end < 0:
-            break
-        tabs = r"\t*" if m.group(1) else ""
-        end = re.compile(rf"^{tabs}{re.escape(m.group(3))}[ \t]*$", re.M).search(command, line_end + 1)
-        body_end = end.start() if end else len(command)
-        segment = re.split(r"[;&|(\n]", command[:m.start()])[-1].split()
-        program = next((w for w in segment if "=" not in w and w not in PASSES_ON), "")
-        if RUNS_BODY.fullmatch(program):
-            out.append(command[pos:body_end])
-        else:
-            out.append(command[pos:line_end + 1])
+    for line_end, body_end, program in heredocs(command):
+        out.append(command[pos:body_end] if RUNS_BODY.fullmatch(program) else command[pos:line_end + 1])
         pos = body_end
     out.append(command[pos:])
     return "".join(out)
@@ -225,75 +236,199 @@ def path_only(command: str) -> bool:
     return name in ATTRIBUTES_ONLY or (name == "ls" and ls_names_only(args))
 
 
-# Commands that write the files they name, and interpreters whose inline code (-c / -e) may.
-CREATES = {"tee", "touch"}
+# Commands that write the files they name, those that remove them, and programs that run code
+# written into the command line.
+CREATES = {"tee", "touch", "truncate"}
 COPIES = {"cp", "mv", "install", "ln", "gcp", "gmv"}
+MOVES = {"mv", "gmv"}
+REMOVES = {"rm", "unlink", "rmdir", "shred", "trash"}
 IN_PLACE = {"sed", "gsed", "perl"}
-INLINE = {"python", "python3", "node", "perl", "ruby", "bash", "sh", "zsh"}
-SHELL_INLINE = {"bash", "sh", "zsh"}
-# An absolute or home path written inside inline code.
-CODE_PATH = re.compile(r"""(?:~|/)[^\s'"`;|&<>(),]+""")
+SHELL_CODE = re.compile(r"(?:ba|z|da|k)?sh")
+# The option that hands each interpreter its code.
+CODE_FLAGS = {"python": {"-c"}, "node": {"-e", "--eval", "-p", "--print"}, "perl": {"-e", "-E"},
+              "ruby": {"-e"}, "bun": {"-e", "--eval"}, "php": {"-r"}, "osascript": {"-e"}}
+# What stands before a command and runs it (`sudo tee f`), and a variable set for it (`A=1 cp a b`).
+RUNS_NEXT = {"sudo", "env", "command", "exec", "builtin", "nohup", "nice", "time", "caffeinate"}
+ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
+# An absolute or home path written inside inline code (not the tail of a relative one).
+CODE_PATH = re.compile(r"""(?<![\w./~-])(?:~|/)[^\s'"`;|&<>(),]+""")
+# A quoted word of inline code: a relative path is one of these.
+CODE_WORD = re.compile(r"""(['"`])([^'"`\s]+)\1""")
+GLOB = re.compile(r"[*?\[]")
 
 
-def write_targets(command: str, cwd: str) -> list[Path]:
-    """Paths a Bash command names as a place it writes: a redirection's target (`>`, `>>`), the
-    files of tee / touch, the destination of cp / mv / install / ln, the existing files sed -i
-    edits, dd's of=, what a shell's `-c` command line writes (read the same way), and every
-    absolute or home path inside other inline code (`python3 -c`, `node -e`, ...), which cannot be
-    told apart from a read. A script run from a file is not read."""
-    lexer = shlex.shlex(spell_home(command), posix=True, punctuation_chars=True)
+def code_flags(tool: str) -> set[str]:
+    name = "python" if tool.startswith("python") else tool
+    return CODE_FLAGS.get(name, set())
+
+
+def code_paths(code: str, cwd: str) -> list[str]:
+    """Every path inline code names: an absolute or home path anywhere in it, and a quoted word
+    that reads as a relative path (it holds a `/`, ends in an extension, or names something that
+    exists in the command's folder). Whether the code reads or writes it cannot be told."""
+    found = CODE_PATH.findall(code)
+    for _, word in CODE_WORD.findall(code):
+        if word.startswith(("/", "~")) or "://" in word or not word.strip("."):
+            continue
+        if "/" in word or re.search(r"\.\w{1,8}$", word) or (Path(cwd) / word).exists():
+            found.append(word)
+    return found
+
+
+def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
+    """(paths a Bash command names as a place it writes, paths it names as removed).
+
+    Written: a redirection's target (`>`, `>>`), the files of tee / touch / truncate, the
+    destination of cp / mv / install / ln, the existing files sed -i edits, dd's of=, and every
+    path inside code written into the command (`python3 -c`, `node -e`, a heredoc or a
+    here-string fed to an interpreter), relative ones included: code that reads a file cannot be
+    told apart from code that writes it. A shell's `-c` string, and a heredoc fed to a shell, is
+    a command line of its own, read the same way. Removed: the files of rm / unlink / rmdir /
+    shred, and what mv moves away. A glob stands for the files it matches now. What stands
+    before a command (`sudo`, `env`, a variable) is skipped. A script run from a file is not
+    read, and neither is a heredoc's body fed to anything else (it is text, not commands)."""
+    text = spell_home(command)
+    line, fed, pos = [], [], 0
+    for line_end, body_end, program in heredocs(text):
+        line.append(text[pos:line_end + 1])
+        fed.append((os.path.basename(program), text[line_end + 1:body_end]))
+        pos = body_end
+    line.append(text[pos:])
+    lexer = shlex.shlex("".join(line), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
         tokens = list(lexer)
     except ValueError:
-        return []
-    named: list[str] = []
+        tokens = []
+    written: list[str] = []
+    removed: list[str] = []
+    found: tuple[list[Path], list[Path]] = ([], [])
     breaks = outgoing_module().SHELL_BREAK
 
-    def one(words: list[str]) -> None:
+    def run(tool: str, code: str) -> None:
+        """Code handed to a program that runs it."""
+        if SHELL_CODE.fullmatch(tool):
+            inner = named(code, cwd)
+            found[0].extend(inner[0])
+            found[1].extend(inner[1])
+        elif code_flags(tool):
+            written.extend(code_paths(code, cwd))
+
+    def one(words: list[str], stdin: str | None) -> None:
+        while words and (ASSIGNMENT.fullmatch(words[0]) or os.path.basename(words[0]) in RUNS_NEXT):
+            wrapper = not ASSIGNMENT.fullmatch(words[0])
+            words = words[1:]
+            while wrapper and words and (words[0].startswith("-") or ASSIGNMENT.fullmatch(words[0])):
+                words = words[1:]
         if not words:
             return
         tool, args = os.path.basename(words[0]), words[1:]
         paths = [a for a in args if not a.startswith("-")]
         if tool in CREATES:
-            named.extend(paths)
+            written.extend(paths)
         elif tool in COPIES and len(paths) >= 2:
-            named.append(paths[-1])
+            written.append(paths[-1])
+            if tool in MOVES:
+                removed.extend(paths[:-1])
+        elif tool in REMOVES:
+            removed.extend(paths)
         elif tool in IN_PLACE and any(a.startswith(("-i", "--in-place")) for a in args):
-            named.extend(p for p in paths if Path(real(p, cwd)).is_file())
+            written.extend(p for p in paths if Path(real(p, cwd)).is_file())
         elif tool == "dd":
-            named.extend(a[3:] for a in args if a.startswith("of="))
-        if tool in INLINE:
-            for flag, code in zip(args, args[1:]):
-                if flag not in ("-c", "-e"):
-                    continue
-                if tool in SHELL_INLINE:
-                    # A shell's code is a command line: read it the same way (sourcing a file or
-                    # naming one to read is not writing it).
-                    named.extend(str(p) for p in write_targets(code, cwd))
-                else:
-                    named.extend(CODE_PATH.findall(code))
+            written.extend(a[3:] for a in args if a.startswith("of="))
+        shell = bool(SHELL_CODE.fullmatch(tool))
+        flags = code_flags(tool)
+        for flag, code in zip(args, args[1:]):
+            # a shell takes its command line after -c, alone or among other letters (`-lc`)
+            if flag in flags or (shell and re.fullmatch(r"-[A-Za-z]*c", flag)):
+                run(tool, code)
+        if stdin is not None:
+            run(tool, stdin)
 
     words: list[str] = []
-    redirect = None
+    redirect = stdin = None
     for token in tokens:
         if redirect is not None:
-            if redirect:
-                named.append(token)
+            if redirect == "<<<":
+                stdin = token
+            elif redirect:
+                written.append(token)
             redirect = None
             continue
         if token in breaks:
-            one(words)
-            words = []
+            one(words, stdin)
+            words, stdin = [], None
             continue
         if token and set(token) <= set("<>&|") and set(token) & set("<>"):
             if words and words[-1].isdigit():   # the fd of `2>`
                 words.pop()
-            redirect = ">" in token and not token.endswith("&")   # `2>&1` names no file
+            # `2>&1` names no file; a here-string is the next word, handed to the command
+            redirect = "<<<" if token == "<<<" else (">" in token and not token.endswith("&"))
             continue
         words.append(token)
-    one(words)
-    return [real(p, cwd) for p in named if p and p not in ("-", "/dev/null")]
+    one(words, stdin)
+    for program, body in fed:
+        run(program, body)
+
+    def spelled(names: list[str]) -> list[Path]:
+        out = []
+        for name in names:
+            if not name or name in ("-", "/dev/null"):
+                continue
+            base = os.path.expanduser(name)
+            base = base if os.path.isabs(base) else os.path.join(cwd, base)
+            out.extend(real(m) for m in (glob.glob(base) if GLOB.search(name) else []) or [base])
+        return out
+
+    return spelled(written) + found[0], spelled(removed) + found[1]
+
+
+def write_targets(command: str, cwd: str) -> list[Path]:
+    """Paths a Bash command names as a place it writes (see named)."""
+    return named(command, cwd)[0]
+
+
+# What an order for a send is judged from. The operator writes these; an agent that could would
+# make an order itself.
+KEPT_SETTINGS = ("destinations.txt", "orders.txt")
+TRANSCRIPT = re.compile(r"\.claude[^/]*/projects/.+\.jsonl", re.I)
+
+
+def same_file(a: Path, b: Path) -> bool:
+    """One file under two spellings: a link, or another case on a file system that folds it."""
+    try:
+        if os.path.samefile(a, b):
+            return True
+    except OSError:
+        pass
+    return str(a).casefold() == str(b).casefold()
+
+
+def kept(path: Path, transcript: str | None) -> str | None:
+    """What a path is when the agent may not write it, or None."""
+    for name in KEPT_SETTINGS:
+        if same_file(path, real(CONFIG / name)):
+            return f"the guard's {name}"
+    if transcript and same_file(path, real(transcript)):
+        return "the session's transcript"
+    for home in {Path.home(), real(Path.home())}:
+        if home in path.parents and TRANSCRIPT.fullmatch(path.relative_to(home).as_posix()):
+            return "a session's transcript"
+    return None
+
+
+def kept_by(command: str, cwd: str, transcript: str | None) -> str | None:
+    """What a Bash command writes or removes that the agent may not, or None. Removing a
+    setting counts: with no destinations.txt, a destination held to an order is undeclared."""
+    written, removed = named(command, cwd)
+    for path in written + removed:
+        if what := kept(path, transcript):
+            return what
+    for path in removed:
+        for name in KEPT_SETTINGS:
+            if path in real(CONFIG / name).parents:
+                return f"the folder holding the guard's {name}"
+    return None
 
 
 def bash_marks(command: str, cwd: str, areas) -> list[Path]:
@@ -661,13 +796,23 @@ def main() -> int:
     if tool in WRITES and ".cache/area-guard" in written:
         deny("area-guard: an agent does not rewrite the entry guard's marks")
         return 0
+    # What an order for a send is judged from is the operator's to write, on every machine.
+    transcript = event.get("transcript_path")
+    what = kept(Path(written), transcript) if tool in WRITES else \
+        kept_by(args.get("command", ""), cwd, transcript) if tool == "Bash" else None
+    if what:
+        deny(f"area-guard: an agent does not write or remove {what}: an order for a send is judged from "
+             f"it (code written into a command counts as writing every path it names). "
+             f"If it needs changing, tell the operator why")
+        return 0
 
     def private_area(path: Path) -> str | None:
         area = area_of(real(path), areas)
         return area if area != EXEMPT else None
 
     tabs = state.setdefault("tabs", {})
-    if reason := outgoing_module().check(tool, args, cwd, SEND_SCAN, frozenset(marks), private_area, tabs):
+    if reason := outgoing_module().check(tool, args, cwd, SEND_SCAN, frozenset(marks), private_area, tabs,
+                                         event, STATE):
         deny(reason)
         return 0
     # A browser call that opens a tab at a page names that page for the tab's later calls.

@@ -993,12 +993,14 @@ def holding(place: Path, areas: dict[str, list[Path]]) -> frozenset[str]:
 def repo_rules() -> list[tuple[str, str]]:
     """`repo:<owner>/<name>` lines of destinations.txt: where a GitHub repository sits whatever its
     visibility and wherever it is cloned (`repo:my-account/* outside`: a personal account is outside
-    every area even for a private repository, which its owner may publish tomorrow)."""
+    every area even for a private repository, which its owner may publish tomorrow). A line with
+    a third word keeps the place it declares here: send-scan.py refuses the line as written, and a
+    push is not let through meanwhile."""
     path = CONFIG / "destinations.txt"
     out = []
     for line in read_lines(path):
         words = line.split("#", 1)[0].split()
-        if len(words) == 2 and words[0].lower().startswith("repo:"):
+        if len(words) >= 2 and words[0].lower().startswith("repo:"):
             out.append((words[0][5:].lower(), words[1]))
     return out
 

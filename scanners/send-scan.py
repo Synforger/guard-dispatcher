@@ -5,11 +5,17 @@ A service or a host has no folder to tell which area it sits in, so where each d
 is declared per machine in `$GUARD_CONFIG_DIR/destinations.txt`, one line per destination, the
 first match winning:
 
-    <pattern>   <area> | outside | block
+    <pattern>   <area> | outside | block   [order]
 
 The pattern is a glob over the destination's name: a tool name (`mcp__*drive*`, `Artifact`) or
 `host:<host name>` for a network send (`host:*.example.com`). `block` refuses every send to it,
 whatever it carries. A line naming an unknown area stops every send until it is fixed.
+
+A third word `order` holds the destination's sends until the operator orders each one: the entry
+point that sees the call decides whether it was ordered (agent-hooks' order.py), and the payload
+is then judged here as for any destination. Reading through it needs no order. `block order`, an
+`order` on a `repo:` line (a push is not a call the operator can be shown) and any other third
+word stop every send until the line is fixed.
 
 A destination no line names is undeclared and passes unscanned: the guard stops what it knows
 leaves an area, and a server or a service at work (a build machine, an internal API) is not
@@ -28,6 +34,7 @@ word list when the machine keeps one next to the master (`company.txt` beside `m
 Usage:
     send-scan.py --dest NAME --text FILE [--reading]   exit 0 passes, 1 refuses (one line why), 2 cannot judge
     send-scan.py --where NAME              print where NAME sits: an area, outside, block or undeclared
+                                           (followed by ` order` when its sends need one)
 """
 
 from __future__ import annotations
@@ -51,9 +58,11 @@ WORD_LISTS = Path(os.environ.get("ANON_TRUTH_PATH", Path.home() / ".config/anon-
 OUTSIDE = "outside"
 BLOCK = "block"
 UNDECLARED = "undeclared"
+ORDER = "order"
 # Destinations outside every area with no line in destinations.txt: they publish to the internet
 # (a search, a fetched URL) or to the operator's personal account on claude.ai.
-DEFAULTS = [("Artifact*", OUTSIDE), ("WebFetch", OUTSIDE), ("WebSearch", OUTSIDE), ("mcp__claude_ai_*", OUTSIDE)]
+DEFAULTS = [("Artifact*", OUTSIDE, False), ("WebFetch", OUTSIDE, False), ("WebSearch", OUTSIDE, False),
+            ("mcp__claude_ai_*", OUTSIDE, False)]
 
 
 class Broken(Exception):
@@ -71,7 +80,8 @@ def area_names() -> set[str]:
         raise Broken(str(error)) from error
 
 
-def rules() -> list[tuple[str, str]]:
+def rules() -> list[tuple[str, str, bool]]:
+    """(pattern, where it sits, whether its sends need the operator's order), in the file's order."""
     if not DESTINATIONS.is_file():
         return []
     known = area_names()
@@ -80,17 +90,33 @@ def rules() -> list[tuple[str, str]]:
         words = line.split("#", 1)[0].split()
         if not words:
             continue
-        if len(words) != 2 or (words[1] not in (OUTSIDE, BLOCK) and words[1] not in known):
-            raise Broken(f"{DESTINATIONS}:{n} is not `<pattern> <area|outside|block>` with a known area")
-        out.append((words[0], words[1]))
+        if len(words) not in (2, 3) or (words[1] not in (OUTSIDE, BLOCK) and words[1] not in known):
+            raise Broken(f"{DESTINATIONS}:{n} is not `<pattern> <area|outside|block> [order]` with a known area")
+        ordered = len(words) == 3
+        if ordered and words[2] != ORDER:
+            raise Broken(f"{DESTINATIONS}:{n} ends with `{words[2]}`: the only third word is `order`")
+        if ordered and words[1] == BLOCK:
+            raise Broken(f"{DESTINATIONS}:{n} is `block order`: a blocked destination takes no send to order")
+        if ordered and words[0].lower().startswith("repo:"):
+            raise Broken(f"{DESTINATIONS}:{n} puts `order` on a repository: a push is not held to an order")
+        out.append((words[0], words[1], ordered))
     return out
 
 
-def where(name: str) -> str:
-    for pattern, target in rules() + DEFAULTS:
+def find(name: str) -> tuple[str, bool]:
+    """(where name sits, whether its sends need the operator's order): the first line that matches."""
+    for pattern, target, ordered in rules() + DEFAULTS:
         if fnmatch.fnmatchcase(name.lower(), pattern.lower()):
-            return target
-    return UNDECLARED
+            return target, ordered
+    return UNDECLARED, False
+
+
+def where(name: str) -> str:
+    return find(name)[0]
+
+
+def needs_order(name: str) -> bool:
+    return find(name)[1]
 
 
 def judge(name: str, payload: Path, reading: bool = False) -> tuple[int, str]:
@@ -152,7 +178,8 @@ def main() -> int:
     args = parser.parse_args()
     if args.where:
         try:
-            print(where(args.where))
+            target, ordered = find(args.where)
+            print(f"{target} {ORDER}" if ordered else target)
         except Broken as broken:
             print(f"send-scan: {broken}", file=sys.stderr)
             return 2
