@@ -288,10 +288,16 @@ step earlier, before each tool call, from the same `areas.txt`:
     company's; one that read only the company writes neither a client's
     repository nor a personal one.
   The shell's writes are the paths a command names as written (a `>` / `>>`
-  redirection, `tee`, `touch`, the destination of `cp` / `mv` / `install` /
-  `ln`, `sed -i`, `dd of=`); a shell's `-c` string is read as a command line
-  of its own, and every path inside other inline code (`python3 -c`, `node -e`)
-  counts, since it cannot be told apart from a read. A script run from a file
+  redirection, `tee`, `touch`, `truncate`, the destination of `cp` / `mv` /
+  `install` / `ln`, `sed -i`, `dd of=`), whatever stands before the command
+  (`sudo`, `env`, a variable). A shell's `-c` string, and a heredoc fed to a
+  shell, is read as a command line of its own. Every path inside other code
+  written into the command counts (`python3 -c`, `node -e`, a heredoc or a
+  here-string fed to an interpreter), since code that reads a file cannot be
+  told apart from code that writes it: an absolute or home path anywhere in
+  the code, and a quoted word that reads as a relative path (it holds a `/`,
+  ends in an extension, or names something in the command's folder). A
+  heredoc fed to anything else is text, not commands. A script run from a file
   is not read, so what it writes is not judged. Destinations are judged
   exactly as the push-time scan judges them (`corpus-scan.py --where`). Files
   outside any repository and `_exempt` areas stay writable, and an `_exempt`
@@ -303,6 +309,13 @@ step earlier, before each tool call, from the same `areas.txt`:
   `guard.exemptPrefix`, clearing the marks, creating the off switch, removing
   the installed hooks, or sending from a repository the git hooks do not reach. The operator types
   those; the agent does not.
+- On every machine too, the agent writes neither `destinations.txt` nor
+  `orders.txt` in `$GUARD_CONFIG_DIR`, nor removes them (or the folder holding
+  them), nor writes a session's transcript (`~/.claude*/projects/**/*.jsonl`,
+  and the one the call itself names), through `Edit` / `Write` or the shell:
+  an order for a send is judged from these (see *A send the operator orders*
+  below), so an agent that could write them would make an order itself.
+  Reading them, and copying them elsewhere, passes.
 - **The operator's switch** is one file: while `$GUARD_CONFIG_DIR/agent-off`
   exists, the entry guard passes every call. Installing or updating the guard
   leaves it alone, so a guard switched off stays off until the file is
@@ -369,11 +382,12 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   `$GUARD_CONFIG_DIR/destinations.txt`, first match winning:
 
   ```
-  # pattern                 area | outside | block
+  # pattern                 area | outside | block   [order]
   mcp__*drive*              company     # company text may go there, a client's may not
   host:*.corp.example.com   company
   browser:*.corp.example.com company    # a browser tool typing into a page there
   *slack*                   block       # sending refused outright; reading still works
+  *chat*                    company order   # each send needs the operator's order
   repo:my-account/*         outside     # a push or gh call to these GitHub repositories, private or not
   ```
 
@@ -383,7 +397,8 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   naming a `tabId`) whose tab this session opened at a page there; a tab it did
   not open stays named by the tool, and one opened at a page keeps that host
   after a click takes it elsewhere. A line naming an unknown area stops every
-  send until it is fixed.
+  send until it is fixed, and so does a third word other than `order`,
+  `block order`, or `order` on a `repo:` line (a push is not held to one).
 
   **A destination no line names is undeclared and passes, unscanned**: the
   guard stops what it knows leaves an area, and a build machine or an internal
@@ -392,6 +407,65 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   tools, WebFetch, WebSearch and claude.ai's connectors (`mcp__claude_ai_*`);
   a line in the file overrides that. To hold every other destination to the
   scan, end the file with `* outside`.
+
+#### A send the operator orders
+
+Some destinations reach other people the moment a call runs: a chat message,
+a mail. A scan says what the text may carry, not whether the operator meant
+it to go. A destination declared with `order` takes a send only in this
+exchange (`agent-hooks/claude-code/order.py`):
+
+1. The agent shows the call in a fenced block, as it would make it:
+
+   ````
+   ```send
+   tool: chat_send_message
+   channel_id: C0123ABCD   the team channel
+   message:
+   The build is green.
+   ```
+   ````
+
+   A key with a value on its line takes the first word (the rest is a label
+   for the reader); a key with nothing after the colon takes every line after
+   it, so it comes last. `tool` is the tool's name, in full or its last part.
+   A text holding a ``` line of its own goes in a longer fence.
+2. The operator's next message orders the send.
+3. The guard reads both from the transcript Claude Code keeps for the session
+   and lets the call through only when its input is the shown one, key for
+   key and letter for letter (a false or empty value counts as absent). One
+   shown block is one send: a second call on the same block is refused, and a
+   call that was refused or failed gives the block back.
+
+What orders is the operator's own list, `$GUARD_CONFIG_DIR/orders.txt`: one
+phrase per line, and a line starting with `!` is a cancelling tail, the words
+right after a phrase that turn it into something else (asking leave, a
+negation, the past):
+
+```
+send it
+! later     # "send it later" puts it off
+! if        # "send it if they agree" is not yet an order
+```
+
+A phrase counts when it stands outside quotes (`「…」`, `『…』`, pasted text),
+in a sentence that holds no question mark and does not go on with a tail.
+With no `orders.txt`, nothing is ever ordered. Only a message the operator
+typed counts, whether it opens a turn or is typed while the agent works; a
+tool's result, a task's notice, a hook's text and a subagent's conversation
+never do, and a block the operator pasted is not one the agent showed.
+
+A reading call and a tool that drafts (its name says `draft`) need no order.
+A command (`curl` and the like) never sends to such a destination: it cannot
+be matched against a shown call. What an ordered send carries is scanned like
+any other, so an order does not carry a client's text to the company's chat.
+
+Claude Code writes the transcript behind the conversation. The guard checks
+that the transcript holds the message the call belongs to (the call's
+`prompt_id`) and refuses until it does; the same call passes on a later try.
+What an order has let through is kept beside the session's marks
+(`~/.cache/area-guard/<session>.orders/`), since the transcript does not hold
+a call until it has run.
 
 ## Scan guarantee
 
@@ -493,6 +567,12 @@ contract:
   program that posts over the network on its own is not read, a file that is
   not text (an image, an archive) is not compared, and a tool whose name says
   it reads is trusted to only read.
+- An order is read from what the machine keeps, not from the operator's
+  hand: the phrases are matched as written (a wording no tail covers is taken
+  as an order), a message typed while the agent works may not be in the
+  transcript yet when a call is judged, and a script the agent runs from a
+  file is not read, so one that wrote the transcript would not be seen. What
+  goes out is still only a call the agent showed, with the text it showed.
 - The agent entry guard sees tool calls only: text the operator pastes into
   the conversation marks nothing, other tools and hands are not held to it,
   and a program that runs git for the agent (a script in another language)
@@ -526,7 +606,8 @@ git-hooks/          entry points git calls: pre-commit / commit-msg / pre-push
                     dispatchers, lib/dispatcher-common.sh
 gh-shim/            entry point PATH resolves as `gh`: gh-guard.sh
 agent-hooks/        entry points an AI agent calls before each tool:
-                    claude-code/area-guard.py (with outgoing.py, the send guard)
+                    claude-code/area-guard.py (with outgoing.py, the send guard,
+                    and order.py, the operator's order for a send)
 scanners/           the judgement the entry points call: anon-scan,
                     anon-audit-deep (11-source audit), anon-fix (history
                     scrub), anon-sync-truth, corpus-scan (private documents),

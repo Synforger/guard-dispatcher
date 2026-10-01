@@ -25,6 +25,11 @@ judgement in `scanners/send-scan.py`, which decides as for a push (see there for
 Only a destination declared in destinations.txt (or outside by send-scan's defaults) is judged: an
 undeclared one passes, with nothing scanned or refused (see send-scan.py).
 
+A destination declared with `order` takes a send only on the operator's order (`order.py`, next to
+this file): the call must be one the agent showed and the operator then ordered. A reading call
+and a tool that drafts need none. A command (`curl` and the like) cannot be matched against what
+was shown, so it never sends there. What an ordered send carries is still scanned.
+
 A reading call (a tool whose name says it reads: get / list / search / read / fetch / query / view /
 find / export / ..., or an Artifact tool's reading action) still hands the service its own
 strings -- a search term, a query, a URL -- so those are scanned, but the files it names are not
@@ -151,6 +156,15 @@ class Send(NamedTuple):
 def corpus_module(send_scan: Path):
     """The private-document scan as a module: Office and PDF text is taken out in that one place."""
     spec = importlib.util.spec_from_file_location("corpus_scan", send_scan.parent / "corpus-scan.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@functools.lru_cache(maxsize=None)
+def order_module():
+    """order.py as a module: whether the operator ordered a call is decided there, in one place."""
+    spec = importlib.util.spec_from_file_location("order", Path(__file__).with_name("order.py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -643,20 +657,34 @@ def sends(tool: str, args: dict, cwd: str, send_scan: Path, tabs: dict | None = 
 
 
 def check(tool: str, args: dict, cwd: str, send_scan: Path,
-          marks: frozenset[str] = frozenset(), area_of=lambda path: None, tabs: dict | None = None) -> str | None:
+          marks: frozenset[str] = frozenset(), area_of=lambda path: None, tabs: dict | None = None,
+          event: dict | None = None, state: Path | None = None) -> str | None:
     """The one-line refusal for this call, or None when every send in it passes.
 
     A file whose text cannot be taken out (too large, or not text) cannot be scanned. It is
     refused when the session has read inside an area (`marks`) or the file itself sits inside
     one (`area_of`); a file a session that read nothing private sends from outside the areas —
-    an image it made — passes. A send to an undeclared destination passes before any of this."""
+    an image it made — passes. A send to an undeclared destination passes before any of this.
+
+    A send to a destination declared with `order` is first held to the operator's order, read
+    from the hook's `event` (its transcript); once everything else has passed it takes one of
+    the order's shown blocks, kept under `state`."""
     judged = send_scan_module(send_scan)
     for name, payload, unreadable, unknown, reading in sends(tool, args, cwd, send_scan, tabs):
         try:
-            if judged.where(name) == judged.UNDECLARED:
-                continue
+            where, needs_order = judged.find(name)
         except judged.Broken as broken:
             return f"outgoing: not sent to {name}: {broken}; nothing is sent until it is fixed"
+        if where == judged.UNDECLARED:
+            continue
+        ordered = None
+        if needs_order and not reading and not order_module().is_draft(tool):
+            if tool == "Bash":
+                return (f"outgoing: not sent to {name}: a send there needs the operator's order, and a "
+                        f"command cannot be matched against a shown call. Send it through the service's tool")
+            why, ordered = order_module().ordered(tool, args, event)
+            if why:
+                return f"outgoing: not sent to {name}: {why}"
         if unknown:
             return (f"outgoing: not sent to {name}: its body is only known when the command runs ({unknown}), "
                     f"so it cannot be scanned. Write the body to a file and send that file instead")
@@ -688,4 +716,9 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
                 why += (". The guard does not know which page this tab shows: open it with a navigate call "
                         "in this session first, so the page's host names the destination")
             return "outgoing: " + why.removeprefix("send-scan: ")
+        if ordered is not None:
+            why = order_module().spend(ordered, event, state) if state is not None \
+                else "the guard has nowhere to keep what the order lets through"
+            if why:
+                return f"outgoing: not sent to {name}: {why}"
     return None

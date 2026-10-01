@@ -47,13 +47,15 @@ AREAS
     seed_visibility me/public-tool public
 }
 
-# agent <tool> <key> <value> [cwd] [session] — run the hook on one tool call.
+# agent <tool> <key> <value> [cwd] [session] — run the hook on one tool call. The call names the
+# session's transcript when a test has set TRANSCRIPT.
 agent() {
     local event
     event="$(python3 -c 'import json, sys
-tool, key, value, cwd, session = sys.argv[1:]
+tool, key, value, cwd, session, transcript = sys.argv[1:]
 print(json.dumps({"session_id": session, "tool_name": tool, "tool_input": {key: value},
-                  "cwd": cwd, "hook_event_name": "PreToolUse"}))' "$1" "$2" "$3" "${4:-${H}}" "${5:-s1}")"
+                  "cwd": cwd, "hook_event_name": "PreToolUse", "transcript_path": transcript or None}))' \
+        "$1" "$2" "$3" "${4:-${H}}" "${5:-s1}" "${TRANSCRIPT:-}")"
     run python3 "${HOOK}" <<< "${event}"
 }
 
@@ -595,4 +597,131 @@ print(place == m.Path('${CASE_REPO}'), note)
     [[ "$output" == *"True"* ]]
     [[ "$output" == *"did not finish within 60s"* ]]
     [[ "$output" == *"not that it was found outside every area"* ]]
+}
+
+# --- inline code and heredocs in a Bash command -----------------------------------------------
+
+@test "area-guard: inline code naming a relative path writes it where the command runs" {
+    mkdir -p "${PERSONAL}/src"
+    printf 'x\n' > "${PERSONAL}/Makefile"
+    read_case
+    local c
+    for c in "python3 -c \"open('src/a.py','w').write('x')\"" \
+             $'python3 - <<\'EOF\'\nfrom pathlib import Path\nPath(\'src/a.py\').write_text(\'x\')\nEOF' \
+             $'python3 - <<EOF\nopen("notes.md", "a").write("x")\nEOF' \
+             $'bash <<\'EOF\'\necho x > out.txt\nEOF' \
+             "python3 <<< \"open('a.txt','w')\"" "node -e \"require('fs').writeFileSync(\`b.txt\`, 'x')\"" \
+             "ruby -e \"File.write('c.txt', 'x')\"" "python3 -c \"open('Makefile','a')\"" \
+             "bash -lc 'echo x > d.txt'" "sudo tee e.txt" "LANG=C env A=1 cp /tmp/x f.txt"; do
+        bash_in "${PERSONAL}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+        bash_in "${CASE_REPO}" "${c}"
+        passed || { echo "refused inside the client: ${c}"; return 1; }
+    done
+}
+
+@test "area-guard: inline code that names no path is not a write" {
+    read_case
+    local c
+    for c in "python3 -c \"print('.'.join(['a', 'b']), 'utf-8', 'w')\"" \
+             "python3 -c \"import sys; print(sys.version)\"" \
+             "node -e \"console.log('https://example.com/a.txt')\"" \
+             $'python3 - <<\'EOF\'\nprint("a b", \'c\')\nEOF'; do
+        bash_in "${PERSONAL}" "${c}"
+        passed || { echo "refused: ${c}"; return 1; }
+    done
+}
+
+@test "area-guard: a heredoc's body is text, not a place the command writes; the line that opens it still is" {
+    read_case
+    bash_in "${CASE_REPO}" "$(printf "git commit -q -F - <<'EOF'\nmove a > %s/b and don't stop\nEOF" "${PERSONAL}")"
+    passed
+    bash_in "${CASE_REPO}" "$(printf "cat > notes.md <<'EOF'\nsee %s/a.txt > %s/b.txt\nEOF" "${PERSONAL}" "${PERSONAL}")"
+    passed
+    # an apostrophe in the body does not hide the redirection on the line that opens the heredoc
+    bash_in "${H}" "$(printf "cat > %s/a.txt <<'EOF'\ndon't\nEOF" "${PERSONAL}")"
+    denied
+}
+
+# --- what an order for a send is judged from is the operator's to write -----------------------
+
+# session_files — the guard's two settings and a session's transcript, as the machine keeps them.
+session_files() {
+    TRANSCRIPT="${H}/.claude/projects/-home-tool/s1.jsonl"
+    mkdir -p "$(dirname "${TRANSCRIPT}")/memory" "${H}/.claude-work/projects/p"
+    : > "${TRANSCRIPT}"
+    : > "${H}/.claude-work/projects/p/other.jsonl"
+    printf '*slack* company order\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    printf 'send it\n' > "${GUARD_CONFIG_DIR}/orders.txt"
+}
+
+@test "area-guard: the agent writes neither the guard's send settings nor a transcript with Write or Edit" {
+    session_files
+    local f
+    for f in "${GUARD_CONFIG_DIR}/destinations.txt" "${GUARD_CONFIG_DIR}/orders.txt" "${GUARD_CONFIG_DIR}/ORDERS.TXT" \
+             "${TRANSCRIPT}" "${H}/.claude-work/projects/p/other.jsonl" "${H}/.claude/projects/-home-tool/new.jsonl"; do
+        write_to "${f}"
+        denied || { echo "written: ${f}"; return 1; }
+        [[ "${output}" == *"an order for a send is judged from it"* ]]
+        agent Edit file_path "${f}"
+        denied || { echo "edited: ${f}"; return 1; }
+    done
+    for f in "${GUARD_CONFIG_DIR}/notes.txt" "${H}/.claude/projects/-home-tool/memory/fact.md" \
+             "${H}/scratch/log.jsonl" "${H}/.claude/settings.json"; do
+        write_to "${f}"
+        passed || { echo "refused: ${f}"; return 1; }
+    done
+    agent Read file_path "${GUARD_CONFIG_DIR}/orders.txt"; passed
+    agent Read file_path "${TRANSCRIPT}"; passed
+    # with the file gone, another case of its name would be the file on a file system that folds case
+    rm "${GUARD_CONFIG_DIR}/orders.txt"
+    write_to "${GUARD_CONFIG_DIR}/ORDERS.TXT"; denied
+    bash_in "${H}" "echo 'send it' > ${GUARD_CONFIG_DIR}/Orders.txt"; denied
+}
+
+@test "area-guard: a transcript kept anywhere else is still the session's: the call names it" {
+    session_files
+    TRANSCRIPT="${H}/elsewhere/s1.jsonl"
+    mkdir -p "${H}/elsewhere"
+    : > "${TRANSCRIPT}"
+    write_to "${TRANSCRIPT}"; denied
+    bash_in "${H}" "echo '{}' >> ${TRANSCRIPT}"; denied
+    write_to "${H}/elsewhere/s2.jsonl"; passed
+}
+
+@test "area-guard: the agent writes neither of them from the shell, nor removes the settings" {
+    session_files
+    ln -s "${GUARD_CONFIG_DIR}/orders.txt" "${H}/shortcut"
+    local c g="${GUARD_CONFIG_DIR}"
+    for c in "echo 'send it' >> ${g}/orders.txt" "echo x > ~/.config/guard/destinations.txt" \
+             "printf '' | tee ${g}/destinations.txt" "sudo tee -a ${g}/orders.txt" \
+             "cp /tmp/mine ${g}/destinations.txt" "sed -i '' 's/ order//' ${g}/destinations.txt" \
+             "rm ${g}/destinations.txt" "rm -f ${g}/*.txt" "rm -rf ${g}" "rm -rf ~/.config" \
+             "mv ${g}/destinations.txt ${g}/destinations.off" "mv ${g} ${H}/old" "truncate -s 0 ${g}/destinations.txt" \
+             "echo x >> ${H}/shortcut" "echo x >> ${g}/Orders.txt" \
+             "python3 -c \"open('${g}/orders.txt','a').write('ok')\"" \
+             "bash -c 'echo x >> ${g}/orders.txt'" \
+             "echo '{}' >> ${TRANSCRIPT}" "cp /tmp/forged.jsonl ${TRANSCRIPT}" \
+             "python3 -c \"open('${TRANSCRIPT}','a').write('{}')\"" \
+             "echo '{}' >> ~/.claude-work/projects/p/other.jsonl"; do
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+        [[ "${output}" == *"an order for a send is judged from it"* ]]
+    done
+    # a relative path, from the folder that holds them
+    bash_in "${g}" "echo x >> orders.txt"; denied
+    bash_in "${g}" $'python3 - <<\'EOF\'\nopen("orders.txt", "a").write("send it")\nEOF'; denied
+    bash_in "$(dirname "${TRANSCRIPT}")" "python3 -c \"open('s1.jsonl','a').write('{}')\""; denied
+}
+
+@test "area-guard: reading them, copying them out and writing beside them pass" {
+    session_files
+    local c g="${GUARD_CONFIG_DIR}"
+    for c in "cat ${g}/destinations.txt ${g}/orders.txt" "grep -c order ${g}/destinations.txt" \
+             "cp ${g}/destinations.txt ${H}/destinations.copy" "jq -c . ${TRANSCRIPT}" "wc -l ${TRANSCRIPT}" \
+             "tail -n 3 ${TRANSCRIPT} > ${H}/tail.jsonl.txt" "ls -la ${g}" "echo x > ${g}/notes.txt" \
+             "rm ${H}/destinations.copy" "echo destinations.txt orders.txt"; do
+        bash_in "${H}" "${c}"
+        passed || { echo "refused: ${c}"; return 1; }
+    done
 }
