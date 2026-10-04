@@ -35,6 +35,13 @@ Usage:
     send-scan.py --dest NAME --text FILE [--reading]   exit 0 passes, 1 refuses (one line why), 2 cannot judge
     send-scan.py --where NAME              print where NAME sits: an area, outside, block or undeclared
                                            (followed by ` order` when its sends need one)
+
+Another session of the operator's agents is a destination too, and no line declares it: it sits in
+the areas it has read inside, which the entry point that knows the sessions passes
+(`--session-areas`, see agent-hooks' peers.py). Its payload gets the private-document scan and no
+word list, since only the operator's agents read it:
+
+    send-scan.py --dest NAME --text FILE --session-areas AREAS   AREAS joined by commas, empty for none
 """
 
 from __future__ import annotations
@@ -63,6 +70,12 @@ ORDER = "order"
 # (a search, a fetched URL) or to the operator's personal account on claude.ai.
 DEFAULTS = [("Artifact*", OUTSIDE, False), ("WebFetch", OUTSIDE, False), ("WebSearch", OUTSIDE, False),
             ("mcp__claude_ai_*", OUTSIDE, False)]
+
+
+# Names for what stays on this machine: a service on the loopback host (`local:<port><path>`) and
+# a tmux session typed into (`tmux:<session>`). Nothing leaves the machine through them, so a
+# catch-all line (`* outside`) does not reach them: only a line that names the kind does.
+ON_THIS_MACHINE = ("local:", "tmux:")
 
 
 class Broken(Exception):
@@ -105,7 +118,10 @@ def rules() -> list[tuple[str, str, bool]]:
 
 def find(name: str) -> tuple[str, bool]:
     """(where name sits, whether its sends need the operator's order): the first line that matches."""
+    kind = next((k for k in ON_THIS_MACHINE if name.lower().startswith(k)), None)
     for pattern, target, ordered in rules() + DEFAULTS:
+        if kind and not pattern.lower().startswith(kind):
+            continue
         if fnmatch.fnmatchcase(name.lower(), pattern.lower()):
             return target, ordered
     return UNDECLARED, False
@@ -151,9 +167,15 @@ def judge(name: str, payload: Path, reading: bool = False) -> tuple[int, str]:
             return 2, f"not sent to {name}: the word-list scan could not run ({error})"
         if r.returncode != 0:
             return 1, f"not sent to {name} ({place}): it carries a flagged identifier (word list)"
+    return documents(name, place, "OUTSIDE" if destination == OUTSIDE else destination, payload, env,
+                     f"Replace the text, or declare where it sits in {DESTINATIONS}")
+
+
+def documents(name: str, place: str, dest_area: str, payload: Path, env: dict, remedy: str) -> tuple[int, str]:
+    """The private-document scan of a payload bound for a place in `dest_area` (corpus-scan's
+    `--dest-area`: an area, several joined by commas, or OUTSIDE)."""
     try:
-        r = subprocess.run(["python3", str(CORPUS), "--text", str(payload), "--dest-area",
-                            "OUTSIDE" if destination == OUTSIDE else destination],
+        r = subprocess.run(["python3", str(CORPUS), "--text", str(payload), "--dest-area", dest_area],
                            capture_output=True, text=True, timeout=120, env=env)
     except subprocess.TimeoutExpired:
         return 2, (f"not sent to {name}: the private-document scan did not finish within 120s -- "
@@ -163,10 +185,32 @@ def judge(name: str, payload: Path, reading: bool = False) -> tuple[int, str]:
         return 2, f"not sent to {name}: the private-document scan could not run ({error})"
     if r.returncode == 1:
         return 1, (f"not sent to {name} ({place}): it carries text from a private area the destination "
-                   f"is outside of. Replace the text, or declare where it sits in {DESTINATIONS}")
+                   f"is outside of. {remedy}")
     if r.returncode != 0:
         return 2, f"not sent to {name}: the private-document scan could not judge it"
     return 0, ""
+
+
+def judge_session(name: str, payload: Path, read_inside: list[str]) -> tuple[int, str]:
+    """(exit status, the line why) for a payload bound for another session of the operator's
+    agents, which has read inside `read_inside` (none: it sits outside every area).
+
+    The session sits where it has read: text of those areas, and of an area around them, tells
+    it nothing new, and it can write only inside them. Text of any other area would be carried
+    to wherever that session may write, so it is refused. No word list applies: only the
+    operator's agents read the message, and what one of them sends on is judged where it leaves."""
+    try:
+        known = area_names()
+    except Broken as broken:
+        return 2, f"{broken}; nothing is sent until it is fixed"
+    if stale := sorted(set(read_inside) - known):
+        return 2, (f"not sent to {name}: it has read inside {', '.join(stale)}, which {CONFIG / 'areas.txt'} "
+                   f"no longer names, so where it sits cannot be judged")
+    place = f"a session that has read inside {', '.join(sorted(read_inside))}" if read_inside \
+        else "a session that has read inside no area"
+    return documents(name, place, ",".join(sorted(read_inside)) or "OUTSIDE", payload,
+                     {**os.environ, "GUARD_CONFIG_DIR": str(CONFIG)},
+                     "Replace the text with words of your own")
 
 
 def main() -> int:
@@ -175,7 +219,16 @@ def main() -> int:
     parser.add_argument("--text", type=Path, help="a file holding the payload")
     parser.add_argument("--where", metavar="NAME", help="print where NAME sits")
     parser.add_argument("--reading", action="store_true", help="the payload is a reading call's own strings")
+    parser.add_argument("--session-areas", metavar="AREAS", help="the destination is another agent session that "
+                        "has read inside these areas (joined by commas; empty for none)")
     args = parser.parse_args()
+    if args.session_areas is not None:
+        if not (args.dest and args.text):
+            parser.error("give --dest and --text with --session-areas")
+        status, why = judge_session(args.dest, args.text, [n for n in args.session_areas.split(",") if n])
+        if why:
+            print(f"send-scan: {why}", file=sys.stderr)
+        return status
     if args.where:
         try:
             target, ordered = find(args.where)

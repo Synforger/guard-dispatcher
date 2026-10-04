@@ -28,6 +28,7 @@ identity permanently into public history.
 | any `gh` send | `gh-shim/gh-guard.sh` (PATH shim) | argument vector, body/notes/template files and stdin payloads scanned before the CLI runs; read-only subcommands pass through |
 | AI agent tool call | `agent-hooks/claude-code/area-guard.py` (Claude Code PreToolUse hook) | a session that read inside a private area cannot write a repository outside it, nor commit, push or send through `gh` there; no session can switch the guards off or around |
 | AI agent send (tool, network) | `agent-hooks/claude-code/outgoing.py` (called by the same hook) finds the send, `scanners/send-scan.py` judges it | what a tool sends to a service (MCP tools, Artifact) or a `curl` / `wget` sends with a body is scanned like a push, against the areas its declared destination is outside of; a destination can be blocked for sending outright |
+| AI agent message to another session | `agent-hooks/claude-code/peers.py` (called by the same hook, and by a client that relays messages) | a message is judged by where the receiving session has read: text of an area it has not read inside is refused, words of the sender's own pass, in every direction |
 | repair | `scanners/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
 | health | `scripts/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
 
@@ -371,7 +372,8 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   call whose payload is its URL, decoded (a query string reaches the host).
   A local path among a call's arguments — a file to upload, a folder to save
   into — is not scanned as text: the service receives the file, not its name.
-  Anything sent to the loopback host is not a send.
+  Anything sent to the loopback host is not a send, unless a line names it
+  (see *What stays on this machine* below).
 - **Against what**: the private-document scan compares the payload with the
   areas its destination sits outside of, exactly as for a push; a destination
   outside every area also gets the word-list scan, as a public repository does,
@@ -407,6 +409,68 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   tools, WebFetch, WebSearch and claude.ai's connectors (`mcp__claude_ai_*`);
   a line in the file overrides that. To hold every other destination to the
   scan, end the file with `* outside`.
+
+#### A message to another session
+
+One agent session can write to another: Claude Code's `SendMessage`, or a
+client that carries messages between the sessions it runs. The receiver may be
+able to write where the sender is not, so a message is a send, and the
+receiving session is its destination. No line declares where that destination
+sits: **it sits where it has read**, the marks the entry guard already keeps
+for it (`agent-hooks/claude-code/peers.py`).
+
+| the receiving session has read inside | what a message to it may carry |
+|---|---|
+| no area | no area's text |
+| the company | the company's text, not a client's |
+| a client (with or without the company around it) | that client's text, not the company's |
+| several areas | the text of each |
+
+Words of the sender's own pass in every direction, whatever the sender has
+read: the scan is the private-document scan a push gets, and nothing else.
+No word list applies, since only the operator's agents read the message; what
+one of them sends on is judged where it leaves. So one rule covers every pair
+of sessions, and a session that found a fault in a shared tool while working
+inside a client can tell the session that owns the tool, in its own words.
+
+- `SendMessage` names its receiver by the session's name: every running
+  session of that name on this machine, under any of the operator's accounts
+  (`~/.claude*/sessions/`), must take the message. A name no running session
+  carries is taken to be a session elsewhere — another machine, the cloud —
+  and judged as one that has read nothing. `main` and one of the session's own
+  subagents (named by its agent id) are inside the session: nothing leaves it.
+- A client that relays messages runs the same judgement before it delivers,
+  naming the receiver by its session id, so every way into the client is
+  judged at one place:
+
+  ```sh
+  python3 ~/.git-hooks/agent-hooks/claude-code/peers.py --to <session id | name> --text <file>
+  # exit 0 passes, 1 refuses (one line why on stderr), 2 cannot judge
+  ```
+
+#### What stays on this machine
+
+A service on the loopback host and a tmux session are not ways out of the
+machine, so they pass, and a catch-all line (`* outside`) does not reach
+them. Some of them the operator still wants closed to agents: a client's
+endpoint that types into a session's terminal **as the operator would**, or
+tmux typing into that terminal directly, would let an agent write the
+operator's words. Those are named, and a line that names the kind reaches
+them:
+
+```
+# pattern                       area | outside | block
+local:8766/pty/*                block      # the client's own way of typing into a session
+tmux:agents-*                   block      # typing into the sessions the client runs
+```
+
+- `local:<port><path>` is a `curl` / `wget` / HTTPie call, or code written
+  into the command, bound for the loopback host.
+- `tmux:<session>` is `tmux send-keys` / `send-prefix` / `paste-buffer` /
+  `pipe-pane`. The session is the one tmux itself resolves the target to (a
+  pane id, a prefix, the pane the command runs in); a target tmux cannot
+  resolve is named as spelled, and a typing command wrapped in another
+  (`run-shell`, `if-shell`) is `tmux:?`, which only `tmux:*` reaches.
 
 #### A send the operator orders
 
@@ -454,6 +518,19 @@ With no `orders.txt`, nothing is ever ordered. Only a message the operator
 typed counts, whether it opens a turn or is typed while the agent works; a
 tool's result, a task's notice, a hook's text and a subagent's conversation
 never do, and a block the operator pasted is not one the agent showed.
+
+A client that carries messages between sessions types them into the
+receiver's terminal, where they are recorded as typed text. Such a client
+opens each message with a fixed line; give that line to `orders.txt` after a
+`>`, and a message that opens with it is never the operator's: it orders
+nothing, it takes no order back, and a turn it opened takes no order.
+
+```
+> Message from another session, relayed by the client:
+```
+
+This holds as long as agents cannot reach the client's own way of typing as
+the operator: block it (see *What stays on this machine*).
 
 A reading call and a tool that drafts (its name says `draft`) need no order.
 A command (`curl` and the like) never sends to such a destination: it cannot
@@ -573,6 +650,12 @@ contract:
   transcript yet when a call is judged, and a script the agent runs from a
   file is not read, so one that wrote the transcript would not be seen. What
   goes out is still only a call the agent showed, with the text it showed.
+- A message between sessions is judged where the guard can see it: a
+  `SendMessage` call, and a client that asks before it delivers. A client that
+  does not ask delivers unjudged. A blocked local endpoint or tmux session is
+  closed to the commands the guard reads (above), not to a script run from a
+  file; and a machine's own name other than the loopback host is a `host:`
+  name, so an endpoint reachable under it needs its own line.
 - The agent entry guard sees tool calls only: text the operator pastes into
   the conversation marks nothing, other tools and hands are not held to it,
   and a program that runs git for the agent (a script in another language)
@@ -607,11 +690,13 @@ git-hooks/          entry points git calls: pre-commit / commit-msg / pre-push
 gh-shim/            entry point PATH resolves as `gh`: gh-guard.sh
 agent-hooks/        entry points an AI agent calls before each tool:
                     claude-code/area-guard.py (with outgoing.py, the send guard,
-                    and order.py, the operator's order for a send)
+                    order.py, the operator's order for a send, and peers.py,
+                    another session as a destination)
 scanners/           the judgement the entry points call: anon-scan,
                     anon-audit-deep (11-source audit), anon-fix (history
                     scrub), anon-sync-truth, corpus-scan (private documents),
-                    send-scan (a payload bound for a declared destination),
+                    send-scan (a payload bound for a declared destination, or
+                    for another session),
                     setup-lib, anon-words.example.txt
 scripts/            setting up and checking a machine: bootstrap-machine.sh,
                     install.sh, doctor.sh, pr-create.sh,

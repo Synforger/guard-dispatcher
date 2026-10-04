@@ -35,7 +35,15 @@ find / export / ..., or an Artifact tool's reading action) still hands the servi
 strings -- a search term, a query, a URL -- so those are scanned, but the files it names are not
 read, and a destination blocked for sending still takes reads. A local path in a call's arguments
 (a file to upload, a folder to save into) is not what the service receives: the files' text is. A network command without a body
-and anything bound for the loopback host (this machine) are not sends.
+is not a send.
+
+What stays on this machine is named apart: `local:<port><path>` for a call to the loopback host,
+`tmux:<session>` for tmux typing into a pane. Neither leaves the machine, so both pass unless a
+line of destinations.txt names the kind (see send-scan.py): the operator blocks the endpoints that
+type into a terminal as the operator would.
+
+A message to another agent session (`SendMessage`) is named `session:<receiver>` and judged by
+where that session has read, not by a line of destinations.txt (`peers.py`, next to this file).
 """
 
 from __future__ import annotations
@@ -72,6 +80,23 @@ WGET_BODY = {"--post-data", "--post-file", "--body-data", "--body-file"}
 SENDING_METHODS = {"POST", "PUT", "PATCH"}
 # Words of a shell command that end one command and start the next.
 SHELL_BREAK = {"&&", "||", ";", "|", "&", "|&", ";;", "(", ")"}
+
+
+def place_of(url: str) -> str:
+    """A URL's destination name: `host:<host>`, or `local:<port><path>` when it names this
+    machine. A service on this machine is not a send out of it, so no line of destinations.txt
+    reaches a `local:` name unless it names one (see send-scan.py): the operator declares the
+    local endpoints an agent must not reach, such as one that types into a terminal as the
+    operator would."""
+    parts = urlsplit(url if "://" in url else f"http://{url}")
+    host = parts.hostname or ""
+    if host not in LOOPBACK:
+        return f"host:{host}" if host else ""
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    return f"local:{port or (443 if parts.scheme in ('https', 'wss') else 80)}{parts.path or '/'}"
 
 
 def shell_words(command: str) -> list[str]:
@@ -362,19 +387,17 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
             elif not w.startswith("-"):
                 urls.append(w)
             j += 2 if takes else 1
-        hosts = [urlsplit(u if "://" in u else f"http://{u}").hostname or "" for u in urls]
-        hosts = [h for h in hosts if h]
+        places = [p for p in map(place_of, urls) if p]
         if not (body or unknown or method in SENDING_METHODS):
             # A fetch: its URL -- the path and the query -- still reaches the host.
             # Decoded as well: `+` and `%20` hide the words a query carries.
             text = "\n".join(urls + [unquote_plus(u) for u in urls])
-            out += [Send(f"host:{h}", text, [], reading=True) for h in hosts if h not in LOOPBACK]
+            out += [Send(p, text, [], reading=True) for p in places]
             continue
-        if unknown and not hosts:
+        if unknown and not places:
             out.append(Send("host:?", "", unreadable, unknown))
-        for host in hosts:
-            if host not in LOOPBACK:
-                out.append(Send(f"host:{host}", "\n".join(body), unreadable, unknown))
+        for place in places:
+            out.append(Send(place, "\n".join(body), unreadable, unknown))
     return out
 
 
@@ -521,7 +544,7 @@ def http_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]
     if not positional:
         return []
     url, items = positional[0], positional[1:]
-    host = "localhost" if url.startswith(":") else urlsplit(url if "://" in url else f"http://{url}").hostname or ""
+    place = place_of(f"http://localhost{url}" if url.startswith(":") else url)
     texts, unreadable = [], []
     for item in items:
         m = re.match(r"^([^=:@]*)(:=@|=@|@|:=|==|=|:)(.*)$", item)
@@ -533,9 +556,9 @@ def http_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]
             texts.append(item)
     text, files, unknown = stdin_payload(stdin, cwd, send_scan)
     unknown = unknown or ("a substitution or a variable" if any(RUNTIME_TEXT.search(i) for i in items) else None)
-    if not (items or stdin or method in SENDING_METHODS) or not host or host in LOOPBACK:
+    if not (items or stdin or method in SENDING_METHODS) or not place:
         return []
-    return [Send(f"host:{host}", "\n".join([*texts, text]), unreadable + files, unknown)]
+    return [Send(place, "\n".join([*texts, text]), unreadable + files, unknown)]
 
 
 def bucket_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
@@ -581,10 +604,65 @@ def socat_sends(words: list[str]) -> list[Send]:
     return [Send(f"host:{h}", "", [], "socat relays whatever it reads") for h in hosts if h not in LOOPBACK]
 
 
+# tmux commands that type into a pane, as whoever sits at that terminal would.
+TMUX_TYPES = {"send-keys", "send", "send-prefix", "paste-buffer", "pasteb", "pipe-pane", "pipep"}
+TMUX_TYPES_INSIDE = re.compile(r"(?<![\w-])(send-keys|send-prefix|paste-buffer|pasteb|pipe-pane|pipep)(?![\w-])")
+TMUX_SERVER_VALUED = {"-L", "-S", "-f", "-c", "-T"}
+TMUX_VALUED = {"-t", "-N", "-c", "-b", "-s"}
+
+
+def tmux_session(server: list[str], target: str | None) -> str:
+    """The name of the tmux session a target is in, asked of tmux itself (a target may be a
+    prefix, a pattern or a pane id; none is the pane the command runs in). `?` when tmux cannot
+    say and the target does not spell a session's name."""
+    target = target or os.environ.get("TMUX_PANE")
+    try:
+        r = subprocess.run(["tmux", *server, "display-message", "-p", *(["-t", target] if target else []),
+                            "#{session_name}"], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if not target or target[0] in "%@${":
+        return "?"
+    return target.lstrip("=").split(":", 1)[0] or "?"
+
+
+def tmux_sends(words: list[str]) -> list[Send]:
+    """tmux typing into a pane (`send-keys`, `paste-buffer`, `pipe-pane`), named `tmux:<session>`:
+    the keys land in that terminal as if typed there. Like a `local:` name it stays on this
+    machine, so only a line of destinations.txt that names `tmux:` reaches it. A typing command
+    wrapped in another (`run-shell`, `if-shell`) is named `tmux:?`."""
+    server, j = [], 0
+    while j < len(words) and words[j].startswith("-"):
+        take = 2 if words[j] in TMUX_SERVER_VALUED else 1
+        server += words[j:j + take]
+        j += take
+    if j >= len(words):
+        return []
+    verb, rest = words[j], words[j + 1:]
+    if verb not in TMUX_TYPES:
+        inside = [w for w in rest if TMUX_TYPES_INSIDE.search(w)]
+        return [Send("tmux:?", "\n".join(inside), [])] if inside else []
+    target, keys, k = None, [], 0
+    while k < len(rest):
+        w = rest[k]
+        if w in TMUX_VALUED and k + 1 < len(rest):
+            target = rest[k + 1] if w == "-t" else target
+            k += 2
+            continue
+        if w.startswith("-t") and len(w) > 2:
+            target = w[2:]
+        elif not w.startswith("-") or keys:
+            keys.append(w)
+        k += 1
+    return [Send(f"tmux:{tmux_session(server, target)}", "\n".join(keys), [])]
+
+
 INTERPRETERS = {"python", "python3", "node", "ruby", "perl", "deno", "bun", "php"}
 SHELLS = {"bash", "sh", "zsh", "dash"}
 CODE_FLAGS = {"-c", "-e", "--eval", "-E", "-r"}
-URL = re.compile(r"(?i)\b(?:https?|wss?|ftp)://([A-Za-z0-9.-]+)")
+URL = re.compile(r"(?i)\b(?:https?|wss?|ftp)://[A-Za-z0-9.-]+(?::\d+)?(?:/[^\s'\"`\\)<>]*)?")
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n(.*?)\n\s*\2\s*(?:\n|$)", re.S)
 
 
@@ -611,9 +689,8 @@ def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[
         elif stdin and stdin[1] == "a heredoc":
             codes += bodies
         for code in codes:
-            for host in dict.fromkeys(URL.findall(code)):
-                if host not in LOOPBACK:
-                    out.append(Send(f"host:{host}", code, []))
+            for place in dict.fromkeys(p for p in map(place_of, URL.findall(code)) if p):
+                out.append(Send(place, code, []))
     return out
 
 
@@ -640,20 +717,65 @@ def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
             out += bucket_sends(tool, words, stdin, cwd, send_scan)
         elif tool == "socat":
             out += socat_sends(words)
+        elif tool == "tmux":
+            out += tmux_sends(args)
+        elif tool in TMUX_TYPES - {"send"}:
+            # the rest of `tmux new-window \\; send-keys ...`: the shell reader splits at tmux's own `;`
+            out += tmux_sends(words)
         elif tool == "sftp":
             hosts = [p.rsplit("@", 1)[-1].split(":", 1)[0] for p in split_options(args, VALUED["scp"])[1]]
             out += [Send(f"host:{h}", "", [], "sftp takes its commands as it runs") for h in hosts[:1]]
     return [s for s in out if s.dest.split(":", 1)[-1] not in LOOPBACK]
 
 
+# A message to another agent session: named `session:<receiver>`, judged by where that session
+# has read (peers.py), not by a line of destinations.txt.
+SESSION = "session:"
+PEER_SENDERS = {"SendMessage"}
+
+
+def peers_module():
+    spec = importlib.util.spec_from_file_location("peers", Path(__file__).with_name("peers.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def peer_send(args: dict) -> list[Send]:
+    to, message = args.get("to"), args.get("message")
+    if not (isinstance(to, str) and to.strip() and isinstance(message, str) and message.strip()):
+        return []   # no text travels: a subscription to the receiver going idle
+    return [Send(SESSION + to.strip(), message, [])]
+
+
 def sends(tool: str, args: dict, cwd: str, send_scan: Path, tabs: dict | None = None, depth: int = 0) -> list[Send]:
     """Every send the call makes."""
+    if tool in PEER_SENDERS:
+        return peer_send(args)
     if tool == "Bash":
         command = args.get("command", "")
         return (curl_sends(command, cwd, send_scan) + other_sends(command, cwd, send_scan)
                 + code_sends(command, cwd, send_scan, depth))
     s = tool_send(tool, args, cwd, send_scan, tabs)
     return [s] if s is not None else []
+
+
+def to_session(to: str, payload: str, event: dict | None) -> str | None:
+    """The one-line refusal for a message to another session, or None. `main` and one of this
+    session's own subagents (named by its agent id) are inside the session: nothing leaves it."""
+    peers = peers_module()
+    if to == "main" or peers.subagent(to, (event or {}).get("transcript_path")):
+        return None
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8",
+                                     dir=os.environ.get("TMPDIR") or None) as fh:
+        fh.write(payload)
+        path = fh.name
+    try:
+        status, why = peers.judge(to, Path(path))
+    finally:
+        os.unlink(path)
+    return f"outgoing: {why}" if status else None
 
 
 def check(tool: str, args: dict, cwd: str, send_scan: Path,
@@ -671,6 +793,10 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
     the order's shown blocks, kept under `state`."""
     judged = send_scan_module(send_scan)
     for name, payload, unreadable, unknown, reading in sends(tool, args, cwd, send_scan, tabs):
+        if name.startswith(SESSION):
+            if why := to_session(name[len(SESSION):], payload, event):
+                return why
+            continue
         try:
             where, needs_order = judged.find(name)
         except judged.Broken as broken:

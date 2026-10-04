@@ -1166,7 +1166,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dest", help="the remote URL (or owner/repo) the text is sent to")
     parser.add_argument("--gh-argv", type=Path, help="a file holding the NUL-separated arguments of a gh call")
     parser.add_argument("--dest-area", help=f"the area the text is sent into, or {OUTSIDE} "
-                        "(a service a tool sends to, declared in destinations.txt)")
+                        "(a service a tool sends to, declared in destinations.txt); several areas "
+                        "joined by commas are a place inside each (a session that has read in all)")
     parser.add_argument("--where", action="store_true", help=f"print where the destination lives, or {OUTSIDE}")
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--status", action="store_true")
@@ -1215,6 +1216,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sender = expand(str(args.repo or (sending_repo() if args.span else os.getcwd())))
     here: Path | None = sender
+    also: list[Path] = []
     if args.gh_argv:
         gh_args = [a for a in args.gh_argv.read_bytes().decode("utf-8", "replace").split("\0")]
         here = destination(gh_destinations(gh_args[:-1] if gh_args[-1:] == [""] else gh_args, sender),
@@ -1222,18 +1224,23 @@ def main(argv: list[str] | None = None) -> int:
     elif args.dest and (slug := github_repo(args.dest)):
         here = destination({slug}, sender, areas)
     elif args.dest_area:
-        # A service has no folder: the area it sits in is declared, and stands in by its first root.
-        if args.dest_area == OUTSIDE:
+        # A service has no folder: the area it sits in is declared, and stands in by its first
+        # root. Several areas (`a,b`) are a place inside each: a session that has read in all.
+        names = [n for n in args.dest_area.split(",") if n]
+        if names == [OUTSIDE]:
             here = None
-        elif args.dest_area in areas and areas[args.dest_area]:
-            here = areas[args.dest_area][0]
+        elif names and all(n in areas and areas[n] for n in names):
+            here, also = areas[names[0]][0], [areas[n][0] for n in names[1:]]
         else:
-            say(f"REFUSED — no area named {args.dest_area!r} (areas.txt)")
+            missing = next((n for n in names if not (n in areas and areas[n])), args.dest_area)
+            say(f"REFUSED — no area named {missing!r} (areas.txt)")
             return 2
     if args.where:
         print(here or OUTSIDE)
         return 0
     held = holding(here, areas) if here is not None else frozenset()
+    for place in also:
+        held |= holding(place, areas)
     if held == {EXEMPT}:
         return 0
     # A place carries its own areas' text; an area holding one of them (the company around a
