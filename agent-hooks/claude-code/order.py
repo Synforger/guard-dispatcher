@@ -40,6 +40,13 @@ transcript or the guard's settings (area-guard refuses it), so it cannot make an
 orders.txt holds one phrase per line; a line starting with `!` is a cancelling tail (the words
 right after a phrase that turn it into something else: asking leave, a negation, the past).
 With no file, nothing is ever ordered.
+
+A line starting with `>` is how a relayed message opens. A client that carries messages between
+agent sessions types them into the receiver's terminal, where they are recorded as typed text;
+it opens each with a fixed line, and a message opening with that line is never the operator's:
+it orders nothing, and a turn it opened takes no order. This holds only while agents cannot
+reach the client's own way of typing as the operator: declare that endpoint `block` in
+destinations.txt (a `local:` or `tmux:` name, see outgoing.py).
 """
 
 from __future__ import annotations
@@ -69,18 +76,31 @@ def is_draft(tool: str) -> bool:
     return bool(DRAFT.search(tool.rsplit("__", 1)[-1]))
 
 
-def phrases() -> tuple[list[str], list[str]]:
-    """(order phrases, cancelling tails) from orders.txt; none when it is missing."""
+def settings() -> tuple[list[str], list[str], list[str]]:
+    """(order phrases, cancelling tails, openings of a relayed message) from orders.txt; none
+    when it is missing."""
     if not ORDERS.is_file():
-        return [], []
-    orders, tails = [], []
+        return [], [], []
+    orders, tails, relays = [], [], []
     for line in ORDERS.read_text(encoding="utf-8").splitlines():
         line = line.split("#", 1)[0].strip()
-        if line.startswith("!") and line[1:].strip():
-            tails.append(line[1:].strip())
-        elif line and not line.startswith("!"):
+        if line[:1] in ("!", ">"):
+            if line[1:].strip():
+                (tails if line[0] == "!" else relays).append(line[1:].strip())
+        elif line:
             orders.append(line)
-    return orders, tails
+    return orders, tails, relays
+
+
+def phrases() -> tuple[list[str], list[str]]:
+    return settings()[:2]
+
+
+def relayed(text: str) -> bool:
+    """Whether a message is one a client relayed from another session: it opens with one of the
+    `>` lines of orders.txt. It reaches the terminal as typing does, but the operator did not
+    write it."""
+    return any(text.lstrip().startswith(opening) for opening in settings()[2])
 
 
 def orders_a_send(text: str) -> bool:
@@ -136,9 +156,9 @@ def human(origin) -> bool:
     return isinstance(origin, dict) and origin.get("kind") == "human"
 
 
-def typed(row: dict) -> str | None:
-    """The text of a message the operator typed, or None for any other row: one that opens a
-    turn (a user row), or one typed while the agent works (a queued command)."""
+def entered(row: dict) -> str | None:
+    """The text of a message that came in at the terminal, or None for any other row: one that
+    opens a turn (a user row), or one that came while the agent works (a queued command)."""
     if row.get("type") == "user" and human(row.get("origin")) and not row.get("isMeta"):
         return text_of(content(row))
     queued = row.get("attachment") if row.get("type") == "attachment" else None
@@ -146,6 +166,13 @@ def typed(row: dict) -> str | None:
             and queued.get("commandMode") == "prompt" and human(queued.get("origin")):
         return text_of(blocks(queued.get("prompt")))
     return None
+
+
+def typed(row: dict) -> str | None:
+    """The text of a message the operator typed, or None for any other row. A message a client
+    relayed from another session came in at the terminal too, and is not the operator's."""
+    text = entered(row)
+    return None if text is None or relayed(text) else text
 
 
 def shown_calls(text: str) -> list[dict[str, str]]:
@@ -212,6 +239,11 @@ def ordered(tool: str, args: dict, event: dict | None) -> tuple[str | None, Orde
     # The transcript is written behind the conversation: a message it does not hold yet would
     # leave an older one standing as the last.
     prompt = event.get("prompt_id")
+    opened = next((t for r in history if r.get("type") == "user" and r.get("promptId") == prompt
+                   and (t := entered(r)) is not None), None)
+    if opened is not None and relayed(opened):
+        return ("this turn was opened by a message relayed from another session, not by the operator, "
+                f"and only the operator orders a send. {SHOW}"), None
     holds = history[last].get("promptId") == prompt if history[last].get("type") == "user" \
         else any(r.get("type") == "user" and r.get("promptId") == prompt for r in history)
     if not prompt or not holds:

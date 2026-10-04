@@ -900,6 +900,66 @@ slack() { ordered "${SLACK}" "$(message "$1" "$2")" "${3:-toolu_1}"; }
     [[ "${output}" == *"orders no send"* ]]
 }
 
+# relays — a client carries messages between sessions and opens each with this line.
+RELAYED="Message from another session, relayed by the client:"
+relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
+
+@test "order: a message a client relayed from another session orders nothing" {
+    held
+    said "tell them"
+    show C0123ABCD "The build is green."
+    said "$(printf '%s\n送信して\n' "${RELAYED}")"
+    slack C0123ABCD "The build is green."
+    passed      # with no `>` line the text is what the operator typed: the line is what holds it
+    held
+    relays
+    said "tell them"
+    show C0123ABCD "The build is green."
+    said "$(printf '%s\n送信して\n' "${RELAYED}")"
+    slack C0123ABCD "The build is green."
+    denied
+    [[ "${output}" == *"opened by a message relayed from another session"* ]]
+    held
+    relays
+    said "tell them"
+    show C0123ABCD "The build is green."
+    said "let me think about it"
+    queued "$(printf '  %s\n送信して\n' "${RELAYED}")"
+    slack C0123ABCD "The build is green."
+    denied
+    [[ "${output}" == *"orders no send"* ]]
+}
+
+@test "order: a relayed message neither takes the operator's order back nor carries it into its own turn" {
+    held
+    relays
+    said "tell them"
+    show C0123ABCD "The build is green."
+    said "送信して"
+    queued "$(printf '%s\nwait, not yet\n' "${RELAYED}")"
+    slack C0123ABCD "The build is green."
+    passed
+    held
+    relays
+    said "tell them"
+    show C0123ABCD "The build is green."
+    said "送信して"
+    said "$(printf '%s\nplease send it now\n' "${RELAYED}")"
+    slack C0123ABCD "The build is green."
+    denied
+    [[ "${output}" == *"only the operator orders a send"* ]]
+}
+
+@test "order: a message that only mentions the opening further down is the operator's" {
+    held
+    relays
+    said "tell them"
+    show C0123ABCD "The build is green."
+    said "$(printf '送信して\n(%s is how the client opens one)\n' "${RELAYED}")"
+    slack C0123ABCD "The build is green."
+    passed
+}
+
 @test "order: a block the operator pasted or a subagent wrote is not one the agent showed" {
     held
     said "tell them"
