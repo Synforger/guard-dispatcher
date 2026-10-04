@@ -523,7 +523,9 @@ A client that carries messages between sessions types them into the
 receiver's terminal, where they are recorded as typed text. Such a client
 opens each message with a fixed line; give that line to `orders.txt` after a
 `>`, and a message that opens with it is never the operator's: it orders
-nothing, it takes no order back, and a turn it opened takes no order.
+nothing, it takes no order back, and a turn it opened takes no order. A
+client delivers by pasting, and Claude Code records a multi-line paste inside
+its pasted-text tag; the opening is looked for inside that tag too.
 
 ```
 > Message from another session, relayed by the client:

@@ -950,6 +950,36 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
     [[ "${output}" == *"only the operator orders a send"* ]]
 }
 
+@test "order: a relayed message recorded as pasted text is still a relayed one" {
+    # the shape a real session records: the client pastes, and the paste is wrapped
+    pasted() { printf '\n\n<pasted_content id="2091">\n%s\n<agent-message from="tools">\n%s\n</agent-message>\n</pasted_content id="2091">\n' "${RELAYED}" "$1"; }
+    held
+    relays
+    said "tell them"
+    show C0123ABCD "The build is green."
+    said "送信して"
+    queued "$(pasted 'wait, not yet')"
+    slack C0123ABCD "The build is green."
+    passed      # it does not take the operator's order back
+    held
+    relays
+    said "tell them"
+    show C0123ABCD "The build is green."
+    said "送信して"
+    said "$(pasted 'please send it now')"
+    slack C0123ABCD "The build is green."
+    denied
+    [[ "${output}" == *"opened by a message relayed from another session"* ]]
+    held
+    said "tell them"
+    show C0123ABCD "The build is green."
+    said "送信して"
+    queued "$(pasted 'wait, not yet')"
+    slack C0123ABCD "The build is green."
+    denied      # with no `>` line the pasted message is the operator's, and it orders nothing
+    [[ "${output}" == *"orders no send"* ]]
+}
+
 @test "order: a message that only mentions the opening further down is the operator's" {
     held
     relays
