@@ -66,6 +66,8 @@ BLOCK = re.compile(r"^(`{3,})send[ \t]*\n(.*?)^\1[ \t]*$", re.S | re.M)
 KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):(.*)$")
 # Quoted text and pasted text are what someone else wrote or what is to be sent, not an order.
 QUOTED = re.compile(r"「[^」]*」|『[^』]*』|<pasted_content[^>]*>.*?</pasted_content[^>]*>", re.S)
+# How pasted text opens: Claude Code records a multi-line paste wrapped in this tag.
+PASTED_OPENING = re.compile(r"^\s*<pasted_content[^>\n]*>\s*")
 SENTENCE_END = re.compile(r"[。．！!\n]")
 # A tool whose last part says it drafts keeps the text in the operator's own account.
 DRAFT = re.compile(r"(^|_)drafts?(_|$)", re.I)
@@ -99,8 +101,10 @@ def phrases() -> tuple[list[str], list[str]]:
 def relayed(text: str) -> bool:
     """Whether a message is one a client relayed from another session: it opens with one of the
     `>` lines of orders.txt. It reaches the terminal as typing does, but the operator did not
-    write it."""
-    return any(text.lstrip().startswith(opening) for opening in settings()[2])
+    write it. A client delivers by pasting, so the opening may stand inside the tag pasted text
+    is recorded in."""
+    text = PASTED_OPENING.sub("", text, count=1).lstrip()
+    return any(text.startswith(opening) for opening in settings()[2])
 
 
 def orders_a_send(text: str) -> bool:
