@@ -195,6 +195,43 @@ denied() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"permissionDecision": "d
     [ "${status}" -eq 0 ]
 }
 
+@test "peers.py: what the operator typed goes only where the session it was typed in has read" {
+    printf '%s\n' "fix the wrapped title, the client is waiting" > "${H}/said.txt"
+    said() { run python3 "${PEERS}" --to "$2" --text "${H}/said.txt" --typed-in "$1"; }
+    # typed in a session that has read nothing: it may go anywhere
+    for to in "${ID_PLAIN}" "${ID_COMPANY}" "${ID_CLIENT}" "${ID_BOTH}"; do
+        said "${ID_PLAIN}" "${to}"
+        [ "${status}" -eq 0 ]
+    done
+    # typed inside the client: only to a session that has read inside the client too
+    said "${ID_CLIENT}" "${ID_CLIENT}"
+    [ "${status}" -eq 0 ]
+    said "${ID_CLIENT}" "${ID_BOTH}"
+    [ "${status}" -eq 0 ]
+    said "${ID_CLIENT}" "${ID_PLAIN}"
+    [ "${status}" -eq 1 ]
+    [[ "${output}" == *"what the operator typed in a session that has read inside client"* ]]
+    said "${ID_CLIENT}" "${ID_COMPANY}"
+    [ "${status}" -eq 1 ]
+    # typed in a session that has read both: not to one that has read only one of them
+    said "${ID_BOTH}" "${ID_BOTH}"
+    [ "${status}" -eq 0 ]
+    said "${ID_BOTH}" "${ID_CLIENT}"
+    [ "${status}" -eq 1 ]
+    [[ "${output}" == *"read inside company goes only"* ]]
+    said "${ID_BOTH}" "${ID_COMPANY}"
+    [ "${status}" -eq 1 ]
+    # sessions may be named, and the words are still scanned like any message
+    said company both
+    [ "${status}" -eq 0 ]
+    said both plain
+    [ "${status}" -eq 1 ]
+    printf '%s\n' "${CLIENT_TEXT}" > "${H}/said.txt"
+    said "${ID_PLAIN}" "${ID_COMPANY}"
+    [ "${status}" -eq 1 ]
+    [[ "${output}" == *"it carries text from a private area"* ]]
+}
+
 @test "send-scan: --session-areas judges a payload for a session, and several areas are a place inside each" {
     cat >> "${GUARD_CONFIG_DIR}/areas.txt" <<'AREAS'
 other ~/other

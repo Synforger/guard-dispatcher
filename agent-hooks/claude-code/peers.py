@@ -22,6 +22,14 @@ receiver's terminal, or hands them over some other way) names it by the session'
                                           exit 0 passes, 1 refuses (one line why), 2 cannot judge
 
 A relaying client runs this before it delivers, so every way into it is judged at one place.
+
+What the operator typed in a session is judged apart from what an agent wrote. An agent's words
+are scanned: a paraphrase carries nothing of the documents. The operator's own words are not
+written with that care, and no scan knows what they say, so they are taken to carry every area
+the session they were typed in has read inside: they pass only to a session that has read inside
+each of those areas (and are scanned like any message besides).
+
+    peers.py --to SESSION --text FILE --typed-in SESSION    FILE is what the operator typed there
 """
 
 from __future__ import annotations
@@ -123,12 +131,29 @@ def judge(to: str, payload: Path) -> tuple[int, str]:
     return 0, ""
 
 
+def typed_in(to: str, sender: str) -> tuple[int, str]:
+    """(exit status, the line why) for the operator's own words, typed in `sender`, bound for
+    `to`: they go only where every area `sender` has read inside has been read too."""
+    name = f"session:{REF.sub('', to.strip())}"
+    carried = set().union(*[set(marks(s)) for s in receivers(sender)] or [set()])
+    for session in receivers(to) or [None]:
+        missing = sorted(carried - set(marks(session) if session else []))
+        if missing:
+            return 1, (f"not sent to {name}: what the operator typed in a session that has read inside "
+                       f"{', '.join(missing)} goes only to a session that has read there too")
+    return 0, ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--to", required=True, help="the receiving session: its id, or its name")
     parser.add_argument("--text", required=True, type=Path, help="a file holding the message")
+    parser.add_argument("--typed-in", metavar="SESSION", help="the text is what the operator typed in this "
+                        "session (its id, or its name): it carries every area that session has read inside")
     args = parser.parse_args()
-    status, why = judge(args.to, args.text)
+    status, why = typed_in(args.to, args.typed_in) if args.typed_in else (0, "")
+    if not status:
+        status, why = judge(args.to, args.text)
     if why:
         print(f"peers: {why}", file=sys.stderr)
     return status
