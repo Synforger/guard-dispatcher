@@ -21,6 +21,11 @@
 # ordinary URL segment used by any number of public websites. Such a pattern
 # is prefixed `cs:` in the list and emitted as `(?-i:...)`, which turns case
 # folding back off for that fragment alone.
+#
+# Every other line is emitted as `(?:...)`. The list is one alternation, and a
+# flag written bare in a line is scoped to the group around it: without a group
+# per line, `(?-i)` in front of one token switched case folding off for every
+# line below it, and the names listed there passed in capitals.
 # =============================================================================
 
 build_anon_pattern() {
@@ -33,8 +38,12 @@ build_anon_pattern() {
         line="${line#"${line%%[![:space:]]*}"}"
         line="${line%"${line##*[![:space:]]}"}"
         [ -z "${line}" ] && continue
+        # Every line becomes a group of its own. Joined bare, an inline flag one
+        # line writes (`(?-i)token...`) runs on into every alternative after it.
         if [ "${line#cs:}" != "${line}" ]; then
             line="(?-i:${line#cs:})"
+        else
+            line="(?:${line})"
         fi
         fragments+=("${line}")
     done < "${words_file}"
