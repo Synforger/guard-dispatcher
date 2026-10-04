@@ -58,6 +58,9 @@ enforce_identity=0
 case "${kind}" in
     synforger|no-remote|enforced) enforce_identity=1 ;;
 esac
+# `corpus`: only the private-document scan runs (see dispatcher-common.sh).
+corpus_only=0
+[ "${kind}" = "corpus" ] && corpus_only=1
 
 scanner="$(dispatcher::locate_deep_scanner || true)"
 if [ -z "${scanner}" ]; then
@@ -71,9 +74,14 @@ fi
 
 zero='0000000000000000000000000000000000000000'
 remote_name="${1:-origin}"
+push_url="${2:-}"
 default_branch="$(dispatcher::default_branch)"
 allowed_emails="$(dispatcher::allowed_emails)"
 any_leak=0
+# Tips of the refs this push has already scanned clean, as ^<sha>. A new ref
+# counts them as published: every tag of a history pushed to an empty remote
+# would otherwise re-scan that whole history once per tag.
+scanned=()
 
 # Iterate the captured ref lines. An empty push (no matching refspec)
 # just falls through.
@@ -87,9 +95,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
     # Protected-branch guard: PR merges happen server-side, so a direct
     # local push to main/develop is a process violation. The initial push
-    # that creates the branch on the remote is the one legitimate case.
+    # that creates the branch on the remote is the one legitimate case, and a
+    # remote with no pull requests at all has no such flow to bypass.
     # GUARD_ALLOW_PROTECTED_PUSH=1 is the audited escape hatch.
     if [ "${enforce_identity}" = "1" ] \
+        && dispatcher::merges_through_prs "${push_url}" \
         && dispatcher::protected_branch "${remote_ref}" \
         && [ "${remote_sha}" != "${zero}" ] \
         && [ "${GUARD_ALLOW_PROTECTED_PUSH:-0}" != "1" ]; then
@@ -100,20 +110,22 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 
     # Ref-name scan: a branch or tag name is published as-is on the remote,
     # so it crosses the same boundary as file content.
-    ref_scanner="$(dispatcher::locate_anon_scanner || true)"
-    if [ -z "${ref_scanner}" ]; then
-        printf '[pre-push] anon-scan.sh could not be resolved (repo-local or guard bundled) — re-run install.sh from a healthy checkout\n' >&2
-        exit 1
-    fi
-    ref_tmp="$(mktemp)"
-    printf '%s\n' "${local_ref}" > "${ref_tmp}"
-    if ! ANON_SCAN_PATHS="${ref_tmp}" bash "${ref_scanner}" >/dev/null 2>&1; then
-        printf '[pre-push] ref name %s matches the word list — rename the branch/tag before pushing\n' "${local_ref}" >&2
+    if [ "${corpus_only}" = "0" ]; then
+        ref_scanner="$(dispatcher::locate_anon_scanner || true)"
+        if [ -z "${ref_scanner}" ]; then
+            printf '[pre-push] anon-scan.sh could not be resolved (repo-local or guard bundled) — re-run install.sh from a healthy checkout\n' >&2
+            exit 1
+        fi
+        ref_tmp="$(mktemp)"
+        printf '%s\n' "${local_ref}" > "${ref_tmp}"
+        if ! ANON_SCAN_PATHS="${ref_tmp}" bash "${ref_scanner}" >/dev/null 2>&1; then
+            printf '[pre-push] ref name %s matches the word list — rename the branch/tag before pushing\n' "${local_ref}" >&2
+            rm -f "${ref_tmp}"
+            any_leak=1
+            continue
+        fi
         rm -f "${ref_tmp}"
-        any_leak=1
-        continue
     fi
-    rm -f "${ref_tmp}"
 
     if [ "${remote_sha}" = "${zero}" ]; then
         # New remote branch — scan only the truly-outgoing commits, i.e.
@@ -123,12 +135,14 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         # between the default branch and a feature tip never become
         # ancestors of the default branch), tripping the audit on every
         # new branch even when the actual delta is clean.
-        outgoing_count="$(git rev-list --count "${local_sha}" --not --remotes="${remote_name}" 2>/dev/null || echo 0)"
+        # Commits an earlier ref of this push already scanned count as public.
+        outgoing_count="$(git rev-list --count "${local_sha}" ${scanned[@]+"${scanned[@]}"} --not --remotes="${remote_name}" 2>/dev/null || echo 0)"
         if [ "${outgoing_count}" -eq 0 ]; then
-            # Tip is already reachable on the remote — nothing outgoing.
+            # Tip is already reachable on the remote (or was scanned with an
+            # earlier ref of this push) — nothing outgoing.
             continue
         fi
-        bases="$(git rev-list --boundary "${local_sha}" --not --remotes="${remote_name}" 2>/dev/null | sed -n 's/^-//p' | sort -u)"
+        bases="$(git rev-list --boundary "${local_sha}" ${scanned[@]+"${scanned[@]}"} --not --remotes="${remote_name}" 2>/dev/null | sed -n 's/^-//p' | sort -u)"
         base_count="$(printf '%s' "${bases}" | grep -c . || true)"
         if [ "${base_count}" -eq 1 ]; then
             # Exactly one public attachment point — express it as the
@@ -139,14 +153,11 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             # scan the entire new history (safe side).
             revspec="${local_sha}"
         else
-            # Multiple public attachment points (a merge of published
-            # lines): a two-dot range cannot express the exact outgoing
-            # set, so keep the default-branch approximation as the safe
-            # over-scan.
-            revspec="origin/${default_branch}..${local_sha}"
-            if ! git rev-parse "origin/${default_branch}" >/dev/null 2>&1; then
-                revspec="${local_sha}"
-            fi
+            # Several public attachment points (a merge of published lines,
+            # a squash-merge promotion): no two-dot range expresses the
+            # outgoing set, so name the tip and exclude every base. The
+            # scanners pass these words to git as they are.
+            revspec="${local_sha}$(printf ' ^%s' ${bases})"
         fi
     else
         if git rev-parse --verify "${remote_sha}^{commit}" >/dev/null 2>&1; then
@@ -169,7 +180,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # fail a check with nothing left to protect). See
     # dispatcher::history_identity_exempt_re for why it is matched, not listed.
     if [ "${enforce_identity}" = "1" ]; then
-        bad_ids="$(git log "${revspec}" --pretty='format:%ae%n%ce' 2>/dev/null \
+        read -ra revs <<< "${revspec}"
+        bad_ids="$(git log "${revs[@]}" --pretty='format:%ae%n%ce' 2>/dev/null \
             | sort -u \
             | grep -Fxvf <(printf '%s\n' "${allowed_emails}") \
             | grep -Ev "$(dispatcher::history_identity_exempt_re)" || true)"
@@ -182,6 +194,28 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             any_leak=1
             continue
         fi
+    fi
+
+    # Text copied out of a private document is on no word list; compare the
+    # outgoing lines with the documents of every area the destination is
+    # outside of (= a public GitHub repo is outside all of them, wherever its
+    # clone lives).
+    # GUARD_CORPUS_SKIP=1 is the audited escape hatch for a single push.
+    if [ "${GUARD_CORPUS_SKIP:-0}" != "1" ]; then
+        corpus="$(dispatcher::locate_scanner "corpus-scan.py" || true)"
+        if [ -z "${corpus}" ]; then
+            printf '[pre-push] corpus-scan.py could not be resolved — re-run install.sh from a healthy checkout\n' >&2
+            exit 1
+        fi
+        if ! python3 "${corpus}" --range "${revspec}" --dest "${push_url}"; then
+            any_leak=1
+            continue
+        fi
+    fi
+
+    if [ "${corpus_only}" = "1" ]; then
+        [ "${any_leak}" -eq 0 ] && scanned+=("^${local_sha}")
+        continue
     fi
 
     printf '[pre-push] anon-audit-deep --range %s (ref %s)\n' "${revspec}" "${local_ref}" >&2
@@ -211,6 +245,10 @@ HINT
             any_leak=1
         fi
     fi
+
+    # Remember the tip only while everything so far is clean: a refused push
+    # has nothing left to save time on.
+    [ "${any_leak}" -eq 0 ] && scanned+=("^${local_sha}")
 done <<EOF_REFS
 ${ref_lines}
 EOF_REFS

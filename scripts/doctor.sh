@@ -10,9 +10,9 @@
 # is quietly skipped.
 #
 # Usage:
-#   git-hooks/doctor.sh                       # scan ~/.git-hooks + CWD
-#   git-hooks/doctor.sh <repo>... [<repo>...] # scan the given repos
-#   git-hooks/doctor.sh --glob '<projects-root>/*'     # shell glob
+#   scripts/doctor.sh                       # scan ~/.git-hooks + CWD
+#   scripts/doctor.sh <repo>... [<repo>...] # scan the given repos
+#   scripts/doctor.sh --glob '<projects-root>/*'     # shell glob
 #
 # Exit code:
 #   0 — nothing wrong (dispatcher installed globally + every scanned repo is
@@ -23,11 +23,18 @@
 
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Installed as ~/.git-hooks/doctor.sh (a symlink), so resolve through it to
+# find the checkout this copy belongs to.
+src="${BASH_SOURCE[0]}"
+while [ -L "${src}" ]; do
+    link="$(readlink "${src}")"
+    case "${link}" in /*) src="${link}" ;; *) src="$(dirname "${src}")/${link}" ;; esac
+done
+GUARD_ROOT="$(cd -P "$(dirname "${src}")/.." && pwd)"
 EXPECTED_HOOKS_DIR="${HOME}/.git-hooks"
 
-# shellcheck source=lib/dispatcher-common.sh
-. "${SCRIPT_DIR}/lib/dispatcher-common.sh"
+# shellcheck source=../git-hooks/lib/dispatcher-common.sh
+. "${GUARD_ROOT}/git-hooks/lib/dispatcher-common.sh"
 
 RED=$'\033[0;31m'
 YEL=$'\033[0;33m'
@@ -65,6 +72,71 @@ check_global() {
         printf '  %s✗%s operator master missing (%s) — run bootstrap-machine.sh\n' "${RED}" "${NC}" "${truth}"
         findings=$((findings + 1))
     fi
+
+    # Private documents are optional: a machine without areas is told so, not failed.
+    local areas="${GUARD_CONFIG_DIR:-${HOME}/.config/guard}/areas.txt"
+    if [ -f "${areas}" ]; then
+        printf '  %s✓%s private areas defined (%s)\n' "${GRN}" "${NC}" "${areas}"
+        # Counts only: doctor runs under bootstrap, install and agents, and an area's name or a
+        # document's path says what the area holds. `corpus-scan.py --status` names them.
+        python3 "$(dispatcher::guard_root)/scanners/corpus-scan.py" --summary 2>&1 | sed 's/^/    /'
+    else
+        printf '  %s-%s no private areas (%s) — text copied from documents is NOT checked\n' "${DIM}" "${NC}" "${areas}"
+    fi
+
+    check_agent "${areas}"
+}
+
+# The agent-side entry guard: installed with the hooks, registered per Claude
+# Code config dir. Unregistered is a gap only where there are areas to leave.
+check_agent() {
+    local areas="$1"
+    local hook="${EXPECTED_HOOKS_DIR}/agent-hooks/claude-code/area-guard.py"
+    local off="${GUARD_CONFIG_DIR:-${HOME}/.config/guard}/agent-off"
+    if [ -f "${hook}" ] && [ -e "${off}" ]; then
+        printf '  %s-%s agent entry guard installed, switched OFF by the operator (%s; remove it to switch on)\n' "${YEL}" "${NC}" "${off}"
+    elif [ -f "${hook}" ]; then
+        printf '  %s✓%s agent entry guard installed (%s)\n' "${GRN}" "${NC}" "${hook}"
+    else
+        printf '  %s✗%s agent entry guard missing (%s) — re-run install.sh\n' "${RED}" "${NC}" "${hook}"
+        findings=$((findings + 1))
+    fi
+
+    local settings found=0
+    for settings in ${CLAUDE_CONFIG_DIR:+"${CLAUDE_CONFIG_DIR}/settings.json"} "${HOME}"/.claude*/settings.json; do
+        [ -f "${settings}" ] || continue
+        found=1
+        if python3 - "${settings}" <<'PY'
+import json
+import sys
+
+try:
+    settings = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    sys.exit(1)
+groups = [g for g in settings.get("hooks", {}).get("PreToolUse", [])
+          if any(".git-hooks/agent-hooks/claude-code/area-guard.py" in h.get("command", "")
+                 for h in g.get("hooks", []))]
+if not groups:
+    sys.exit(1)
+# Registered for a list of tools only: a send through any other tool is never asked about.
+sys.exit(0 if any(g.get("matcher") in ("*", "", None) for g in groups) else 3)
+PY
+        then
+            printf '  %s✓%s agent entry guard registered (%s)\n' "${GRN}" "${NC}" "${settings}"
+        elif [ "$?" -eq 3 ]; then
+            printf '  %s✗%s agent entry guard registered for some tools only (%s) — sends through the others are not judged; run install.sh --claude-settings %s\n' "${RED}" "${NC}" "${settings}" "${settings}"
+            findings=$((findings + 1))
+        elif [ -f "${areas}" ]; then
+            printf '  %s✗%s agent entry guard not registered (%s) — an agent can carry area text out; run install.sh --claude-settings %s\n' "${RED}" "${NC}" "${settings}" "${settings}"
+            findings=$((findings + 1))
+        else
+            printf '  %s-%s agent entry guard not registered (%s) — no areas to keep it inside\n' "${DIM}" "${NC}" "${settings}"
+        fi
+    done
+    if [ "${found}" -eq 0 ]; then
+        printf '  %s-%s no Claude Code settings found — agent entry guard not registered\n' "${DIM}" "${NC}"
+    fi
 }
 
 check_repo() {
@@ -86,6 +158,10 @@ check_repo() {
         printf ' %slocal-hooksPath=%s%s' "${YEL}" "${local_hp}" "${NC}"
     fi
 
+    if [ "${kind}" = "corpus" ]; then
+        printf ' %s(private-document scan only)%s\n' "${DIM}" "${NC}"
+        return
+    fi
     if [ "${kind}" = "other" ] || [ "${kind}" = "exempt" ]; then
         printf ' %s(no enforcement expected)%s\n' "${DIM}" "${NC}"
         return

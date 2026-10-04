@@ -33,6 +33,28 @@ if [ "${kind}" = "exempt" ]; then
     exit "${local_status}"
 fi
 
+# `corpus`: only the private-document scan, over the lines this commit adds,
+# against the areas the repository sits outside of (a client's text staged into
+# the company's notes). GUARD_CORPUS_SKIP=1 is the audited escape hatch.
+if [ "${kind}" = "corpus" ]; then
+    if [ "${GUARD_CORPUS_SKIP:-0}" = "1" ]; then
+        exit "${local_status}"
+    fi
+    corpus="$(dispatcher::locate_scanner "corpus-scan.py" || true)"
+    if [ -z "${corpus}" ]; then
+        echo "[pre-commit] corpus-scan.py could not be resolved — re-run install.sh from a healthy checkout" >&2
+        exit 1
+    fi
+    added="$(mktemp -t guard-added.XXXXXX)"
+    git diff --cached -U0 --no-color --diff-filter=ACMRT | awk '/^\+\+\+ /{next} /^\+/{print substr($0, 2)}' > "${added}"
+    if [ -s "${added}" ] && ! python3 "${corpus}" --text "${added}" --repo "$(git rev-parse --show-toplevel)"; then
+        rm -f "${added}"
+        exit 1
+    fi
+    rm -f "${added}"
+    exit "${local_status}"
+fi
+
 # Identity check only where a specific committer identity is required
 # (synforger / enforced / fresh no-remote). Third-party `other` repos keep
 # their own author identity — never force ours onto them.

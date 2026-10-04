@@ -21,8 +21,9 @@
 # gh CLI 未 install / 未認証なら 7-11 を skip 警告。 git 履歴系 1-6 は git
 # だけで実行可能。
 #
-# --range <A>..<B> (= pre-push mode):
+# --range <A>..<B> | "<tip> ^<base> [^<base>...]" (= pre-push mode):
 #   push 境界の壁として毎 push で走らせる用途。 range 内 commit だけを対象に
+#   (= 送り先に届く所が複数ある時は、 除く tip を ^ で並べた形で受ける)
 #   source 2/3/6 を走らせ、 それ以外 (1/4/5/7-11) は skip する:
 #     - 1 (tracked files) は pre-commit 段階で staged 単位に scan 済で二重
 #     - 4/5 は push 境界と別軸 (= 週次 belt-and-suspenders で拾う)
@@ -33,6 +34,8 @@
 # 使い方:
 #   bash .tooling/local-ci/anon-audit-deep.sh
 #   bash .tooling/local-ci/anon-audit-deep.sh --range origin/main..HEAD
+#   bash .tooling/local-ci/anon-audit-deep.sh --record-known FILE   (= 今の検出を既知として記録)
+#   bash .tooling/local-ci/anon-audit-deep.sh --known FILE          (= 記録より後に出た分だけを赤に)
 #   task audit:deep    (= Taskfile 経由、 full mode)
 #
 # Exit:
@@ -45,8 +48,18 @@ set -uo pipefail
 
 RANGE=""
 GITHUB_SINCE=""
+KNOWN=""
+RECORD=""
 while [ $# -gt 0 ]; do
     case "$1" in
+        --known)
+            shift
+            KNOWN="${1:-}"
+            ;;
+        --record-known)
+            shift
+            RECORD="${1:-}"
+            ;;
         --range)
             shift
             RANGE="${1:-}"
@@ -77,11 +90,28 @@ while [ $# -gt 0 ]; do
     shift
 done
 
+if [ -n "${KNOWN}" ] && [ -n "${RECORD}" ]; then
+    echo "error: give --known or --record-known, not both" >&2
+    exit 2
+fi
+if [ -n "${RANGE}" ] && { [ -n "${KNOWN}" ] || [ -n "${RECORD}" ]; }; then
+    echo "error: --known / --record-known audit the whole repository; --range is a push range" >&2
+    exit 2
+fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The scan target is the repository the caller stands in — not the guard
 # checkout this script lives in. Hooks invoke scanners with cwd already at
 # the target repo root; direct callers may be anywhere inside the repo.
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "${PROJECT_ROOT}" ] && [ "$(git rev-parse --is-bare-repository 2>/dev/null)" = "true" ]; then
+    # A bare repository has history but no files: a push range can be scanned,
+    # the full audit (which reads the tracked files) cannot be called clean.
+    if [ -z "${RANGE}" ]; then
+        echo "error: a bare repository has no tracked files to audit; use --range" >&2
+        exit 2
+    fi
+    PROJECT_ROOT="$(git rev-parse --absolute-git-dir)"
+fi
 if [ -z "${PROJECT_ROOT}" ]; then
     echo "error: not inside a git repository" >&2
     exit 2
@@ -139,12 +169,14 @@ fi
 
 # range mode の検証: revspec を git rev-list に食わせて合法か確認。 空 range
 # (= push 対象 commit ゼロ) は clean 扱いで即 exit 0。
+RANGE_REVS=()
 if [ -n "${RANGE}" ]; then
-    if ! git rev-list "${RANGE}" >/dev/null 2>&1; then
+    read -ra RANGE_REVS <<< "${RANGE}"
+    if ! git rev-list "${RANGE_REVS[@]}" >/dev/null 2>&1; then
         echo "error: invalid --range revspec: ${RANGE}" >&2
         exit 2
     fi
-    n_commits="$(git rev-list --count "${RANGE}" 2>/dev/null || echo 0)"
+    n_commits="$(git rev-list --count "${RANGE_REVS[@]}" 2>/dev/null || echo 0)"
     if [ "${n_commits}" -eq 0 ]; then
         printf '(deep audit: push range %s has no commits, skipping)\n' "${RANGE}" >&2
         exit 0
@@ -157,6 +189,17 @@ fi
 # を全角表記がすり抜けるのを防ぐ)。 (?i) で大小も畳む。
 scan_perl() {
     perl -CSD -MUnicode::Normalize -MEncode -ne 'BEGIN { my $pat = NFKC(decode_utf8($ENV{ANON_PATTERN})); $re = qr{(?i)$pat} } my $n = NFKC($_); if ($n =~ /$re/) { print "$&\n" }' 2>/dev/null | sort -u
+}
+
+# scan_lines — like scan_perl, but prints each matching line whole. Sources that cannot be cut
+# by time (names, metadata, releases) are known by the line, so a new branch or release that
+# carries a known word is still a new line.
+scan_lines() {
+    perl -CSD -MUnicode::Normalize -MEncode -ne 'BEGIN { my $pat = NFKC(decode_utf8($ENV{ANON_PATTERN})); $re = qr{(?i)$pat} } my $n = NFKC($_); chomp $n; if ($n =~ /$re/) { print "$n\n" }' 2>/dev/null | sort -u
+}
+# scan_untimed — what a source without a time cut reports: whole lines once known findings are in play.
+scan_untimed() {
+    if [ -n "${KNOWN}" ]; then scan_lines; else scan_perl; fi
 }
 
 count_hits() {
@@ -172,6 +215,59 @@ count_hits() {
 }
 
 total=0
+
+# --- findings accepted as known (--known / --record-known) ---
+# A repository whose old findings will not be rewritten (history, PR text) records them once
+# as known; afterwards only what appears later is red. What "later" means per source:
+#   - history, commit messages, authors (2/3/6): commits not reachable from the ref tips
+#     recorded (`tip <sha>`), so a new commit carrying a known word is still red
+#   - PR / Issue text and run records (7-8/11): records updated or created after `since`
+#   - branch names, tags, repo metadata, releases (4/5/9/10) cannot be cut by time: the
+#     matches recorded (`hit <source>\t<match>`) are taken out, any other match is red
+#   - tracked files (1) are always scanned whole: a file in the tree is fixed, not accepted
+# --record-known writes the file from the repository as it stands, then audits against it.
+RECORD_TMP=""
+if [ -n "${RECORD}" ]; then
+    mkdir -p "$(dirname "${RECORD}")" || exit 2
+    RECORD_TMP="$(mktemp -t audit-known.XXXXXX)" || exit 2
+    {
+        printf '# findings accepted as known by anon-audit-deep.sh --record-known (%s)\n' "${PROJECT_ROOT}"
+        printf 'since %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        git rev-list --all --no-walk 2>/dev/null | sed 's/^/tip /'
+    } > "${RECORD_TMP}"
+    KNOWN="${RECORD_TMP}"
+elif [ -n "${KNOWN}" ] && [ ! -f "${KNOWN}" ]; then
+    echo "error: --known file not found: ${KNOWN}" >&2
+    exit 2
+fi
+HISTORY_REVS=(--all)
+if [ -n "${KNOWN}" ]; then
+    for sha in $(sed -n 's/^tip //p' "${KNOWN}"); do
+        git cat-file -e "${sha}^{commit}" 2>/dev/null && HISTORY_REVS+=("^${sha}")
+    done
+    known_since="$(sed -n 's/^since //p' "${KNOWN}" | head -1)"
+    if [ -n "${known_since}" ] && { [ -z "${GITHUB_SINCE}" ] || [[ "${known_since}" > "${GITHUB_SINCE}" ]]; }; then
+        GITHUB_SINCE="${known_since}"
+    fi
+fi
+
+# known_filter <source> <hits> — the hits not accepted as known for that source. While
+# recording, every hit is written down as known instead, and none is left.
+known_filter() {
+    local label="$1" hits="$2" h
+    if [ -z "${KNOWN}" ]; then
+        printf '%s' "${hits}"
+        return
+    fi
+    printf '%s\n' "${hits}" | while IFS= read -r h; do
+        [ -n "${h}" ] || continue
+        if [ -n "${RECORD_TMP}" ]; then
+            printf 'hit %s\t%s\n' "${label}" "${h}" >> "${RECORD_TMP}"
+        elif ! grep -qxF "$(printf 'hit %s\t%s' "${label}" "${h}")" "${KNOWN}"; then
+            printf '%s\n' "${h}"
+        fi
+    done
+}
 
 # --- source 1: tracked file (= anon-scan.sh 経由) ---
 # range mode では skip (= pre-commit 段階で既に staged 単位に scan 済)
@@ -195,9 +291,9 @@ printf '
 === source 2/11: git history blob (all diffs of all commits) ===
 ' >&2
 if [ -n "${RANGE}" ]; then
-    hits=$(git log "${RANGE}" -p 2>/dev/null | grep -E '^\+' | scan_perl)
+    hits=$(git log "${RANGE_REVS[@]}" -p 2>/dev/null | grep -E '^\+' | scan_perl)
 else
-    hits=$(git log --all -p 2>/dev/null | scan_perl)
+    hits=$(git log "${HISTORY_REVS[@]}" -p 2>/dev/null | scan_perl)
 fi
 n=$(count_hits "git history blob" "${hits}")
 total=$((total + n))
@@ -205,9 +301,9 @@ total=$((total + n))
 # --- source 3: commit message ---
 printf '\n=== source 3/11: commit messages ===\n' >&2
 if [ -n "${RANGE}" ]; then
-    hits=$(git log "${RANGE}" --pretty='format:%H %s%n%b' 2>/dev/null | scan_perl)
+    hits=$(git log "${RANGE_REVS[@]}" --pretty='format:%H %s%n%b' 2>/dev/null | scan_perl)
 else
-    hits=$(git log --all --pretty='format:%H %s%n%b' 2>/dev/null | scan_perl)
+    hits=$(git log "${HISTORY_REVS[@]}" --pretty='format:%H %s%n%b' 2>/dev/null | scan_perl)
 fi
 n=$(count_hits "commit messages" "${hits}")
 total=$((total + n))
@@ -216,7 +312,8 @@ total=$((total + n))
 # range mode では skip (= push 境界と別軸、 週次 audit で拾う)
 if [ -z "${RANGE}" ]; then
     printf '\n=== source 4/11: branch names ===\n' >&2
-    hits=$(git branch -a 2>/dev/null | scan_perl)
+    hits=$(git branch -a 2>/dev/null | scan_untimed)
+    hits=$(known_filter "branch names" "${hits}")
     n=$(count_hits "branch names" "${hits}")
     total=$((total + n))
 fi
@@ -226,7 +323,8 @@ fi
 if [ -z "${RANGE}" ]; then
     printf '\n=== source 5/11: tag names + annotations ===\n' >&2
     tag_text=$(git tag -l 2>/dev/null; for t in $(git tag -l 2>/dev/null); do git tag -l --format='%(contents)' "$t" 2>/dev/null; done)
-    hits=$(printf "%s" "${tag_text}" | scan_perl)
+    hits=$(printf "%s" "${tag_text}" | scan_untimed)
+    hits=$(known_filter "tags" "${hits}")
     n=$(count_hits "tags" "${hits}")
     total=$((total + n))
 fi
@@ -234,9 +332,9 @@ fi
 # --- source 6: author + committer ---
 printf '\n=== source 6/11: author + committer email / name ===\n' >&2
 if [ -n "${RANGE}" ]; then
-    hits=$(git log "${RANGE}" --pretty='format:%an <%ae> / %cn <%ce>' 2>/dev/null | scan_perl)
+    hits=$(git log "${RANGE_REVS[@]}" --pretty='format:%an <%ae> / %cn <%ce>' 2>/dev/null | scan_perl)
 else
-    hits=$(git log --all --pretty='format:%an <%ae> / %cn <%ce>' 2>/dev/null | scan_perl)
+    hits=$(git log "${HISTORY_REVS[@]}" --pretty='format:%an <%ae> / %cn <%ce>' 2>/dev/null | scan_perl)
 fi
 n=$(count_hits "author/committer" "${hits}")
 total=$((total + n))
@@ -288,19 +386,27 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
             fi
 
             # Thin wrapper that propagates the API call's exit status instead
-            # of letting an error collapse into empty output.
+            # of letting an error collapse into empty output. Only stdout is
+            # what GitHub holds: stderr carries what the credential path says
+            # on the way (direnv names the .envrc it loads), so it is shown on
+            # failure and never scanned.
             gh_capture() {
-                local out rc
+                local out rc err
+                local -a run
                 case "${GH_MODE}" in
-                    default) out="$(gh "$@" 2>&1)"; rc=$? ;;
-                    keyring) out="$(env -u GH_TOKEN -u GITHUB_TOKEN gh "$@" 2>&1)"; rc=$? ;;
-                    direnv)  out="$(direnv exec "${PROJECT_ROOT}" gh "$@" 2>&1)"; rc=$? ;;
+                    default) run=(gh) ;;
+                    keyring) run=(env -u GH_TOKEN -u GITHUB_TOKEN gh) ;;
+                    direnv)  run=(direnv exec "${PROJECT_ROOT}" gh) ;;
                     *)       return 1 ;;
                 esac
+                err="$(mktemp -t anon-audit-gh.XXXXXX)"
+                out="$("${run[@]}" "$@" 2>"${err}")"; rc=$?
                 if [ "${rc}" -ne 0 ]; then
-                    printf '%s\n' "${out}" | sed 's/^/      /' >&2
+                    sed 's/^/      /' "${err}" >&2
+                    rm -f "${err}"
                     return 1
                 fi
+                rm -f "${err}"
                 printf '%s\n' "${out}"
             }
 
@@ -354,7 +460,8 @@ ${api_out}"
             # --- source 9: repo description + topics + homepage ---
             printf '\n=== source 9/11: GitHub repo description / topics / homepage ===\n' >&2
             if api_out=$(gh_capture repo view "${repo}" --json description,repositoryTopics,homepageUrl); then
-                hits=$(printf '%s' "${api_out}" | scan_perl)
+                hits=$(printf '%s' "${api_out}" | scan_untimed)
+                hits=$(known_filter "GitHub repo metadata" "${hits}")
                 n=$(count_hits "GitHub repo metadata" "${hits}")
                 total=$((total + n))
             else
@@ -364,7 +471,8 @@ ${api_out}"
             # --- source 10: releases ---
             printf '\n=== source 10/11: GitHub releases ===\n' >&2
             if api_out=$(gh_capture api --paginate "repos/${repo}/releases?per_page=100" --jq '.[] | .name, .body, .tag_name'); then
-                hits=$(printf '%s' "${api_out}" | scan_perl)
+                hits=$(printf '%s' "${api_out}" | scan_untimed)
+                hits=$(known_filter "GitHub releases" "${hits}")
                 n=$(count_hits "GitHub releases" "${hits}")
                 total=$((total + n))
             else
@@ -397,6 +505,9 @@ ${api_out}"
 fi
 
 printf '\n' >&2
+if [ -n "${RECORD_TMP}" ]; then
+    mv "${RECORD_TMP}" "${RECORD}" && log_ok "known findings recorded: ${RECORD}"
+fi
 if [ "${total}" -eq 0 ]; then
     if [ -n "${RANGE}" ]; then
         log_ok "deep audit (push range): clean (0 hits)"

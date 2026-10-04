@@ -29,7 +29,9 @@ build_anon_pattern() {
 
     while IFS= read -r line || [ -n "${line}" ]; do
         line="${line%%#*}"                               # drop comments
-        line="$(printf '%s' "${line}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        # Trim in the shell: a sed per line cost most of a second on every scan.
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
         [ -z "${line}" ] && continue
         if [ "${line#cs:}" != "${line}" ]; then
             line="(?-i:${line#cs:})"

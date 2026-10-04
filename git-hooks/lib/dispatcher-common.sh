@@ -15,6 +15,11 @@
 #
 # Emits one of:
 #   enforced   — local opt-in via `git config guard.scope enforced`
+#   corpus     — `guard.scope corpus`: a repository whose text holds the word
+#                lists' words by design (an agent's own notes) — no word or
+#                identity scan, but the private-document scan still runs:
+#                on what a commit adds, against the areas the repository sits
+#                outside of, and on what a push sends, against its destination
 #   exempt     — opt-out via `guard.scope=exempt`, or the repo working tree
 #                sits under a prefix configured via `guard.exemptPrefix`
 #                (blanket opt-out for a private state tree whose contents
@@ -55,6 +60,10 @@ dispatcher::detect_repo_kind() {
     fi
     if [ "${scope}" = "exempt" ]; then
         echo "exempt"
+        return 0
+    fi
+    if [ "${scope}" = "corpus" ]; then
+        echo "corpus"
         return 0
     fi
 
@@ -218,6 +227,19 @@ dispatcher::protected_branch() {
         refs/heads/main|refs/heads/develop) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# Does this push go to a host where merges happen through pull requests?
+#
+# The protected-branch refusal exists because such merges happen server-side:
+# a direct local push to main/develop there skips the review. A remote with no
+# pull requests at all (a plain ssh host holding a rail's history) has no such
+# flow, and refusing there only makes the sanctioned direct push impossible.
+# Unknown (= no URL given) counts as a pull-request host, the safe side.
+dispatcher::merges_through_prs() {
+    local url="${1:-}"
+    [ -z "${url}" ] && return 0
+    printf '%s' "${url}" | grep -Eqi '(^|[@/.])github[^/:]*[/:]'
 }
 
 # Return the name of the default branch (best effort, no origin fetch).
