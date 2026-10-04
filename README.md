@@ -448,6 +448,18 @@ inside a client can tell the session that owns the tool, in its own words.
   # exit 0 passes, 1 refuses (one line why on stderr), 2 cannot judge
   ```
 
+What the operator typed in a session is judged apart from what an agent wrote
+there. An agent's message is scanned, and a paraphrase carries nothing of the
+documents; the operator's own words are not written with that care, and no
+scan knows what they say. They are taken to carry every area the session they
+were typed in has read inside, so a client that passes them on to another
+session asks with `--typed-in`:
+
+```sh
+python3 ~/.git-hooks/agent-hooks/claude-code/peers.py --to <receiver> --text <file> --typed-in <the session they were typed in>
+# passes only to a session that has read inside each of those areas; scanned like any message besides
+```
+
 #### What stays on this machine
 
 A service on the loopback host and a tmux session are not ways out of the
