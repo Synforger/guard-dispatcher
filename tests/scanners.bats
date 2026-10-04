@@ -89,6 +89,42 @@ CASE_SENTINEL='XCaseX7q3z'
     [ "$status" -ne 0 ]
 }
 
+# --- a flag written in one line stays in that line ------------------------------
+# The list is joined into one alternation. An inline flag written bare in a
+# line — `(?-i)` in front of a token whose case is fixed — used to run on into
+# every alternative after it: one such line, and every name listed below it was
+# matched case-sensitively, so the name in capitals passed every scan. It was
+# found on a real list, eleven lines into a section of key formats, with the
+# names of whole sections below it going through unseen. Each line is now a
+# group of its own.
+
+@test "anon-scan: a flag opened in one line does not run on into the lines after it" {
+    mk_repo other
+    printf '(?-i)XTokX[0-9]{4}\n%s\n' "${SENTINEL}" > "${ANON_WORDS_FILE}"
+    printf '%s\n' "$(printf '%s' "${SENTINEL}" | tr '[:lower:]' '[:upper:]')" > upper.txt
+    ANON_SCAN_PATHS="$(pwd)/upper.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+}
+
+@test "anon-scan: the flag still holds inside the line that wrote it" {
+    mk_repo other
+    printf '(?-i)XTokX[0-9]{4}\n%s\n' "${SENTINEL}" > "${ANON_WORDS_FILE}"
+    printf 'xtokx1234\n' > lower.txt
+    ANON_SCAN_PATHS="$(pwd)/lower.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -eq 0 ]
+    printf 'XTokX1234\n' > exact.txt
+    ANON_SCAN_PATHS="$(pwd)/exact.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+}
+
+@test "anon-scan: a line that lists alternatives of its own keeps every one of them" {
+    mk_repo other
+    printf 'XAltOneX|XAltTwoX\n' > "${ANON_WORDS_FILE}"
+    printf 'the second: xalttwox\n' > second.txt
+    ANON_SCAN_PATHS="$(pwd)/second.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    [ "$status" -ne 0 ]
+}
+
 # --- text-bearing data formats stay in scope ----------------------------------
 # .csv and .ipynb are text with real leak surface (free-text columns,
 # notebook outputs with usernames / local paths) — they must be scanned,
