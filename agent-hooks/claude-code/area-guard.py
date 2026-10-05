@@ -38,6 +38,15 @@ session's transcript (`~/.claude*/projects/**/*.jsonl`), through Edit / Write or
 
 Nothing is printed when a call passes, so nothing lands in the agent's context. A refusal is one
 line. Marks are kept in `~/.cache/area-guard/<session_id>.json`, so they outlive compaction.
+
+A script the agent runs is not read: the guard sees the command that starts it, not what it
+writes. A script that writes where its arguments say asks before it writes:
+
+    area-guard.py may-write <session_id> <path>...
+
+It exits 0 when the session may write every path (the same judgement an Edit of the path gets),
+and 1 with one line per refused path on stderr. It only answers: it marks nothing and changes
+nothing.
 """
 
 from __future__ import annotations
@@ -769,6 +778,30 @@ def bypass(command: str, cwd: str, areas) -> str | None:
     return None
 
 
+def ask(argv: list[str]) -> int:
+    """`may-write <session_id> <path>...`: whether the session may write each path, judged as the hook
+    judges an Edit of it. For a script that writes where its arguments say -- the hook reads the
+    command that starts a script, never the script, and a relative path it is handed resolves where
+    the script runs, not where the session stands. A relative path here resolves from the caller's
+    working directory. Exit 0: every path may be written (also with the entry guard off, with no
+    areas, and for a session with no marks). Exit 1: one line per refused path on stderr. Exit 2: usage."""
+    if len(argv) < 3 or argv[0] != "may-write" or not argv[1]:
+        print("usage: area-guard.py may-write <session_id> <path>...", file=sys.stderr)
+        return 2
+    if OFF.exists():
+        return 0
+    areas = load_areas()
+    marks = set(load_state(argv[1])["areas"]) if areas else set()
+    if not marks:
+        return 0
+    refused = [target for target in (real(path, os.getcwd()) for path in argv[2:])
+               if not may_write(target, marks, areas)]
+    for target in refused:
+        print(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
+              f"write {target} (areas: {AREAS}). Do it in another session", file=sys.stderr)
+    return 1 if refused else 0
+
+
 def deny(reason: str) -> None:
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "deny",
@@ -776,6 +809,8 @@ def deny(reason: str) -> None:
 
 
 def main() -> int:
+    if len(sys.argv) > 1:
+        return ask(sys.argv[1:])
     event = json.load(sys.stdin)
     if OFF.exists():
         return 0

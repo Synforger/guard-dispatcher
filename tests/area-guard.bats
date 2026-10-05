@@ -725,3 +725,77 @@ session_files() {
         passed || { echo "refused: ${c}"; return 1; }
     done
 }
+
+# --- a script asks before it writes where its arguments say ----------------------
+
+# may_write <session> <path>... — ask the guard as a script would, from HOME.
+may_write() { run bash -c 'cd "$1" && shift && python3 "$@"' _ "${H}" "${HOOK}" may-write "$@"; }
+
+@test "area-guard may-write: a session with no marks may write anywhere" {
+    may_write s1 "${COMPANY_REPO}/notes.md" "${CASE_REPO}/a.md" "${PERSONAL}/a.md"
+    [ "${status}" -eq 0 ] && [ -z "${output}" ]
+}
+
+@test "area-guard may-write: the answer is the one an Edit of the path gets" {
+    read_case
+    local target
+    for target in "${CASE_REPO}/a.md" "${NOTES}/journal/a.md" "${H}/scratch/a.md"; do
+        may_write s1 "${target}"
+        [ "${status}" -eq 0 ] && [ -z "${output}" ] || { echo "refused: ${target}"; return 1; }
+        write_to "${target}"; passed
+    done
+    for target in "${COMPANY_REPO}/journal/a.md" "${PERSONAL}/a.md"; do
+        may_write s1 "${target}"
+        [ "${status}" -eq 1 ] || { echo "allowed: ${target}"; return 1; }
+        [[ "${output}" == *"has read inside client"*"cannot write ${target}"* ]]
+        write_to "${target}"; denied
+    done
+}
+
+@test "area-guard may-write: one refused path refuses the call and names only that path" {
+    read_case
+    may_write s1 "${CASE_REPO}/a.md" "${COMPANY_REPO}/a.md"
+    [ "${status}" -eq 1 ]
+    [ "$(printf '%s\n' "${output}" | wc -l | tr -d ' ')" = "1" ]
+    [[ "${output}" == *"cannot write ${COMPANY_REPO}/a.md"* ]]
+}
+
+@test "area-guard may-write: a relative path resolves where the script runs, not where the session stands" {
+    read_case
+    run bash -c 'cd "$1" && python3 "$2" may-write s1 journal/a.md' _ "${COMPANY_REPO}" "${HOOK}"
+    [ "${status}" -eq 1 ]
+    [[ "${output}" == *"cannot write ${COMPANY_REPO}/journal/a.md"* ]]
+    run bash -c 'cd "$1" && python3 "$2" may-write s1 journal/a.md' _ "${CASE_REPO}" "${HOOK}"
+    [ "${status}" -eq 0 ]
+}
+
+@test "area-guard may-write: it only answers (no mark is added, another session is not judged by these marks)" {
+    read_case
+    local before; before="$(cat "${AREA_GUARD_STATE}/s1.json")"
+    may_write s1 "${COMPANY_REPO}/a.md"; [ "${status}" -eq 1 ]
+    may_write s2 "${COMPANY_REPO}/a.md"; [ "${status}" -eq 0 ]
+    may_write s2 "${CASE}/received/memo.md"; [ "${status}" -eq 0 ]
+    [ "$(cat "${AREA_GUARD_STATE}/s1.json")" = "${before}" ]
+    [ ! -e "${AREA_GUARD_STATE}/s2.json" ]
+}
+
+@test "area-guard may-write: with the operator's switch off, or with no areas, every path may be written" {
+    read_case
+    touch "${GUARD_CONFIG_DIR}/agent-off"
+    may_write s1 "${COMPANY_REPO}/a.md"; [ "${status}" -eq 0 ]
+    rm "${GUARD_CONFIG_DIR}/agent-off"
+    may_write s1 "${COMPANY_REPO}/a.md"; [ "${status}" -eq 1 ]
+    rm "${GUARD_CONFIG_DIR}/areas.txt"
+    may_write s1 "${COMPANY_REPO}/a.md"; [ "${status}" -eq 0 ]
+}
+
+@test "area-guard may-write: a call that names no session or no path is a usage error, not a yes" {
+    local args
+    for args in "may-write" "may-write s1" "can-write s1 ${COMPANY_REPO}/a.md"; do
+        run python3 "${HOOK}" ${args}
+        [ "${status}" -eq 2 ] || { echo "status ${status}: ${args}"; return 1; }
+        [[ "${output}" == *"usage:"* ]]
+    done
+    run python3 "${HOOK}" may-write "" "${COMPANY_REPO}/a.md"
+    [ "${status}" -eq 2 ]
+}
