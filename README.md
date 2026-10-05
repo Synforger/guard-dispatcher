@@ -84,6 +84,9 @@ folding it would fire on unrelated text: the macOS home-root prefix, for one,
 is a path carrying a username when capitalised and a common URL segment when
 lowercased, so it belongs on a `cs:` line.
 
+Each line is matched as a group of its own: a flag written inside a line
+(`(?-i)`, for one) ends with that line and never reaches the lines below it.
+
 ## Scope
 
 Every hook follows the same AND-composition:
