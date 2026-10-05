@@ -326,6 +326,22 @@ step earlier, before each tool call, from the same `areas.txt`:
   removed; `doctor.sh` reports it.
   A commit in a repository with no remote is the one send let through there:
   it stays in the repository and has nowhere to go. Its push is still refused.
+- **A script asks before it writes where its arguments say.** The guard reads
+  the command that starts a script, never the script, and a relative path
+  handed to a script resolves where the script runs, not where the session
+  stands — so a script that writes into a folder it is given can write where
+  the session itself would be refused. Such a script asks first:
+
+  ```bash
+  python3 "$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py" \
+      may-write "$CLAUDE_CODE_SESSION_ID" "$destination" || exit 1
+  ```
+
+  It exits 0 when the session may write every path named (the judgement an
+  `Edit` of the path gets; also with the switch off, with no areas, and for a
+  session with no marks), and 1 with one line per refused path on stderr. A
+  relative path resolves from the caller's working directory. It only
+  answers: it adds no mark and changes nothing.
 
 The hook is registered for every tool (`matcher: "*"`): a send can go through any tool, and a call the
 guard is not asked about is one it cannot judge. A call that passes prints nothing, so nothing is added to the agent's context.
