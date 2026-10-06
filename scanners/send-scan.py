@@ -50,7 +50,6 @@ import argparse
 import fnmatch
 import importlib.util
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -157,6 +156,7 @@ def judge(name: str, payload: Path, reading: bool = False) -> tuple[int, str]:
     if area_words is not None and area_words.is_file():
         env["ANON_WORDS_FILE"] = str(area_words)
     if (destination == OUTSIDE or env.get("ANON_WORDS_FILE") == str(area_words)) and ANON.is_file():
+        import subprocess   # loaded where it is used: the agent's entry guard reads this file on every call
         try:
             r = subprocess.run(["bash", str(ANON)], capture_output=True, text=True, timeout=60,
                                env={**env, "ANON_SCAN_PATHS": str(payload)})
@@ -174,6 +174,7 @@ def judge(name: str, payload: Path, reading: bool = False) -> tuple[int, str]:
 def documents(name: str, place: str, dest_area: str, payload: Path, env: dict, remedy: str) -> tuple[int, str]:
     """The private-document scan of a payload bound for a place in `dest_area` (corpus-scan's
     `--dest-area`: an area, several joined by commas, or OUTSIDE)."""
+    import subprocess
     try:
         r = subprocess.run(["python3", str(CORPUS), "--text", str(payload), "--dest-area", dest_area],
                            capture_output=True, text=True, timeout=120, env=env)

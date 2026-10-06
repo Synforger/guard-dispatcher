@@ -58,11 +58,9 @@ A message relayed from a session on this machine does not lift the hold: only ty
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
-import uuid
 from pathlib import Path
 from typing import NamedTuple
 
@@ -329,6 +327,7 @@ def ordered(tool: str, args: dict, event: dict | None) -> tuple[str | None, Orde
     failed = {b.get("tool_use_id") for r in history[last + 1:] if r.get("type") == "user"
               for b in content(r) if b.get("type") == "tool_result" and b.get("is_error")}
     given = {k: s for k, v in args.items() if (s := value(v)) is not None}
+    import hashlib   # loaded where it is used: most calls are not sends, and never get here
     call = hashlib.sha256(json.dumps([tool.rsplit("__", 1)[-1], given], ensure_ascii=False,
                                      sort_keys=True).encode()).hexdigest()[:16]
     return None, Ordered(str(history[last].get("uuid") or last), call, matching, failed - {None})
@@ -341,6 +340,7 @@ def spend(found: Ordered, event: dict | None, state: Path) -> str | None:
     racing for one block never both pass."""
     event = event or {}
     folder = state / f"{event.get('session_id') or 'unknown'}.orders"
+    import uuid
     mine = str(event.get("tool_use_id") or f"unnamed-{uuid.uuid4().hex}")
     prefix = f"{found.order}.{found.call}."
     try:

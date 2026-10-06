@@ -535,7 +535,7 @@ from pathlib import Path
 
 def fake_run(cmd, **kw):
     raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get('timeout'))
-m.subprocess.run = fake_run
+subprocess.run = fake_run
 reason = m.check('WebFetch', {'url': 'https://example.com', 'prompt': 'hello'}, '${BATS_TEST_TMPDIR}',
                  Path('${GUARD_ROOT}/scanners/send-scan.py'))
 print(reason)
@@ -555,7 +555,7 @@ from pathlib import Path
 
 def fake_run(cmd, **kw):
     raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get('timeout'))
-m.subprocess.run = fake_run
+subprocess.run = fake_run
 print(m.judge('anything', Path('${BATS_TEST_TMPDIR}/payload.txt')))
 "
     [[ "$output" == *"did not finish within 120s"* ]]
@@ -572,7 +572,7 @@ from pathlib import Path
 
 def fake_run(cmd, **kw):
     raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get('timeout'))
-m.subprocess.run = fake_run
+subprocess.run = fake_run
 print(m.judge('anything', Path('${BATS_TEST_TMPDIR}/payload.txt')))
 "
     [[ "$output" == *"did not finish within 60s"* ]]
