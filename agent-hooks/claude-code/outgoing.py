@@ -604,6 +604,24 @@ def socat_sends(words: list[str]) -> list[Send]:
     return [Send(f"host:{h}", "", [], "socat relays whatever it reads") for h in hosts if h not in LOOPBACK]
 
 
+# WebSocket clients: a `ws://` or `wss://` address among the words, and wscat's message to send.
+WS_ADDRESS = re.compile(r"(?i)^wss?://\S+$")
+WS_MESSAGE = {"-x", "--execute"}
+
+
+def ws_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
+    """websocat / wscat: standard input, and the message wscat is given to send (`-x`), go to the
+    address it connects to. With neither, the client only listens."""
+    places = list(dict.fromkeys(p for p in (place_of(w) for w in words if WS_ADDRESS.match(w)) if p))
+    said = [words[i + 1] for i, w in enumerate(words[:-1]) if w in WS_MESSAGE]
+    text, unreadable, unknown = stdin_payload(stdin, cwd, send_scan)
+    if any(RUNTIME_TEXT.search(w) for w in said):
+        unknown = unknown or "a substitution or a variable"
+    if not (said or stdin):
+        return []
+    return [Send(place, "\n".join([*said, text]), unreadable, unknown) for place in places]
+
+
 # tmux commands that type into a pane, as whoever sits at that terminal would.
 TMUX_TYPES = {"send-keys", "send", "send-prefix", "paste-buffer", "pasteb", "pipe-pane", "pipep"}
 TMUX_TYPES_INSIDE = re.compile(r"(?<![\w-])(send-keys|send-prefix|paste-buffer|pasteb|pipe-pane|pipep)(?![\w-])")
@@ -717,6 +735,8 @@ def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
             out += bucket_sends(tool, words, stdin, cwd, send_scan)
         elif tool == "socat":
             out += socat_sends(words)
+        elif tool in ("websocat", "wscat"):
+            out += ws_sends(args, stdin, cwd, send_scan)
         elif tool == "tmux":
             out += tmux_sends(args)
         elif tool in TMUX_TYPES - {"send"}:
