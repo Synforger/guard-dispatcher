@@ -290,6 +290,31 @@ AREAS
     passed
 }
 
+@test "local: a client's terminal socket is another endpoint: the line for its send call does not reach it" {
+    socket() { bash_call "python3 -c 'import websockets.sync.client as w; w.connect(\"ws://localhost:8766/ws/pty/ses_1\").send(b\"go\")'"; }
+    declare_also 'local:8766/pty/* block'
+    socket
+    passed
+    declare_also 'local:8766/ws/pty/* block'
+    socket
+    denied
+    [[ "${output}" == *"local:8766/ws/pty/ses_1 is blocked for sending"* ]]
+    bash_call "$(printf 'python3 - <<EOF\nimport websockets.sync.client as w\nw.connect("ws://127.0.0.1:8766/ws/pty/ses_1").send(b"go")\nEOF')"
+    denied
+    bash_call "curl -s -d '{\"text\": \"hello\"}' http://127.0.0.1:8766/agent-messages"
+    passed
+}
+
+@test "tmux: a wrapped typing command is named alone by tmux:[?], since ? in a pattern is any one character" {
+    fake_tmux
+    declare_also 'tmux:[?] block'
+    bash_call "tmux run-shell 'tmux send-keys -t agents-1 go Enter'"
+    denied
+    [[ "${output}" == *"tmux:? is blocked"* ]]
+    bash_call "tmux send-keys -t agents-1 go Enter"
+    passed
+}
+
 @test "send-scan: a name that stays on this machine is reached only by a line naming its kind" {
     where() { run python3 "${GUARD_ROOT}/scanners/send-scan.py" --where "$1"; }
     where local:8766/pty/ses_1/send
