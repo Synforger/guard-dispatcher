@@ -521,6 +521,82 @@ cat ${c}/received/memo.md" "[ -d ${c} ] && cat ${c}/received/memo.md" "stat ${c}
     done
 }
 
+# --- a name inside text is not a read ---------------------------------------
+# A path counts where it stands by itself: a word of the command line, a string of inline code,
+# a line of what a program is fed. Inside a sentence it is text, and nothing opens it.
+
+@test "area-guard: an area path written inside text marks nothing" {
+    local c="~/org/clients/acme" n=0 command
+    local -a commands=(
+        "python3 -c \"print('the notes moved under ${c} last week')\""
+        "python3 -c \"print('置き場(${c})の直下に在る')\""
+        "python3 -c \"s = 'the format is in \`${c}/received/memo.md\`, read it there'\""
+        "node -e \"console.log('the copy of ${c} is gone')\""
+        $'python3 - notes.md <<\'EOF\'\nimport sys\np = sys.argv[1]\ns = open(p).read().replace("TODO", "the format is kept in '"${c}"$'/received/memo.md now")\nopen(p, "w").write(s)\nEOF'
+        $'python3 - <<\'EOF\'\ntext = """\nThe format is kept in '"${c}"$'/received/memo.md now.\n- see `'"${c}"$'` for the rest\n"""\nprint(text)\nEOF'
+        $'cat > notes.md <<\'EOF\'\nThe format is kept in '"${c}"$'/received/memo.md now.\n- see `'"${c}"$'` for the rest\nEOF'
+        "echo \"moved the notes under ${c} today\""
+        "git log --grep=\"moved to ${c}\""
+    )
+    for command in "${commands[@]}"; do
+        n=$((n + 1))
+        bash_in "${H}" "${command}" "t${n}"
+        passed
+        write_to "${PERSONAL}/a.py" "t${n}"
+        passed || { echo "marked by: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: an area path that stands by itself in code, or in what a command is fed, still marks" {
+    local p="${H}/org/clients/acme/received/memo.md" c="~/org/clients/acme" n=0 command
+    local -a commands=(
+        "python3 -c \"print(open('${p}').read())\""
+        "python3 -c \"from pathlib import Path; print(Path('${c}/received/memo.md').expanduser().read_text())\""
+        $'python3 - <<\'EOF\'\nimport subprocess\nsubprocess.run(["cat", "'"${p}"$'"])\nEOF'
+        "node -e \"console.log(require('fs').readFileSync(\`${p}\`, 'utf8'))\""
+        "perl -e 'open(F, \"<${p}\"); print <F>'"
+        "python3 -c \"import urllib.request as u; print(u.urlopen('file://${p}').read())\""
+        "python3 -c \"open('${H}/org/acme-link/received/memo.md')\""
+        $'python3 - <<\'EOF\'\nfor name in """\n'"${p}"$'\n""".split():\n    print(open(name).read())\nEOF'
+        $'xargs cat <<\'EOF\'\n'"${p}"$'\nEOF'
+        $'while read f; do cat "$f"; done <<\'EOF\'\n'"${p}"$'\nEOF'
+        "xargs cat <<< \"${p}\""
+        "bash -c 'cat ${p}'"
+        $'bash <<\'EOF\'\ncat '"${p}"$'\nEOF'
+        "echo \"\$(cat ${p})\""
+        "echo \"\`cat ${p}\`\""
+        "env F=${p} sh -c 'cat \$F'"
+        "grep -c x --file=${p} notes.md"
+        "tar -cf - -C${H}/org/clients/acme ."
+        "PATH=/usr/bin:${H}/org/clients/acme/bin run"
+        "cat < ${p}"
+        "ls ~/or*"
+        "cat ~/org/clients/ac*/received/memo.md"
+        "A=1"$'\n'"cat ${p}"
+    )
+    for command in "${commands[@]}"; do
+        n=$((n + 1))
+        bash_in "${H}" "${command}" "k${n}"
+        write_to "${PERSONAL}/a.py" "k${n}"
+        denied || { echo "not marked by: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: a Bash command marks the area its path is in, as a Read of the path does" {
+    bash_in "${H}" "cat ~/org/clients/acme/received/memo.md"
+    passed
+    [ "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["areas"])' "${AREA_GUARD_STATE}/s1.json")" = "['client']" ]
+    # a folder whose name only begins like an area's is not the area
+    mkdir -p "${H}/organics"
+    printf 'x\n' > "${H}/organics/list.txt"
+    bash_in "${H}" "cat ~/organics/list.txt" s2
+    passed
+    write_to "${COMPANY_REPO}/c.py" s2
+    passed
+    write_to "${PERSONAL}/a.py" s2
+    passed
+}
+
 # --- writes a Bash command names ---------------------------------------------
 # Edit and Write are judged by their target; a shell command writes too. Its named targets are
 # judged the same way: a redirection, tee / touch, cp / mv, sed -i, dd of=, and paths inside
@@ -627,6 +703,24 @@ print(place == m.Path('${CASE_REPO}'), note)
              "python3 -c \"import sys; print(sys.version)\"" \
              "node -e \"console.log('https://example.com/a.txt')\"" \
              $'python3 - <<\'EOF\'\nprint("a b", \'c\')\nEOF'; do
+        bash_in "${PERSONAL}" "${c}"
+        passed || { echo "refused: ${c}"; return 1; }
+    done
+}
+
+@test "area-guard: a word quoted inside a string of inline code is text, not a path the code writes" {
+    mkdir -p "${PERSONAL}/src"
+    printf 'x\n' > "${PERSONAL}/Makefile"
+    read_case
+    local c
+    local -a commands=(
+        $'python3 - <<\'EOF\'\ns = "see `vision.md` and `src/a.py` for the rest"\nprint(s)\nEOF'
+        "python3 -c \"print('the file \`Makefile\` builds it, and \`src\` holds the rest')\""
+        $'python3 - <<\'EOF\'\nprint(\'rename "notes.md" to "src/notes.md" one day\')\nEOF'
+        "python3 -c \"print('it used to live in ${PERSONAL}/old.txt, look there')\""
+        $'python3 - <<\'EOF\'\ntext = """\n- `vision.md`: where things stand\n- src/a.py holds the rest\n"""\nprint(text)\nEOF'
+    )
+    for c in "${commands[@]}"; do
         bash_in "${PERSONAL}" "${c}"
         passed || { echo "refused: ${c}"; return 1; }
     done

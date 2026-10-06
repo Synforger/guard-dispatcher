@@ -7,9 +7,11 @@ that reads inside an area is marked with the area's name. A marked session may n
 git repository outside its marks, nor commit, push or send through `gh` to a destination outside
 them.
 
-- Marking: the target of Read / Grep / Glob, a Bash cwd, an area path named in a Bash command
-           (unless the command only checks it: a lone test / [ / stat / realpath / readlink /
-           ls -d with every argument literal)
+- Marking: the target of Read / Grep / Glob, a Bash cwd, an area path a Bash command names
+           standing by itself -- a word of the command line, a string of inline code, a line of
+           what a program is fed; inside a sentence it is text, which nothing opens (see said) --
+           unless the command only checks it: a lone test / [ / stat / realpath / readlink /
+           ls -d with every argument literal
 - Refused: Edit / Write / NotebookEdit on a file inside a git repository outside the marks, and
            a Bash command that names one as written (see named);
            a Bash `git commit` / `git push` / sending `gh` call (reads pass) whose destination is
@@ -60,6 +62,7 @@ from __future__ import annotations
 import functools
 import glob
 import importlib.util
+import itertools
 import json
 import os
 import re
@@ -211,22 +214,176 @@ def spell_home(command: str) -> str:
     return re.sub(r"(?<![\w/])~(?=/)", home, text)
 
 
-def mentioned_paths(command: str, areas) -> list[Path]:
-    """Area paths named in a Bash command (spelled with ~, $HOME, or absolute)."""
-    text = spell_home(command)
+GLOB = re.compile(r"[*?\[]")
+# Where a path begins when a stretch of a command names it by itself: at the start of the stretch,
+# or after what joins it to an option, a variable, a remote or an upload (`--file=/a`, `A=/a:/b`,
+# `host:/a`, `-d @/a`), a short flag (`-C/a`), a file mode (`</a`) or `file://`.
+STANDS = re.compile(r"(?:^|[=:,@]|^-\w|^[<>|+]+|^file://)(?=/)")
+
+
+def standing(stretch: str) -> list[str]:
+    """The paths a stretch of a command names standing by themselves (STANDS), home already written
+    out (spell_home). Each is given twice: as far as the stretch runs (a path may hold spaces) and as
+    far as its first word, cut at a list separator. A path further inside -- after other words, in the
+    middle of a sentence -- is text: nothing opens it, so it is not a name."""
+    stretch = stretch.strip()
+    if "/" not in stretch:
+        return []
+    head = stretch.split(None, 1)[0]
     found = []
-    for _, root in areas:
-        for spelling in {str(root), os.path.normpath(str(root))}:
-            if spelling in text:
-                found.append(root)
-    # A path through a shortcut symlink whose target is inside an area counts too
-    for token in re.findall(r"(/[^\s'\"|;&<>]+)", text):
-        try:
-            p = real(token)
-        except OSError:
-            continue
-        if area_of(p, areas):
-            found.append(p)
+    for m in STANDS.finditer(head):
+        found += [stretch[m.end():], re.split(r"[:,]", head[m.end():], maxsplit=1)[0]]
+    return found
+
+
+# A string literal of inline code, whatever the language: one in triple quotes or backticks may run
+# over lines, one in single or double quotes ends on its line (so an apostrophe in a comment does not
+# pair with a quote lines below).
+STRING = re.compile(r"""(\"{3}|'{3})((?:\\.|(?!\1).)*)\1|(["'])((?:\\.|(?!\3)[^\n])*)\3|`((?:\\.|[^`])*)`""", re.S)
+CODE_BREAK = re.compile(r"[\s()\[\]{},;]+")
+
+
+def literals(code: str):
+    """Inline code as the stretches that can name a file: (text, whether it is a whole string).
+    A string literal on one line is one stretch, whole. One that runs over lines gives a stretch per
+    line, and the code outside the strings gives its words. What is quoted inside a string -- a
+    `name` in a sentence -- is part of that string, not a string of the code."""
+    pos = 0
+    for m in STRING.finditer(code):
+        yield from ((word, False) for word in CODE_BREAK.split(code[pos:m.start()]) if word)
+        body = next(g for g in (m.group(2), m.group(4), m.group(5)) if g is not None)
+        if "\n" in body:
+            yield from ((line, False) for line in body.splitlines())
+        else:
+            yield body, True
+        pos = m.end()
+    yield from ((word, False) for word in CODE_BREAK.split(code[pos:]) if word)
+
+
+def simple_commands(line: str):
+    """The simple commands of a command line whose heredoc bodies are taken out, in order:
+    (its words, its redirections as (operator, word), its here-string or None). `2>&1` names no file
+    and is left out. Raises ValueError on an unclosed quote, as `shlex.split` does."""
+    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    breaks = outgoing_module().SHELL_BREAK
+    words: list[str] = []
+    redirects: list[tuple[str, str]] = []
+    here = operator = None
+    for token in list(lexer):
+        if operator is not None:
+            if operator == "<<<":
+                here = token
+            elif not operator.endswith("&"):
+                redirects.append((operator, token))
+            operator = None
+        elif token in breaks:
+            yield words, redirects, here
+            words, redirects, here = [], [], None
+        elif token and set(token) <= set("<>&|") and set(token) & set("<>"):
+            if words and words[-1].isdigit():   # the fd of `2>`
+                words.pop()
+            operator = token
+        else:
+            words.append(token)
+    yield words, redirects, here
+
+
+def split_heredocs(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """(the command line without the bodies of its heredocs, each body with the program it feeds)."""
+    line, fed, pos = [], [], 0
+    for line_end, body_end, program in heredocs(text):
+        line.append(text[pos:line_end + 1])
+        fed.append((os.path.basename(program), text[line_end + 1:body_end]))
+        pos = body_end
+    line.append(text[pos:])
+    return "".join(line), fed
+
+
+# Builtins that run their words, or the file they are handed, as shell.
+RUNS_SHELL = {"eval", "source", "."}
+# A command substitution written inside a word: `$( ... )` (one level of parentheses inside) or
+# backticks. What is inside is a command line of its own.
+SUBSTITUTION = re.compile(r"\$\(((?:[^()]|\([^()]*\))*)\)|`([^`]*)`")
+NESTED = 4      # how deep a command line inside a command line is followed
+
+
+def said(command: str, depth: int = 0):
+    """Each stretch of a Bash command that can name a file by itself, home written out:
+
+    - a word of the command line, a redirection's file, and the same inside a command substitution,
+      a shell's `-c` string, `eval`, or a heredoc or here-string fed to a shell;
+    - a string of code written into the command for an interpreter (`python3 -c`, `node -e`, a
+      heredoc or a here-string fed to one), a line of a string that runs over lines, and a word of the
+      code outside its strings (literals);
+    - a line of a heredoc or here-string fed to anything else: text the program reads, which may
+      list files (`xargs cat`, `while read f`).
+
+    A sentence that mentions a path -- a message, a line of a note being written, a replacement
+    string -- is one stretch that does not begin with the path, so the path in it names nothing
+    (standing). A command line written as one string inside other code (`os.system("cat <path>")`)
+    is such a sentence too, and is not read."""
+    line, fed = split_heredocs(spell_home(command))
+
+    def handed(tool: str, text: str):
+        """What a program is handed to run, or to read."""
+        if SHELL_CODE.fullmatch(tool) or tool in RUNS_SHELL:
+            if depth < NESTED:
+                yield from said(text, depth + 1)
+        elif code_flags(tool):
+            yield from (stretch for stretch, _ in literals(text))
+        else:
+            yield from text.splitlines()
+
+    try:
+        commands = list(simple_commands(line))
+    except ValueError:
+        # An unclosed quote: the words cannot be told from the sentences, so every run of the line
+        # between spaces and quotes is taken as a word.
+        yield from re.split(r"""[\s'"`]+""", line)
+        commands = []
+    for words, redirects, here in commands:
+        yield from (target for _, target in redirects)
+        rest = words
+        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT):
+            rest = rest[1:]
+        tool = os.path.basename(rest[0]) if rest else ""
+        shell, flags = bool(SHELL_CODE.fullmatch(tool)), code_flags(tool)
+        first = len(words) - len(rest) + 1      # where the tool's own arguments begin
+        code = False
+        for at, word in enumerate(words):
+            if code:                            # the code after `-c` / `-e`: read as what it is
+                yield from handed(tool, word)
+            else:
+                yield word
+                for m in SUBSTITUTION.finditer(word) if depth < NESTED else []:
+                    yield from said(m.group(1) or m.group(2) or "", depth + 1)
+            code = not code and at >= first and (word in flags or (shell and bool(re.fullmatch(r"-[A-Za-z]*c", word))))
+        if tool == "eval" and depth < NESTED:
+            yield from said(" ".join(rest[1:]), depth + 1)
+        if here is not None:
+            yield from handed(tool, here)
+    for program, body in fed:
+        yield from handed(program, body)
+
+
+# How many of the files a glob matches are looked at (a pattern such as `/*/*/*` matches a disk).
+GLOB_MATCHES = 64
+
+
+def mentioned_paths(command: str, areas) -> list[Path]:
+    """Area paths a Bash command names standing by themselves (said, standing): spelled with ~,
+    $HOME or absolute, through a shortcut symlink whose target is inside an area, or by a glob
+    that matches one (`ls ~/or*` names ~/org)."""
+    found = []
+    for stretch in said(command):
+        for name in standing(stretch):
+            try:
+                matches = list(itertools.islice(glob.iglob(name), GLOB_MATCHES)) if GLOB.search(name) else []
+                paths = [real(match) for match in [name, *matches]]
+            except (OSError, ValueError, re.error):
+                continue
+            found += [path for path in paths if area_of(path, areas)]
     return found
 
 
@@ -279,11 +436,8 @@ CODE_FLAGS = {"python": {"-c"}, "node": {"-e", "--eval", "-p", "--print"}, "perl
 # What stands before a command and runs it (`sudo tee f`), and a variable set for it (`A=1 cp a b`).
 RUNS_NEXT = {"sudo", "env", "command", "exec", "builtin", "nohup", "nice", "time", "caffeinate"}
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
-# An absolute or home path written inside inline code (not the tail of a relative one).
-CODE_PATH = re.compile(r"""(?<![\w./~-])(?:~|/)[^\s'"`;|&<>(),]+""")
-# A quoted word of inline code: a relative path is one of these.
-CODE_WORD = re.compile(r"""(['"`])([^'"`\s]+)\1""")
-GLOB = re.compile(r"[*?\[]")
+# A string of inline code that may be a relative path: one word, with no quote inside.
+CODE_WORD = re.compile(r"""[^'"`\s]+""")
 
 
 def code_flags(tool: str) -> set[str]:
@@ -292,15 +446,17 @@ def code_flags(tool: str) -> set[str]:
 
 
 def code_paths(code: str, cwd: str) -> list[str]:
-    """Every path inline code names: an absolute or home path anywhere in it, and a quoted word
-    that reads as a relative path (it holds a `/`, ends in an extension, or names something that
-    exists in the command's folder). Whether the code reads or writes it cannot be told."""
-    found = CODE_PATH.findall(code)
-    for _, word in CODE_WORD.findall(code):
-        if word.startswith(("/", "~")) or "://" in word or not word.strip("."):
+    """Every path inline code names (literals): an absolute or home path that stands by itself
+    (standing), and a whole string that reads as a relative path (one word that holds a `/`, ends
+    in an extension, or names something that exists in the command's folder). Whether the code
+    reads or writes it cannot be told. A word quoted inside a longer string is that string's text."""
+    found = []
+    for text, whole in literals(code):
+        found += standing(text)
+        if not whole or text.startswith("/") or "://" in text or not text.strip(".") or not CODE_WORD.fullmatch(text):
             continue
-        if "/" in word or re.search(r"\.\w{1,8}$", word) or (Path(cwd) / word).exists():
-            found.append(word)
+        if "/" in text or re.search(r"\.\w{1,8}$", text) or (Path(cwd) / text).exists():
+            found.append(text)
     return found
 
 
@@ -309,30 +465,21 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
 
     Written: a redirection's target (`>`, `>>`), the files of tee / touch / truncate, the
     destination of cp / mv / install / ln, the existing files sed -i edits, dd's of=, and every
-    path inside code written into the command (`python3 -c`, `node -e`, a heredoc or a
-    here-string fed to an interpreter), relative ones included: code that reads a file cannot be
-    told apart from code that writes it. A shell's `-c` string, and a heredoc fed to a shell, is
-    a command line of its own, read the same way. Removed: the files of rm / unlink / rmdir /
+    path that code written into the command names (`python3 -c`, `node -e`, a heredoc or a
+    here-string fed to an interpreter; see code_paths), relative ones included: code that reads a
+    file cannot be told apart from code that writes it. A shell's `-c` string, and a heredoc fed to
+    a shell, is a command line of its own, read the same way. Removed: the files of rm / unlink / rmdir /
     shred, and what mv moves away. A glob stands for the files it matches now. What stands
     before a command (`sudo`, `env`, a variable) is skipped. A script run from a file is not
     read, and neither is a heredoc's body fed to anything else (it is text, not commands)."""
-    text = spell_home(command)
-    line, fed, pos = [], [], 0
-    for line_end, body_end, program in heredocs(text):
-        line.append(text[pos:line_end + 1])
-        fed.append((os.path.basename(program), text[line_end + 1:body_end]))
-        pos = body_end
-    line.append(text[pos:])
-    lexer = shlex.shlex("".join(line), posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
+    line, fed = split_heredocs(spell_home(command))
     try:
-        tokens = list(lexer)
+        commands = list(simple_commands(line))
     except ValueError:
-        tokens = []
+        commands = []
     written: list[str] = []
     removed: list[str] = []
     found: tuple[list[Path], list[Path]] = ([], [])
-    breaks = outgoing_module().SHELL_BREAK
 
     def run(tool: str, code: str) -> None:
         """Code handed to a program that runs it."""
@@ -374,28 +521,9 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
         if stdin is not None:
             run(tool, stdin)
 
-    words: list[str] = []
-    redirect = stdin = None
-    for token in tokens:
-        if redirect is not None:
-            if redirect == "<<<":
-                stdin = token
-            elif redirect:
-                written.append(token)
-            redirect = None
-            continue
-        if token in breaks:
-            one(words, stdin)
-            words, stdin = [], None
-            continue
-        if token and set(token) <= set("<>&|") and set(token) & set("<>"):
-            if words and words[-1].isdigit():   # the fd of `2>`
-                words.pop()
-            # `2>&1` names no file; a here-string is the next word, handed to the command
-            redirect = "<<<" if token == "<<<" else (">" in token and not token.endswith("&"))
-            continue
-        words.append(token)
-    one(words, stdin)
+    for words, redirects, here in commands:
+        written.extend(target for operator, target in redirects if ">" in operator)
+        one(words, here)
     for program, body in fed:
         run(program, body)
 
