@@ -565,6 +565,38 @@ its pasted-text tag; the opening is looked for inside that tag too.
 This holds as long as agents cannot reach the client's own way of typing as
 the operator: block it (see *What stays on this machine*).
 
+#### A message from another machine
+
+A client may also carry messages between machines. Whoever sits at the other
+machine can have such a message written, so it is held to more than a message
+from a session here: it **holds the session it came into** until the operator
+has seen it. Have the client open those messages with a line of their own, and
+give that line to `orders.txt` after `>>`:
+
+```
+>> Message from a session on another machine, relayed by the client:
+```
+
+- From the moment such a message comes in until the operator types a message
+  of their own, the session's tool calls are refused, all but the ones that
+  only read (`Read` / `Grep` / `Glob`) and a question to the operator. The
+  refusal tells the agent to say what the message asks and wait.
+- The operator's next message lifts the hold, whatever it says: typed to open
+  a turn, or while the agent works. The agent then goes by that message.
+- A message relayed from a session on this machine does not lift it, and
+  neither does a tool's result, a hook's text or a task's notice: only typing
+  does. Going back from the end of the conversation, the guard looks for a
+  message from another machine before any message the operator typed.
+- A `>>` line is a `>` line too: the message orders nothing and takes no
+  order.
+- This is on every machine, with or without areas, and is read from the
+  session's transcript (`transcript_path`). With no `>>` line nothing is held
+  and the transcript is not read for it.
+
+As with `>`, this holds while agents cannot type as the operator or reach the
+other machine's client themselves: block the client's typing endpoint, and
+declare the other machine's host (`host:<name>   block`).
+
 A reading call and a tool that drafts (its name says `draft`) need no order.
 A command (`curl` and the like) never sends to such a destination: it cannot
 be matched against a shown call. What an ordered send carries is scanned like
@@ -653,6 +685,12 @@ contract:
 
 ### Not covered — know your gaps
 
+- The hold a message from another machine puts on a session is read from the
+  session's transcript, and only a tool call is refused: the agent still
+  reads the message and still answers in words. A script the agent started
+  before the message came in keeps running. A message is known to be from
+  another machine by the line it opens with, so the hold is as good as the
+  client's promise to open every such message with that line.
 - `git commit --no-verify` skips the commit-time scan by design; the
   content is still caught at `pre-push` — but `git push --no-verify`
   skips that too. Bypass is a deliberate operator action, never a
