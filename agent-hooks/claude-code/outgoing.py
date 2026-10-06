@@ -53,7 +53,6 @@ import importlib.util
 import os
 import re
 import shlex
-import subprocess
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote_plus, urlsplit
@@ -633,6 +632,7 @@ def tmux_session(server: list[str], target: str | None) -> str:
     """The name of the tmux session a target is in, asked of tmux itself (a target may be a
     prefix, a pattern or a pane id; none is the pane the command runs in). `?` when tmux cannot
     say and the target does not spell a session's name."""
+    import subprocess   # loaded where it is used: most calls run no other program
     target = target or os.environ.get("TMUX_PANE")
     try:
         r = subprocess.run(["tmux", *server, "display-message", "-p", *(["-t", target] if target else []),
@@ -840,6 +840,7 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
                 because = (f"this session has read inside {', '.join(sorted(marks))}" if marks
                            else f"the file sits inside {area}")
                 return f"outgoing: not sent to {name}: {path} cannot be scanned ({why}), and {because}"
+        import subprocess
         import tempfile   # loaded only when a call sends: most hook calls never get here
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8",
                                          dir=os.environ.get("TMPDIR") or None) as fh:

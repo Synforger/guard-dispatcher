@@ -90,26 +90,40 @@ Exit: 0 clean or not configured, 1 hit, 2 usage / configuration error.
 from __future__ import annotations
 
 import argparse
-import bisect
 import contextlib
 import fcntl
 import fnmatch
-import hashlib
-import heapq
-import html
+import importlib
 import json
 import os
 import re
 import shlex
-import subprocess
 import sys
-import tempfile
 import time
-import unicodedata
-import zipfile
 from array import array
 from collections import Counter
 from pathlib import Path
+
+
+class later:
+    """A standard-library module that is loaded when something of it is first used.
+
+    This file is also read as a module, for its areas alone, by the agent's entry guard -- before
+    every tool call -- and each run of it as a command pays for what it loads. What only a scan
+    uses is not loaded until a scan uses it."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def __getattr__(self, attribute: str):
+        value = getattr(importlib.import_module(self._name), attribute)
+        setattr(self, attribute, value)     # the next use finds it here, at the cost of a plain attribute
+        return value
+
+
+bisect, hashlib, heapq, html = later("bisect"), later("hashlib"), later("heapq"), later("html")
+subprocess, tempfile = later("subprocess"), later("tempfile")
+unicodedata, zipfile = later("unicodedata"), later("zipfile")
 
 # How many consecutive characters count as copied. Twelve characters of
 # Japanese are a phrase; twelve of English are two common words ("machine with"),

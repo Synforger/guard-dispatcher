@@ -67,7 +67,6 @@ import json
 import os
 import re
 import shlex
-import subprocess
 import sys
 from pathlib import Path
 
@@ -202,6 +201,7 @@ def repo_root(path: Path) -> Path | None:
     d = path if path.is_dir() else path.parent
     while not d.exists() and d != d.parent:
         d = d.parent
+    import subprocess   # loaded where it is used, here and below: most calls ask git nothing
     r = subprocess.run(["git", "-C", str(d), "rev-parse", "--show-toplevel"],
                        capture_output=True, text=True)
     return real(r.stdout.strip()) if r.returncode == 0 else None
@@ -707,11 +707,13 @@ def push_url(repo: Path, named: str | None) -> str:
     """Where `git push` sends: a named remote's push URL, else the upstream, else origin."""
     if named and (":" in named or "/" in named):
         return named
+    import subprocess
+
     def git(*args: str) -> str:
         return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True).stdout.strip()
-    name = named or git("config", f"branch.{git('branch', '--show-current')}.pushRemote") \
-        or git("config", "remote.pushDefault") \
-        or git("config", f"branch.{git('branch', '--show-current')}.remote") or "origin"
+    branch = "" if named else git("branch", "--show-current")
+    name = named or git("config", f"branch.{branch}.pushRemote") or git("config", "remote.pushDefault") \
+        or git("config", f"branch.{branch}.remote") or "origin"
     return git("remote", "get-url", "--push", name)
 
 
@@ -723,6 +725,7 @@ def destination(target: Path, dest_args: list[str]) -> tuple[Path | None, str | 
     not a real determination)."""
     if not dest_args:
         return target, None
+    import subprocess
     import tempfile   # loaded only for a push or a gh send: most hook calls never get here
     with tempfile.NamedTemporaryFile() as argv_file:
         args = dest_args
@@ -847,6 +850,7 @@ def config_writes_guard_key(command: str) -> bool:
 
 
 def git_config(repo: Path, *args: str) -> str:
+    import subprocess
     return subprocess.run(["git", "-C", str(repo), "config", *args], capture_output=True, text=True).stdout.strip()
 
 
@@ -882,6 +886,7 @@ def has_remote(repo: Path) -> bool:
     top = repo_root(repo)
     if top is None:
         return False
+    import subprocess
     r = subprocess.run(["git", "-C", str(top), "remote"], capture_output=True, text=True)
     return r.returncode != 0 or bool(r.stdout.strip())
 

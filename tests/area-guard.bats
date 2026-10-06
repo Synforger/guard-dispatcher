@@ -51,11 +51,10 @@ AREAS
 # session's transcript when a test has set TRANSCRIPT.
 agent() {
     local event
-    event="$(python3 -c 'import json, sys
-tool, key, value, cwd, session, transcript = sys.argv[1:]
-print(json.dumps({"session_id": session, "tool_name": tool, "tool_input": {key: value},
-                  "cwd": cwd, "hook_event_name": "PreToolUse", "transcript_path": transcript or None}))' \
-        "$1" "$2" "$3" "${4:-${H}}" "${5:-s1}" "${TRANSCRIPT:-}")"
+    event="$(jq -n --arg tool "$1" --arg key "$2" --arg value "$3" --arg cwd "${4:-${H}}" --arg session "${5:-s1}" \
+        --arg transcript "${TRANSCRIPT:-}" \
+        '{session_id: $session, tool_name: $tool, tool_input: {($key): $value}, cwd: $cwd,
+          hook_event_name: "PreToolUse", transcript_path: (if $transcript == "" then null else $transcript end)}')"
     run python3 "${HOOK}" <<< "${event}"
 }
 
@@ -516,7 +515,8 @@ cat ${c}/received/memo.md" "[ -d ${c} ] && cat ${c}/received/memo.md" "stat ${c}
                    "ls -d ${c} --color" "ls -d -R ${c}" "head ${c}/received/memo.md"; do
         n=$((n + 1))
         bash_in "${H}" "${command}" "m${n}"
-        write_to "${PERSONAL}/a.py" "m${n}"
+        # a session that read the client does not write the company's repository
+        write_to "${COMPANY_REPO}/c.py" "m${n}"
         denied || { echo "not marked by: ${command}"; return 1; }
     done
 }
@@ -570,22 +570,26 @@ cat ${c}/received/memo.md" "[ -d ${c} ] && cat ${c}/received/memo.md" "stat ${c}
         "tar -cf - -C${H}/org/clients/acme ."
         "PATH=/usr/bin:${H}/org/clients/acme/bin run"
         "cat < ${p}"
-        "ls ~/or*"
         "cat ~/org/clients/ac*/received/memo.md"
         "A=1"$'\n'"cat ${p}"
     )
     for command in "${commands[@]}"; do
         n=$((n + 1))
         bash_in "${H}" "${command}" "k${n}"
-        write_to "${PERSONAL}/a.py" "k${n}"
+        # a session that read the client does not write the company's repository
+        write_to "${COMPANY_REPO}/c.py" "k${n}"
         denied || { echo "not marked by: ${command}"; return 1; }
     done
+    # a glob that matches the company's folder marks the company, whose reader does not write the client's
+    bash_in "${H}" "ls ~/or*" g1
+    write_to "${CASE_REPO}/c.py" g1
+    denied
 }
 
 @test "area-guard: a Bash command marks the area its path is in, as a Read of the path does" {
     bash_in "${H}" "cat ~/org/clients/acme/received/memo.md"
     passed
-    [ "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["areas"])' "${AREA_GUARD_STATE}/s1.json")" = "['client']" ]
+    [ "$(jq -c .areas "${AREA_GUARD_STATE}/s1.json")" = '["client"]' ]
     # a folder whose name only begins like an area's is not the area
     mkdir -p "${H}/organics"
     printf 'x\n' > "${H}/organics/list.txt"
@@ -656,6 +660,22 @@ state_of() { cat "${AREA_GUARD_STATE}/${1:-s1}.json"; }
     denied
 }
 
+# --- what a call costs -----------------------------------------------------------------------
+
+@test "area-guard: a call that passes loads nothing that only a scan, a send or a git call uses" {
+    # The hook runs before every tool call, so every call pays for what it loads. What only some
+    # calls use is loaded where it is used.
+    local event module
+    event="$(jq -n --arg cwd "${H}" \
+        '{session_id: "s1", tool_name: "Bash", tool_input: {command: "ls"}, cwd: $cwd, hook_event_name: "PreToolUse"}')"
+    run python3 -X importtime "${HOOK}" <<< "${event}"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" != *permissionDecision* ]]
+    for module in subprocess tempfile hashlib zipfile shutil uuid; do
+        ! grep -qE "\| +${module}\$" <<< "${output}" || { echo "loaded: ${module}"; return 1; }
+    done
+}
+
 # --- when the destination check itself times out, a deny says so, not that it found it outside ---
 
 @test "area-guard: a destination check that times out says so instead of pretending the sending repository was found" {
@@ -666,7 +686,7 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 
 def fake_run(cmd, **kw):
     raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get('timeout'))
-m.subprocess.run = fake_run
+subprocess.run = fake_run      # the hook loads subprocess where it calls out, so the module itself is patched
 place, note = m.destination(m.Path('${CASE_REPO}'), ['--dest', 'git@github.com:acme/pipeline.git'])
 print(place == m.Path('${CASE_REPO}'), note)
 "
