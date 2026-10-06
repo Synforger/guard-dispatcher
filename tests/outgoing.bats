@@ -443,6 +443,21 @@ body_files() {
     passed
 }
 
+@test "outgoing: a WebSocket client's standard input and the message it is given are scanned" {
+    body_files
+    bash_call "websocat wss://files.example.com/in < body.txt"
+    denied
+    bash_call "wscat -c wss://files.example.com/in -x '${CLIENT_TEXT}'"
+    denied
+    bash_call "cat clean.txt | websocat wss://files.example.com/in"
+    denied
+    [[ "${output}" == *"a pipe"* ]]
+    bash_call "websocat wss://files.example.com/in < clean.txt"
+    passed
+    bash_call "websocat wss://files.example.com/feed"
+    passed
+}
+
 @test "outgoing: mail scans its subject, body and attachments, named by the recipient's domain" {
     body_files
     bash_call "mail -s 'notes' someone@example.com < body.txt"

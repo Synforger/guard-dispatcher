@@ -295,10 +295,23 @@ AREAS
     declare_also 'local:8766/pty/* block'
     socket
     passed
+    bash_call "echo go | websocat ws://127.0.0.1:8766/ws/pty/ses_1"
+    passed
     declare_also 'local:8766/ws/pty/* block'
     socket
     denied
     [[ "${output}" == *"local:8766/ws/pty/ses_1 is blocked for sending"* ]]
+    bash_call "echo go | websocat ws://127.0.0.1:8766/ws/pty/ses_1"
+    denied
+    [[ "${output}" == *"not sent to local:8766/ws/pty/ses_1"* ]]
+    bash_call "websocat -b ws://localhost:8766/ws/pty/ses_1 <<< go"
+    denied
+    [[ "${output}" == *"local:8766/ws/pty/ses_1 is blocked for sending"* ]]
+    bash_call "wscat -c ws://127.0.0.1:8766/ws/pty/ses_1 -x '{\"type\": \"input\", \"data\": \"go\"}'"
+    denied
+    # with nothing to send, a client only listens
+    bash_call "websocat ws://127.0.0.1:8766/ws/pty/ses_1"
+    passed
     bash_call "$(printf 'python3 - <<EOF\nimport websockets.sync.client as w\nw.connect("ws://127.0.0.1:8766/ws/pty/ses_1").send(b"go")\nEOF')"
     denied
     bash_call "curl -s -d '{\"text\": \"hello\"}' http://127.0.0.1:8766/agent-messages"

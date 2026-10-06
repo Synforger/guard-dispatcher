@@ -372,6 +372,7 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   scanned), `ssh` / `nc` (the remote command and standard input), `mail` /
   `mailx` / `sendmail` (subject, body and attachments, named `mail:<domain>`),
   HTTPie (`http` / `https` / `xh`: request items and uploaded files),
+  `websocat` / `wscat` (standard input and the message given to send),
   `aws s3` / `gcloud storage` / `gsutil` / `rclone` (local sources copied to
   `s3:<bucket>`, `gs:<bucket>` or `rclone:<remote>`). `socat` and `sftp` to
   another host are refused, since what they send is only known as they run.
@@ -501,10 +502,10 @@ socket), and a pattern is matched from the start of the name: the line for one
 does not reach another under a different path. Give each its own line; the
 client's documentation should list them.
 
-- `local:<port><path>` is a `curl` / `wget` / HTTPie call, or code written
-  into the command (an `http://` or `ws://` address in it), bound for the
-  loopback host. A script file's own calls and a command with no reader here
-  (a WebSocket client such as `websocat`) are not seen.
+- `local:<port><path>` is a `curl` / `wget` / HTTPie call, a WebSocket
+  client's (`websocat` / `wscat`), or code written into the command (an
+  `http://` or `ws://` address in it), bound for the loopback host. A script
+  file's own calls are not seen.
 - `tmux:<session>` is `tmux send-keys` / `send-prefix` / `paste-buffer` /
   `pipe-pane`. The session is the one tmux itself resolves the target to (a
   pane id, a prefix, the pane the command runs in); a target tmux cannot
