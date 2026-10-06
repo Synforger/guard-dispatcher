@@ -47,6 +47,13 @@ it opens each with a fixed line, and a message opening with that line is never t
 it orders nothing, and a turn it opened takes no order. This holds only while agents cannot
 reach the client's own way of typing as the operator: declare that endpoint `block` in
 destinations.txt (a `local:` or `tmux:` name, see outgoing.py).
+
+A line starting with `>>` is how a message relayed from a session on another machine opens. It is
+a relayed message like any other, and it also holds the session it came into (`held`): whoever
+sits at that other machine can have such a message written, so until the operator types a message
+of their own here, the session runs only what reads. The agent tells the operator what the message
+asks and waits; the operator's next message, whatever it says, is what the session then goes by.
+A message relayed from a session on this machine does not lift the hold: only typing does.
 """
 
 from __future__ import annotations
@@ -72,26 +79,32 @@ SENTENCE_END = re.compile(r"[。．！!\n]")
 # A tool whose last part says it drafts keeps the text in the operator's own account.
 DRAFT = re.compile(r"(^|_)drafts?(_|$)", re.I)
 SHOW = "Show the call in a ```send block and wait for the operator's order"
+# How much of a transcript is read at a time when it is read from its end.
+TAIL_PIECE = 256 * 1024
 
 
 def is_draft(tool: str) -> bool:
     return bool(DRAFT.search(tool.rsplit("__", 1)[-1]))
 
 
-def settings() -> tuple[list[str], list[str], list[str]]:
-    """(order phrases, cancelling tails, openings of a relayed message) from orders.txt; none
-    when it is missing."""
+def settings() -> tuple[list[str], list[str], list[str], list[str]]:
+    """(order phrases, cancelling tails, openings of a relayed message, those of them that open a
+    message from another machine) from orders.txt; none when it is missing."""
     if not ORDERS.is_file():
-        return [], [], []
-    orders, tails, relays = [], [], []
+        return [], [], [], []
+    orders, tails, relays, far = [], [], [], []
     for line in ORDERS.read_text(encoding="utf-8").splitlines():
         line = line.split("#", 1)[0].strip()
-        if line[:1] in ("!", ">"):
+        if line.startswith(">>"):
+            if line[2:].strip():
+                relays.append(line[2:].strip())
+                far.append(line[2:].strip())
+        elif line[:1] in ("!", ">"):
             if line[1:].strip():
                 (tails if line[0] == "!" else relays).append(line[1:].strip())
         elif line:
             orders.append(line)
-    return orders, tails, relays
+    return orders, tails, relays, far
 
 
 def phrases() -> tuple[list[str], list[str]]:
@@ -105,6 +118,13 @@ def relayed(text: str) -> bool:
     is recorded in."""
     text = PASTED_OPENING.sub("", text, count=1).lstrip()
     return any(text.startswith(opening) for opening in settings()[2])
+
+
+def from_another_machine(text: str) -> bool:
+    """Whether a message is one a client relayed from a session on another machine: it opens with
+    one of the `>>` lines of orders.txt."""
+    text = PASTED_OPENING.sub("", text, count=1).lstrip()
+    return any(text.startswith(opening) for opening in settings()[3])
 
 
 def orders_a_send(text: str) -> bool:
@@ -140,6 +160,51 @@ def rows(transcript: str | None) -> list[dict]:
     except OSError:
         return []
     return out
+
+
+def lines_from_the_end(transcript: str | None):
+    """The transcript's lines, newest first, a piece of the file at a time: a session's transcript
+    runs to many megabytes, and what `held` looks for is near its end."""
+    try:
+        with open(transcript or "", "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            at, rest = fh.tell(), b""
+            while at > 0:
+                step = min(TAIL_PIECE, at)
+                at -= step
+                fh.seek(at)
+                parts = (fh.read(step) + rest).split(b"\n")
+                rest = parts[0]
+                yield from reversed(parts[1:])
+            if rest:
+                yield rest
+    except OSError:
+        return
+
+
+def held(transcript: str | None) -> bool:
+    """Whether the session is held: going back from the end of its conversation, a message
+    relayed from another machine comes before any message the operator typed. A message relayed
+    from a session on this machine is passed over, so it does not lift the hold. With no `>>`
+    line in orders.txt nothing is ever held, and nothing is read."""
+    if not settings()[3]:
+        return False
+    for raw in lines_from_the_end(transcript):
+        # only a row that came in at the terminal matters: skip the rest without parsing them
+        if b'"user"' not in raw and b"queued_command" not in raw:
+            continue
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            continue
+        text = entered(row) if isinstance(row, dict) and not row.get("isSidechain") else None
+        if text is None or not text.strip():
+            continue
+        if from_another_machine(text):
+            return True
+        if not relayed(text):
+            return False
+    return False
 
 
 def blocks(content) -> list[dict]:
