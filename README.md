@@ -492,16 +492,25 @@ them:
 ```
 # pattern                       area | outside | block
 local:8766/pty/*                block      # the client's own way of typing into a session
+local:8766/ws/pty/*             block      # the socket its terminal view types through
 tmux:agents-*                   block      # typing into the sessions the client runs
 ```
 
+A client often has more than one endpoint that types (a send call, a terminal
+socket), and a pattern is matched from the start of the name: the line for one
+does not reach another under a different path. Give each its own line; the
+client's documentation should list them.
+
 - `local:<port><path>` is a `curl` / `wget` / HTTPie call, or code written
-  into the command, bound for the loopback host.
+  into the command (an `http://` or `ws://` address in it), bound for the
+  loopback host. A script file's own calls and a command with no reader here
+  (a WebSocket client such as `websocat`) are not seen.
 - `tmux:<session>` is `tmux send-keys` / `send-prefix` / `paste-buffer` /
   `pipe-pane`. The session is the one tmux itself resolves the target to (a
   pane id, a prefix, the pane the command runs in); a target tmux cannot
   resolve is named as spelled, and a typing command wrapped in another
-  (`run-shell`, `if-shell`) is `tmux:?`, which only `tmux:*` reaches.
+  (`run-shell`, `if-shell`) is `tmux:?`, which `tmux:*` reaches, or
+  `tmux:[?]` alone (a bare `?` in a pattern is any one character).
 
 #### A send the operator orders
 
