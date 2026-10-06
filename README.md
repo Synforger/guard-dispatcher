@@ -272,13 +272,32 @@ copying a single line, so `agent-hooks/claude-code/area-guard.py` stops it one
 step earlier, before each tool call, from the same `areas.txt`:
 
 - A session that reads inside an area (a `Read` / `Grep` / `Glob` target, an
-  area path named in a `Bash` command, a `Bash` working directory) is marked
-  with the area's name. A command that only checks the paths it names marks
-  nothing: `test`, `[ … ]`, `stat`, `realpath`, `readlink` or `ls -d` run on
-  its own, every argument literal (no second command, pipe, redirect,
-  substitution, glob or variable other than `$HOME`). Anything else is taken
-  to read what it names. Marks are kept per session under
-  `~/.cache/area-guard/`, so they outlive the agent compacting its context.
+  area path a `Bash` command names, a `Bash` working directory) is marked
+  with the name of the area the path is in. A command names a path where the
+  path **stands by itself**:
+  - a word of the command line or the file of a redirection (`cat <path>`,
+    `--file=<path>`, `A=<path>`, `host:<path>`, `-d @<path>`, a glob that
+    matches it), and the same inside a command substitution, a shell's `-c`
+    string, `eval`, or a heredoc fed to a shell;
+  - a string of code written into the command (`python3 -c`, `node -e`, a
+    heredoc or a here-string fed to an interpreter): `open("<path>")`,
+    `["cat", "<path>"]`, a line of a string that runs over lines;
+  - a line of a heredoc or here-string fed to anything else, which may list
+    files (`xargs cat`, `while read f`).
+
+  A path inside a sentence is text, and names nothing: a commit message, a
+  line of a note being written, a replacement string (`"the format is kept in
+  <path> now"`). Nothing opens it, so writing about an area is not reading it.
+  A command line written as one string inside other code
+  (`os.system("cat <path>")`) is a sentence too and is not read; neither is a
+  script run from a file.
+
+  A command that only checks the paths it names marks nothing either: `test`,
+  `[ … ]`, `stat`, `realpath`, `readlink` or `ls -d` run on its own, every
+  argument literal (no second command, pipe, redirect, substitution, glob or
+  variable other than `$HOME`). Anything else is taken to read what it names.
+  Marks are kept per session under `~/.cache/area-guard/`, so they outlive the
+  agent compacting its context.
 - A marked session may write a file inside a git repository, commit there,
   push or send through `gh`, when the place is one it may carry its marks to:
   - **a place in no area passes** — the guard stops what it knows leaves an
@@ -295,13 +314,14 @@ step earlier, before each tool call, from the same `areas.txt`:
   redirection, `tee`, `touch`, `truncate`, the destination of `cp` / `mv` /
   `install` / `ln`, `sed -i`, `dd of=`), whatever stands before the command
   (`sudo`, `env`, a variable). A shell's `-c` string, and a heredoc fed to a
-  shell, is read as a command line of its own. Every path inside other code
-  written into the command counts (`python3 -c`, `node -e`, a heredoc or a
-  here-string fed to an interpreter), since code that reads a file cannot be
-  told apart from code that writes it: an absolute or home path anywhere in
-  the code, and a quoted word that reads as a relative path (it holds a `/`,
-  ends in an extension, or names something in the command's folder). A
-  heredoc fed to anything else is text, not commands. A script run from a file
+  shell, is read as a command line of its own. Every path that other code
+  written into the command names counts (`python3 -c`, `node -e`, a heredoc or
+  a here-string fed to an interpreter), since code that reads a file cannot be
+  told apart from code that writes it: an absolute or home path that stands by
+  itself, as above, and a whole string that reads as a relative path (one word
+  that holds a `/`, ends in an extension, or names something in the command's
+  folder). A word quoted inside a longer string (`` "see `notes.md`" ``) is
+  that string's text. A heredoc fed to anything else is text, not commands. A script run from a file
   is not read, so what it writes is not judged. Destinations are judged
   exactly as the push-time scan judges them (`corpus-scan.py --where`). Files
   outside any repository and `_exempt` areas stay writable, and an `_exempt`
