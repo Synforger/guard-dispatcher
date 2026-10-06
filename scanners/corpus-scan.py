@@ -55,10 +55,11 @@ hours (MAX_AGE). Only one process at a time walks or writes the
 fingerprints (a lock file in the cache); the rest use what is already there
 rather than wait or walk beside it.
 
-What is checked depends on where the text is going: every area that does not
-contain the destination. A repository inside an area may carry that area's
-text, and an area nested inside another (a client inside a company) may carry
-the outer one's.
+What is checked depends on where the text is going: every area but the
+destination's own, the innermost ones that contain it. A repository inside an
+area may carry that area's text; an area around it (the company around one of
+its clients) is still checked, so what goes to a client does not take the
+company's own text.
 
 The destination is the GitHub repository being sent to, not the folder the
 command was typed in -- a pull request opened from inside a client folder onto

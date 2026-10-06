@@ -233,11 +233,11 @@ one. A document that could not be read is listed by `--status`, with why —
 timed out, its extractor is not installed, or its exit code — and `--summary`
 / `doctor.sh` show the same grouped by why, without naming any of them.
 
-**Where the text is going decides what it may carry**: every area that does
-not contain the destination is checked. Areas nest — a client inside a
-company — so a client's repository may carry the company's text, a company
-repository may not carry the client's, and a repository outside both carries
-neither.
+**Where the text is going decides what it may carry**: every area but the
+destination's own is checked, and its own areas are the innermost ones holding
+it. Areas nest — a client inside a company — so a client's repository carries
+the client's text and not the company's, a company repository carries the
+company's and not the client's, and a repository outside both carries neither.
 
 The destination is the GitHub repository being sent to — the push URL, or for
 `gh` the `-R` / `GH_REPO` / `api repos/<owner>/<repo>` target, falling back to
