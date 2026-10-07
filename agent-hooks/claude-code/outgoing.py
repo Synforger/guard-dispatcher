@@ -37,6 +37,13 @@ read, and a destination blocked for sending still takes reads. A local path in a
 (a file to upload, a folder to save into) is not what the service receives: the files' text is. A network command without a body
 is not a send.
 
+An argument whose name says id (`id`, `file_id`, `fileId`, `ids`) names an object the service
+already holds -- the file to read, the page to write to. Its value, when it is one word of ASCII,
+is that object's name and not text the call carries: an id a private document links to is long
+enough to be a run of that document, and reading the file by it would be refused as a copy. It is
+left out of the private-document scan and still read against the word list. The same id as a
+search term, and the link it was taken from, are text like any other.
+
 What stays on this machine is named apart: `local:<port><path>` for a call to the loopback host,
 `tmux:<session>` for tmux typing into a pane. Neither leaves the machine, so both pass unless a
 line of destinations.txt names the kind (see send-scan.py): the operator blocks the endpoints that
@@ -66,6 +73,12 @@ READING = re.compile(r"(^|_)(get|list|search|read|fetch|query|view|find|describe
 HOST_SENDERS = {"Artifact", "ArtifactData", "ArtifactComments", "WebFetch", "WebSearch"}
 ARTIFACT_READING = {"read", "list", "open", "quickstart"}
 ARTIFACT_DATA_READING = {"get", "list", "query"}
+# The name of an argument whose value names an object the service holds: its last word is `id`
+# or `ids` (`id`, `file_id`, `file-ID`, `fileId`, `documentIDs`). A name that only ends in those
+# letters (`valid`, `android`) is not one.
+ID_KEY = re.compile(r"(?:^|[_-])(?i:ids?)$|[a-z0-9]I[Dd]s?$")
+# What such a name looks like: one word of printable ASCII. A sentence holds a space, or Japanese.
+HANDLE = re.compile(r"[!-~]+")
 # Keys of a tool's input that name local files whose contents are uploaded.
 FILE_KEYS = {"file_path", "file_paths", "files", "path", "paths", "attachment", "attachments"}
 MAX_FILE = 8 * 1024 * 1024
@@ -147,8 +160,26 @@ def is_local_path(text: str) -> bool:
     return Path(os.path.expanduser(text)).parent.is_dir()
 
 
-def sent_strings(args: dict) -> list[str]:
-    return [t for t in strings(args) if not is_local_path(t)]
+def carried(args: dict) -> tuple[list[str], list[str]]:
+    """(texts, handles) of a call's arguments: the strings the service receives as text, and the
+    ones that name an object it holds (one word of ASCII under an argument whose name says id; a
+    list under such a name holds several). A local path is neither."""
+    texts: list[str] = []
+    handles: list[str] = []
+
+    def walk(value, key: str = "") -> None:
+        if isinstance(value, str):
+            if not is_local_path(value):
+                (handles if ID_KEY.search(key) and HANDLE.fullmatch(value) else texts).append(value)
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                walk(v, k if isinstance(k, str) else "")
+        elif isinstance(value, list):
+            for v in value:
+                walk(v, key)
+
+    walk(args)
+    return texts, handles
 
 
 def local_files(args: dict, cwd: str) -> list[Path]:
@@ -174,6 +205,7 @@ class Send(NamedTuple):
     unreadable: list[tuple[Path, str]]   # files it uploads whose text cannot be taken out, and why
     unknown: str | None = None          # why the body is only known when the command runs, if it is
     reading: bool = False                # a reading call: only its own strings reach the service
+    handles: str = ""                    # the ids it names objects of the service by: not text it carries
 
 
 @functools.lru_cache(maxsize=None)
@@ -258,17 +290,19 @@ def tool_send(tool: str, args: dict, cwd: str, send_scan: Path, tabs: dict | Non
     if not (tool.startswith("mcp__") or tool in HOST_SENDERS):
         return None
     name = destination_of(tool, args, tabs)
+    texts, handles = carried(args)
+    named = "\n".join(handles)
     if reads_only(tool, args):
         # A search term, a query or a URL still reaches the service; the files named are not uploaded.
-        return Send(name, "\n".join(sent_strings(args)), [], reading=True)
-    texts, unreadable = sent_strings(args), []
+        return Send(name, "\n".join(texts), [], reading=True, handles=named)
+    unreadable = []
     for p in local_files(args, cwd):
         text, why = file_text(p, send_scan)
         if text is None:
             unreadable.append((p, why))
         else:
             texts.append(text)
-    return Send(name, "\n".join(texts), unreadable)
+    return Send(name, "\n".join(texts), unreadable, handles=named)
 
 
 def body_text(tool: str, flag: str, value: str, cwd: str, send_scan: Path) -> tuple[str, list[tuple[Path, str]]]:
@@ -812,7 +846,7 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
     from the hook's `event` (its transcript); once everything else has passed it takes one of
     the order's shown blocks, kept under `state`."""
     judged = send_scan_module(send_scan)
-    for name, payload, unreadable, unknown, reading in sends(tool, args, cwd, send_scan, tabs):
+    for name, payload, unreadable, unknown, reading, handles in sends(tool, args, cwd, send_scan, tabs):
         if name.startswith(SESSION):
             if why := to_session(name[len(SESSION):], payload, event):
                 return why
@@ -842,12 +876,15 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
                 return f"outgoing: not sent to {name}: {path} cannot be scanned ({why}), and {because}"
         import subprocess
         import tempfile   # loaded only when a call sends: most hook calls never get here
-        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8",
-                                         dir=os.environ.get("TMPDIR") or None) as fh:
-            fh.write(payload)
-            path = fh.name
+        written = []
+        for text in (payload, handles) if handles else (payload,):
+            with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8",
+                                             dir=os.environ.get("TMPDIR") or None) as fh:
+                fh.write(text)
+                written.append(fh.name)
         try:
-            r = subprocess.run(["python3", str(send_scan), "--dest", name, "--text", path,
+            r = subprocess.run(["python3", str(send_scan), "--dest", name, "--text", written[0],
+                                *(["--handles", written[1]] if handles else []),
                                 *(["--reading"] if reading else [])],
                                capture_output=True, text=True, timeout=180)
         except subprocess.TimeoutExpired:
@@ -856,7 +893,8 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
         except OSError:
             return f"outgoing: not sent to {name}: the send scan could not run"
         finally:
-            os.unlink(path)
+            for path in written:
+                os.unlink(path)
         if r.returncode != 0:
             why = (r.stderr.strip().splitlines() or ["the send scan refused it"])[-1]
             if name == tool and tab_ids(args):
