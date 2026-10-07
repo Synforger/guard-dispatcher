@@ -89,6 +89,74 @@ denied() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"permissionDecision": "d
     passed
 }
 
+# --- an argument that names an object the service holds ---------------------------------
+
+# A made-up file id, long enough to be a run of the document that links to it.
+DOC_ID="1Fixture-document_id-0123456789-ABCDEFGHIJKLM"
+# linked — a company document links to a file by its id.
+linked() {
+    [ "${#DOC_ID}" -ge 40 ]
+    printf 'minutes: https://docs.example.com/document/d/%s/edit\n' "${DOC_ID}" > "${H}/org/meetings/links.md"
+}
+
+@test "outgoing: an id an area's document links to names the file to read: it is not the area's text" {
+    linked
+    call mcp__acme__drive_read_file_content "$(jq -n --arg i "${DOC_ID}" '{fileId: $i}')"
+    passed
+    call mcp__acme__drive_read_file_content "$(jq -n --arg i "${DOC_ID}" '{file_id: $i}')"
+    passed
+    call mcp__acme__drive_read_file_content "$(jq -n --arg i "${DOC_ID}" '{"file-ID": $i}')"
+    passed
+    call mcp__acme__drive_get_files "$(jq -n --arg i "${DOC_ID}" '{ids: [$i], parent: {id: $i}, documentIDs: [$i]}')"
+    passed
+}
+
+@test "outgoing: the same id as a search term, and the link it came from, are still the document's text" {
+    linked
+    call mcp__acme__drive_search_files "$(jq -n --arg i "${DOC_ID}" '{query: $i}')"
+    denied
+    call mcp__acme__drive_search_files "$(jq -n --arg i "${DOC_ID}" '{file_id: "abc", query: $i}')"
+    denied
+    call mcp__acme__drive_read_file_content \
+        "$(jq -n --arg u "https://docs.example.com/document/d/${DOC_ID}/edit" '{url: $u}')"
+    denied
+}
+
+@test "outgoing: a sending call names its target by id too, and what it writes there is still scanned" {
+    linked
+    call mcp__acme__drive_add_comment \
+        "$(jq -n --arg i "${DOC_ID}" '{file_id: $i, text: "a note of my own about nothing private"}')"
+    passed
+    call mcp__acme__drive_add_comment "$(jq -n --arg i "${DOC_ID}" --arg t "${COMPANY_TEXT}" '{file_id: $i, text: $t}')"
+    denied
+}
+
+@test "outgoing: an id argument that holds words is text" {
+    linked
+    call mcp__acme__drive_read_file_content "$(jq -n --arg t "${CLIENT_TEXT}" '{file_id: $t}')"
+    denied
+    # Japanese is written without spaces: a sentence is not an id for having none.
+    printf '%s\n' "較正表は夜明けに十七を示すと記録された" > "${H}/org/meetings/ja.md"
+    call mcp__acme__drive_read_file_content "$(jq -n '{file_id: "較正表は夜明けに十七を示すと記録された"}')"
+    denied
+}
+
+@test "outgoing: an argument whose name only ends like id is not one" {
+    linked
+    for key in valid android paid grid isValid ANDROID; do
+        call mcp__acme__drive_read_file_content "$(jq -n --arg k "${key}" --arg i "${DOC_ID}" '{($k): $i}')"
+        denied
+    done
+}
+
+@test "outgoing: the word list still reads an id" {
+    call mcp__acme__drive_read_file_content "$(jq -n --arg i "proj-${SENTINEL}" '{project_id: $i}')"
+    denied
+    [[ "${output}" == *"flagged identifier"* ]]
+    call mcp__acme__drive_read_file_content "$(jq -n '{project_id: "proj-plain"}')"
+    passed
+}
+
 @test "outgoing: block refuses every send of the tool, whatever it carries; reading still passes" {
     destinations '*slack* block' 'mcp__*drive* company'
     send mcp__claude_ai_Slack__slack_send_message "hello"

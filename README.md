@@ -412,6 +412,13 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   call whose payload is its URL, decoded (a query string reaches the host).
   A local path among a call's arguments — a file to upload, a folder to save
   into — is not scanned as text: the service receives the file, not its name.
+  An argument whose name says id (`id`, `file_id`, `fileId`, `ids`) names an
+  object the service already holds, such as the file to read or the page to
+  write to. When its value is one word of ASCII it is not compared with the
+  private documents: a file id that one of them links to can be used to open
+  that file. It is still read against the word list, and the same id as a
+  search term, or the whole link under another argument, is text like any
+  other.
   Anything sent to the loopback host is not a send, unless a line names it
   (see *What stays on this machine* below).
 - **Against what**: the private-document scan compares the payload with the
