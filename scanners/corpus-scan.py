@@ -26,7 +26,10 @@ Areas are defined on this machine only (never in a repository):
                                        of it (an external corpus, build logs)
     ~/.config/guard/background.txt     folders of public text and code; whatever
                                        also appears there is not specific to an
-                                       area and is dropped
+                                       area and is dropped (a table of it keeps for a
+                                       week; past that a scan uses the old table while
+                                       it is rebuilt apart, and a rebuild reads only
+                                       the files that changed)
 
 An area's documents are everything under its paths that holds its words:
 
@@ -78,6 +81,9 @@ a public repository leaves the client all the same:
     corpus-scan.py --where [--dest <url> | --gh-argv <file>]
                                           print where the destination lives, or OUTSIDE
     corpus-scan.py --refresh              rebuild the fingerprints now
+    corpus-scan.py --refresh-public       rebuild the table of public text if it is not current, unless
+                                          another process is at it (what a scan starts when it finds
+                                          the table past its week)
     corpus-scan.py --status               what is configured and how fresh, naming each area and
                                           each document that could not be read, and why (for the
                                           operator)
@@ -134,7 +140,10 @@ LATIN_RUN = int(os.environ.get("GUARD_CORPUS_LATIN_RUN", "40"))
 CODE_LINES = int(os.environ.get("GUARD_CORPUS_CODE_LINES", "2"))
 JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]")
 MAX_AGE = int(os.environ.get("GUARD_CORPUS_MAX_AGE", str(6 * 3600)))
-BACKGROUND_MAX_AGE = 7 * 24 * 3600
+BACKGROUND_MAX_AGE = int(os.environ.get("GUARD_CORPUS_PUBLIC_MAX_AGE", str(7 * 24 * 3600)))
+# How many prints of public text are held as one set while the table is put together.
+PUBLIC_RUN = 2_000_000
+BUILD_LOCK, PUBLIC_LOCK = "build.lock", "background.lock"
 CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
 CACHE = Path(os.environ.get("GUARD_CORPUS_CACHE", Path.home() / ".cache/guard-corpus"))
 EXEMPT = "_exempt"
@@ -202,15 +211,16 @@ def atomic_write(path: Path, data: bytes | str) -> None:
 
 
 @contextlib.contextmanager
-def lock_file(wait: bool):
+def lock_file(wait: bool, name: str = BUILD_LOCK):
     """The one lock a build or a catch-up takes, so several processes never write the same cache
-    files at once: only the holder walks or writes; the rest read what is already there.
+    files at once: only the holder walks or writes; the rest read what is already there. The table
+    of public text has a lock of its own (PUBLIC_LOCK): rebuilding it holds up no walk.
 
     Non-blocking unless `wait` (nothing usable exists yet, so there is nothing to fall back to,
     and this run must be the one that builds it). A process that loses a non-blocking race yields
     False having touched nothing -- it goes on to use whatever is already on disk."""
     CACHE.mkdir(parents=True, exist_ok=True)
-    with open(CACHE / "build.lock", "a+") as fh:
+    with open(CACHE / name, "a+") as fh:
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -486,8 +496,9 @@ def documents(roots: list[Path], inner: list[Path], ignored: list[Path], repos: 
                     yield (here / name, *found)
 
 
-def published_texts(parent: Path):
-    """Text files of every repository under parent, as published on its remote.
+def published_files(parent: Path):
+    """(key, stamp, name, read) for every file of every repository under parent, as published on
+    its remote: the stamp is the blob's id, and read() gives its text (None when it is not text).
 
     Only what the remote's default branch already carries -- never the working
     tree, where the leak being prepared would whitelist itself.
@@ -498,14 +509,56 @@ def published_texts(parent: Path):
                               capture_output=True, text=True).stdout.strip()
         if not head:
             continue
-        names = subprocess.run(["git", "-C", repo, "ls-tree", "-r", "--name-only", head],
-                               capture_output=True, text=True).stdout.split("\n")
-        for name in names:
-            if not name:
+        # -z: a name is given as it is, whatever characters it holds (quoted, `git show` would not find it).
+        listing = subprocess.run(["git", "-C", repo, "ls-tree", "-r", "-z", head], capture_output=True)
+        for row in listing.stdout.decode("utf-8", "replace").split("\0"):
+            meta, _, name = row.partition("\t")
+            words = meta.split()
+            if not name or len(words) != 3 or words[1] != "blob":
                 continue
-            blob = subprocess.run(["git", "-C", repo, "show", f"{head}:{name}"], capture_output=True)
-            if blob.returncode == 0 and len(blob.stdout) <= MAX_FILE and b"\0" not in blob.stdout[:8192]:
-                yield name, blob.stdout.decode("utf-8", "replace")
+
+            def read(repo: str = repo, head: str = head, name: str = name) -> str | None:
+                blob = subprocess.run(["git", "-C", repo, "show", f"{head}:{name}"], capture_output=True)
+                if blob.returncode != 0 or len(blob.stdout) > MAX_FILE or b"\0" in blob.stdout[:8192]:
+                    return None
+                return blob.stdout.decode("utf-8", "replace")
+
+            yield f"{repo}\0{name}", words[2], name, read
+
+
+def walked_files(root: Path):
+    """(key, stamp, name, read) for every file under a folder of public text: the stamp is its
+    size and modification time, and read() gives its text (None when it is not text)."""
+    for folder, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+        for name in files:
+            path = Path(folder, name)
+            try:
+                if path.is_symlink():
+                    continue
+                status = path.stat()
+            except OSError:
+                continue
+            if status.st_size > MAX_FILE:
+                continue
+
+            def read(path: Path = path) -> str | None:
+                try:
+                    data = path.read_bytes()
+                except OSError:
+                    return None
+                return None if b"\0" in data[:8192] else data.decode("utf-8", "replace")
+
+            yield str(path), f"{status.st_size}:{status.st_mtime_ns}", name, read
+
+
+def public_files(source: Path):
+    """Every file background.txt makes public, with the stamp its prints were taken at."""
+    for entry in read_lines(source):
+        if entry.startswith("published "):
+            yield from published_files(expand(entry.split(None, 1)[1]))
+        else:
+            yield from walked_files(expand(entry))
 
 
 def public_prints(name: str, text: str) -> set[int]:
@@ -518,36 +571,138 @@ def public_prints(name: str, text: str) -> set[int]:
     return prints
 
 
-def background_prints() -> array:
-    """Runs of public text, sorted. Public text changes rarely, so it keeps for a week."""
+def public_table() -> Path:
     # The format is in the name: public text read another way is never mistaken for the old table.
-    cached, source = CACHE / f"background-{PRINT_FORMAT}.bin", CONFIG / "background.txt"
-    if (cached.is_file() and source.is_file() and cached.stat().st_mtime > source.stat().st_mtime
-            and time.time() - cached.stat().st_mtime < BACKGROUND_MAX_AGE):
-        table = array("Q")
-        table.frombytes(cached.read_bytes())
-        return table
-    prints: set[int] = set()
-    for entry in read_lines(source):
-        if entry.startswith("published "):
-            for name, text in published_texts(expand(entry.split(None, 1)[1])):
-                prints |= public_prints(name, text)
-            continue
-        for folder, dirs, files in os.walk(expand(entry)):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
-            for name in files:
-                path = Path(folder, name)
-                try:
-                    if path.stat().st_size > MAX_FILE or path.is_symlink():
-                        continue
-                    data = path.read_bytes()
-                except OSError:
-                    continue
-                if b"\0" not in data[:8192]:
-                    prints |= public_prints(name, data.decode("utf-8", "replace"))
-    table = array("Q", sorted(prints))
-    atomic_write(cached, table.tobytes())
+    return CACHE / f"background-{PRINT_FORMAT}.bin"
+
+
+def public_is_edited(cached: Path, source: Path) -> bool:
+    """background.txt was written after the table was built: the operator changed what is public."""
+    return source.stat().st_mtime >= cached.stat().st_mtime
+
+
+def public_is_old(cached: Path) -> bool:
+    return time.time() - cached.stat().st_mtime >= BACKGROUND_MAX_AGE
+
+
+def build_public(source: Path) -> array:
+    """Build the table of public text, reading only the files that changed since the last build.
+
+    Each file's prints are kept, with the stamp they were taken at, in one pack beside an index
+    (key -> stamp, where its prints start in the pack, how many). A file whose stamp holds is
+    copied from the old pack; only a new or changed one is read and printed. The table is the
+    union of them all, put together from sorted runs of at most PUBLIC_RUN prints so that the
+    whole of it is never held as one set."""
+    kept_in = CACHE / f"public-{PRINT_FORMAT}"
+    kept_in.mkdir(parents=True, exist_ok=True)
+    index_path = kept_in / "index.json"
+    try:
+        old = json.loads(index_path.read_text()) if index_path.is_file() else {}
+    except ValueError:
+        old = {}
+    old_pack = kept_in / old.get("pack", "") if old.get("pack") else None
+    if old_pack is None or not old_pack.is_file():
+        old, old_pack = {}, None
+    known = old.get("files", {})
+    files: dict = {}
+    runs: list[array] = []
+    pending: set[int] = set()
+    fd, tmp = tempfile.mkstemp(dir=kept_in, prefix="pack.", suffix=".bin")
+    try:
+        with os.fdopen(fd, "wb") as out, (open(old_pack, "rb") if old_pack else contextlib.nullcontext()) as before:
+            position = 0
+            for key, stamp, name, read in public_files(source):
+                chunk, was = array("Q"), known.get(key)
+                if was and was[0] == stamp:
+                    before.seek(was[1] * chunk.itemsize)
+                    chunk.frombytes(before.read(was[2] * chunk.itemsize))
+                if not was or was[0] != stamp or len(chunk) != was[2]:
+                    text = read()
+                    prints = public_prints(name, text) if text is not None else set()
+                    chunk = array("Q", prints)       # in no order: the table is sorted from the runs
+                    pending |= prints
+                else:
+                    pending.update(chunk)
+                out.write(chunk.tobytes())
+                files[key] = [stamp, position, len(chunk)]
+                position += len(chunk)
+                if len(pending) >= PUBLIC_RUN:
+                    runs.append(array("Q", sorted(pending)))
+                    pending = set()
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    runs.append(array("Q", sorted(pending)))
+    table, last = array("Q"), None
+    for value in heapq.merge(*runs):
+        if value != last:
+            table.append(value)
+        last = value
+    # The index names its pack, so the two are replaced as one: until the index is written the
+    # old index still points at the old pack, whole.
+    atomic_write(index_path, json.dumps({"pack": Path(tmp).name, "files": files}))
+    for stale in kept_in.glob("pack.*.bin"):
+        if stale.name != Path(tmp).name:
+            stale.unlink(missing_ok=True)
+    atomic_write(public_table(), table.tobytes())
     return table
+
+
+def rebuild_public_apart() -> None:
+    """Start the rebuild of the public table as a process of its own, unless one is at it. The
+    process outlives the scan that started it: a commit that ends, or is given up on, does not
+    stop the rebuild half way."""
+    with lock_file(wait=False, name=PUBLIC_LOCK) as free:
+        if not free:
+            return
+    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--refresh-public"],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
+#: The table of public text, once this process has it: a scan asks for it more than once (to take
+#: public runs out of an area's table, then to judge a line), and reads it from disk one time.
+_PUBLIC: list[array] = []
+
+
+def background_prints(wait: bool = False) -> array:
+    """The table of public text, as this process first found it (`current_public`)."""
+    if not _PUBLIC:
+        _PUBLIC.append(current_public(wait))
+    return _PUBLIC[0]
+
+
+def current_public(wait: bool = False) -> array:
+    """Runs of public text, sorted. Public text changes rarely, so it keeps for a week.
+
+    A table past its week is used as it is while a process of its own rebuilds it
+    (`rebuild_public_apart`): a commit does not wait for text that almost never changes, and an
+    old table only fails to clear what became public since it was built. A table older than
+    background.txt is rebuilt here and now -- the operator changed what is public and expects the
+    next scan to know -- and so is one that does not exist yet, or any that is not current when
+    the caller asks to wait (`--refresh`). One process builds at a time; another that needs the
+    table waits for it rather than build beside it."""
+    cached, source = public_table(), CONFIG / "background.txt"
+    if not source.is_file():
+        return array("Q")
+    if cached.is_file() and not public_is_edited(cached, source):
+        if not public_is_old(cached):
+            return read_table(cached)
+        if not wait:
+            days = int((time.time() - cached.stat().st_mtime) // 86400)
+            say(f"the table of public text is {days} days old: this scan uses it as it is, and it is "
+                "being rebuilt apart from the scan (text made public since may still be flagged)")
+            rebuild_public_apart()
+            return read_table(cached)
+    with lock_file(wait=True, name=PUBLIC_LOCK):
+        # Whoever held the lock may have built it while this process waited.
+        if cached.is_file() and not public_is_edited(cached, source) and not public_is_old(cached):
+            return read_table(cached)
+        say("reading the public text (files unchanged since the last time are not read again)...")
+        started = time.time()
+        table = build_public(source)
+        say(f"table of public text built in {time.time() - started:.1f}s: {len(table)} prints")
+        return table
 
 
 def present(table: array, value: int) -> bool:
@@ -1174,6 +1329,7 @@ def patterns(name: str) -> list[re.Pattern]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    started = time.time()
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--range", dest="span")
     parser.add_argument("--text", type=Path)
@@ -1185,10 +1341,20 @@ def main(argv: list[str] | None = None) -> int:
                         "joined by commas are a place inside each (a session that has read in all)")
     parser.add_argument("--where", action="store_true", help=f"print where the destination lives, or {OUTSIDE}")
     parser.add_argument("--refresh", action="store_true")
+    parser.add_argument("--refresh-public", action="store_true")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--summary", action="store_true")
     args = parser.parse_args(argv)
 
+    if args.refresh_public:
+        # Started by a scan that found the table past its week, or by hand. Whoever holds the lock
+        # is already at it: this one leaves.
+        cached, source = public_table(), CONFIG / "background.txt"
+        with lock_file(wait=False, name=PUBLIC_LOCK) as mine:
+            if mine and source.is_file() and not (cached.is_file() and not public_is_edited(cached, source)
+                                                   and not public_is_old(cached)):
+                build_public(source)
+        return 0
     try:
         areas = load_areas()
     except ValueError as error:
@@ -1201,6 +1367,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.refresh:
             for stale in ("visibility.json", "clones.json"):
                 (CACHE / stale).unlink(missing_ok=True)
+            background_prints(wait=True)
             load(areas, refresh=True)
         summary = json.loads((CACHE / "summary.json").read_text()) if (CACHE / "summary.json").is_file() else None
         if summary:
@@ -1227,7 +1394,7 @@ def main(argv: list[str] | None = None) -> int:
             say("fingerprints not built yet")
         return 0
     if not (args.span or args.text or args.where):
-        parser.error("give --range, --text, --where, --refresh, --status or --summary")
+        parser.error("give --range, --text, --where, --refresh, --refresh-public, --status or --summary")
 
     sender = expand(str(args.repo or (sending_repo() if args.span else os.getcwd())))
     here: Path | None = sender
@@ -1293,9 +1460,10 @@ def main(argv: list[str] | None = None) -> int:
         say(f"this carries text from a private area that {here or 'the destination'} is outside of:")
         for line in found:
             print(f"    {line}", file=sys.stderr)
-        say(f"replace it with made-up text, or add a phrase that is fine to {CONFIG / 'allow.txt'}")
+        say(f"replace it with made-up text, or add a phrase that is fine to {CONFIG / 'allow.txt'}"
+            f" (scanned in {time.time() - started:.1f}s)")
         return 1
-    say(f"clean ({len(lines)} lines against {areas_count(checked)})")
+    say(f"clean ({len(lines)} lines against {areas_count(checked)}) in {time.time() - started:.1f}s")
     return 0
 
 
