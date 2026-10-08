@@ -345,13 +345,16 @@ step earlier, before each tool call, from the same `areas.txt`:
   `guard.exemptPrefix`, clearing the marks, creating the off switch, removing
   the installed hooks, or sending from a repository the git hooks do not reach. The operator types
   those; the agent does not.
-- On every machine too, the agent writes neither `destinations.txt` nor
-  `orders.txt` in `$GUARD_CONFIG_DIR`, nor removes them (or the folder holding
-  them), nor writes a session's transcript (`~/.claude*/projects/**/*.jsonl`,
-  and the one the call itself names), through `Edit` / `Write` or the shell:
-  an order for a send is judged from these (see *A send the operator orders*
-  below), so an agent that could write them would make an order itself.
-  Reading them, and copying them elsewhere, passes.
+- On every machine too, the agent writes nothing in the guard's settings folder
+  (`~/.config/guard/`: `areas.txt`, `allow.txt`, `background.txt`, `ignore.txt`,
+  `patterns/`, `destinations.txt`, `orders.txt`, and a file put there tomorrow),
+  nor removes it, nor writes a session's transcript
+  (`~/.claude*/projects/**/*.jsonl`), through Edit / Write or the shell: what the
+  guard lets through is judged from the settings, and an order for a send from
+  the transcript (see *A send the operator orders* below). An agent that could
+  write them would draw an area around what it wants to send, call a phrase fine
+  to send, or make an order itself. Reading them and copying them out pass; a
+  change is the operator's to make, on the agent's telling why.
 - **The operator's switch** is one file: while `$GUARD_CONFIG_DIR/agent-off`
   exists, the entry guard passes every call. Installing or updating the guard
   leaves it alone, so a guard switched off stays off until the file is

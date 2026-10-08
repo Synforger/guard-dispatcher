@@ -34,9 +34,11 @@ Separately, and on every machine, a Bash command that switches the guards off or
 (skip variables, `--no-verify`, a hooksPath / exempt setting, clearing the marks, sending from a
 repository the hooks do not reach) is refused: the operator types those, the agent does not.
 
-What an order for a send is judged from (`order.py`) is the operator's to write as well: the
-agent writes neither `destinations.txt` nor `orders.txt`, nor removes them, nor writes a
+What the guard judges from is the operator's to write as well: the agent writes nothing in the
+guard's settings folder (`$GUARD_CONFIG_DIR`: where the areas are, what is public, what is fine
+to send, where a destination sits, what counts as an order), nor removes it, nor writes a
 session's transcript (`~/.claude*/projects/**/*.jsonl`), through Edit / Write or the shell.
+Reading the settings, and copying them out, pass.
 
 A message relayed from a session on another machine holds the session it came into, on every
 machine (`order.py`, the `>>` lines of `orders.txt`): until the operator types a message of their
@@ -545,9 +547,11 @@ def write_targets(command: str, cwd: str) -> list[Path]:
     return named(command, cwd)[0]
 
 
-# What an order for a send is judged from. The operator writes these; an agent that could would
-# make an order itself.
-KEPT_SETTINGS = ("destinations.txt", "orders.txt")
+# What the guard judges from: the whole of its settings folder, and a session's transcript (an order
+# for a send is read from it). The operator writes these. An agent that could would draw an area
+# around what it wants to send, call a phrase fine to send, or make an order itself.
+SETTINGS_WHY = "what the guard lets through is judged from it"
+TRANSCRIPT_WHY = "an order for a send is judged from it"
 TRANSCRIPT = re.compile(r"\.claude[^/]*/projects/.+\.jsonl", re.I)
 
 
@@ -561,30 +565,39 @@ def same_file(a: Path, b: Path) -> bool:
     return str(a).casefold() == str(b).casefold()
 
 
-def kept(path: Path, transcript: str | None) -> str | None:
-    """What a path is when the agent may not write it, or None."""
-    for name in KEPT_SETTINGS:
-        if same_file(path, real(CONFIG / name)):
-            return f"the guard's {name}"
+def in_settings(path: Path) -> bool:
+    """The guard's settings folder or anything in it, under any spelling: through a link, or in
+    another case on a file system that folds it."""
+    folders = {str(f).casefold() for f in (CONFIG, real(CONFIG))}
+    for spelled in {str(path).casefold(), str(real(path)).casefold()}:
+        if any(spelled == folder or spelled.startswith(folder + os.sep) for folder in folders):
+            return True
+    return False
+
+
+def kept(path: Path, transcript: str | None) -> tuple[str, str] | None:
+    """(what a path is, why the agent may not write it), or None."""
+    if in_settings(path):
+        return f"the guard's settings ({path.name})", SETTINGS_WHY
     if transcript and same_file(path, real(transcript)):
-        return "the session's transcript"
+        return "the session's transcript", TRANSCRIPT_WHY
     for home in {Path.home(), real(Path.home())}:
         if home in path.parents and TRANSCRIPT.fullmatch(path.relative_to(home).as_posix()):
-            return "a session's transcript"
+            return "a session's transcript", TRANSCRIPT_WHY
     return None
 
 
-def kept_by(command: str, cwd: str, transcript: str | None) -> str | None:
-    """What a Bash command writes or removes that the agent may not, or None. Removing a
-    setting counts: with no destinations.txt, a destination held to an order is undeclared."""
+def kept_by(command: str, cwd: str, transcript: str | None) -> tuple[str, str] | None:
+    """What a Bash command writes or removes that the agent may not (and why), or None. Removing
+    a setting counts: with no destinations.txt a destination held to an order is undeclared, and
+    with no areas.txt nothing is an area."""
     written, removed = named(command, cwd)
     for path in written + removed:
         if what := kept(path, transcript):
             return what
     for path in removed:
-        for name in KEPT_SETTINGS:
-            if path in real(CONFIG / name).parents:
-                return f"the folder holding the guard's {name}"
+        if path in real(CONFIG).parents or path in CONFIG.parents:
+            return "the folder holding the guard's settings", SETTINGS_WHY
     return None
 
 
@@ -988,13 +1001,13 @@ def main() -> int:
     if tool in WRITES and ".cache/area-guard" in written:
         deny("area-guard: an agent does not rewrite the entry guard's marks")
         return 0
-    # What an order for a send is judged from is the operator's to write, on every machine.
+    # What the guard judges from is the operator's to write, on every machine.
     transcript = event.get("transcript_path")
     what = kept(Path(written), transcript) if tool in WRITES else \
         kept_by(args.get("command", ""), cwd, transcript) if tool == "Bash" else None
     if what:
-        deny(f"area-guard: an agent does not write or remove {what}: an order for a send is judged from "
-             f"it (code written into a command counts as writing every path it names). "
+        deny(f"area-guard: an agent does not write or remove {what[0]}: {what[1]} "
+             f"(code written into a command counts as writing every path it names). "
              f"If it needs changing, tell the operator why")
         return 0
 
