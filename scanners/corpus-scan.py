@@ -576,6 +576,29 @@ def public_table() -> Path:
     return CACHE / f"background-{PRINT_FORMAT}.bin"
 
 
+def public_id_path() -> Path:
+    return CACHE / f"background-{PRINT_FORMAT}.id"
+
+
+def read_public_id() -> str:
+    """The name the table of public text on disk goes by: a hash of what it holds ("" when there
+    is no table, or it was built before tables had a name). An area's tables are merged against
+    one table of public text, and the summary keeps that table's name (`public`): when the two
+    differ, what became public since is still in the area's tables."""
+    try:
+        return public_id_path().read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def publish_public(table: array, ident: str) -> None:
+    """Put a built table in place, then its name beside it. Stopped between the two, the old name
+    stays beside the new table: the areas' tables are then not merged again until the next
+    rebuild, which only leaves flagged what the new table would have cleared."""
+    atomic_write(public_table(), table.tobytes())
+    atomic_write(public_id_path(), ident)
+
+
 def public_is_edited(cached: Path, source: Path) -> bool:
     """background.txt was written after the table was built: the operator changed what is public."""
     return source.stat().st_mtime >= cached.stat().st_mtime
@@ -585,8 +608,9 @@ def public_is_old(cached: Path) -> bool:
     return time.time() - cached.stat().st_mtime >= BACKGROUND_MAX_AGE
 
 
-def build_public(source: Path) -> array:
+def build_public(source: Path) -> tuple[array, str]:
     """Build the table of public text, reading only the files that changed since the last build.
+    Returns the table and the name it goes by (`read_public_id`); `publish_public` puts it in place.
 
     Each file's prints are kept, with the stamp they were taken at, in one pack beside an index
     (key -> stamp, where its prints start in the pack, how many). A file whose stamp holds is
@@ -644,8 +668,7 @@ def build_public(source: Path) -> array:
     for stale in kept_in.glob("pack.*.bin"):
         if stale.name != Path(tmp).name:
             stale.unlink(missing_ok=True)
-    atomic_write(public_table(), table.tobytes())
-    return table
+    return table, hashlib.blake2b(table.tobytes(), digest_size=8).hexdigest()
 
 
 def rebuild_public_apart() -> None:
@@ -662,18 +685,25 @@ def rebuild_public_apart() -> None:
 
 #: The table of public text, once this process has it: a scan asks for it more than once (to take
 #: public runs out of an area's table, then to judge a line), and reads it from disk one time.
-_PUBLIC: list[array] = []
+_PUBLIC: list[tuple[array, str]] = []
 
 
 def background_prints(wait: bool = False) -> array:
     """The table of public text, as this process first found it (`current_public`)."""
     if not _PUBLIC:
         _PUBLIC.append(current_public(wait))
-    return _PUBLIC[0]
+    return _PUBLIC[0][0]
 
 
-def current_public(wait: bool = False) -> array:
-    """Runs of public text, sorted. Public text changes rarely, so it keeps for a week.
+def public_id() -> str:
+    """The name of the table `background_prints` gives this process."""
+    background_prints()
+    return _PUBLIC[0][1]
+
+
+def current_public(wait: bool = False) -> tuple[array, str]:
+    """Runs of public text, sorted, and the name the table goes by. Public text changes rarely,
+    so it keeps for a week.
 
     A table past its week is used as it is while a process of its own rebuilds it
     (`rebuild_public_apart`): a commit does not wait for text that almost never changes, and an
@@ -684,25 +714,26 @@ def current_public(wait: bool = False) -> array:
     table waits for it rather than build beside it."""
     cached, source = public_table(), CONFIG / "background.txt"
     if not source.is_file():
-        return array("Q")
+        return array("Q"), ""
     if cached.is_file() and not public_is_edited(cached, source):
         if not public_is_old(cached):
-            return read_table(cached)
+            return read_table(cached), read_public_id()
         if not wait:
             days = int((time.time() - cached.stat().st_mtime) // 86400)
             say(f"the table of public text is {days} days old: this scan uses it as it is, and it is "
                 "being rebuilt apart from the scan (text made public since may still be flagged)")
             rebuild_public_apart()
-            return read_table(cached)
+            return read_table(cached), read_public_id()
     with lock_file(wait=True, name=PUBLIC_LOCK):
         # Whoever held the lock may have built it while this process waited.
         if cached.is_file() and not public_is_edited(cached, source) and not public_is_old(cached):
-            return read_table(cached)
+            return read_table(cached), read_public_id()
         say("reading the public text (files unchanged since the last time are not read again)...")
         started = time.time()
-        table = build_public(source)
+        table, ident = build_public(source)
+        publish_public(table, ident)
         say(f"table of public text built in {time.time() - started:.1f}s: {len(table)} prints")
-        return table
+        return table, ident
 
 
 def present(table: array, value: int) -> bool:
@@ -805,6 +836,7 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
     repos = Repos()
     summary = {"built": started, "checked": started, "run": [RUN, LATIN_RUN], "areas": {}, "unreadable": []}
     folders: dict = {}
+    merged_all = True       # every area's table was merged anew against this table of public text
     for name, roots in areas.items():
         if name in UNSCANNED:
             continue
@@ -824,6 +856,7 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
         keep_base = (not full and base.is_file() and name in previous.get("areas", {})
                      and len(changed) <= MAX_DELTA)
         if keep_base:
+            merged_all = False
             atomic_write(CACHE / f"{name}.delta.bin", merged(changed, allowed, public).tobytes())
             count = len(read_table(base))
         else:
@@ -840,6 +873,8 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
         (DOCS / f"{stale}.bin").unlink(missing_ok=True)
     atomic_write(INDEX, json.dumps(index))
     atomic_write(FOLDERS, json.dumps(folders))
+    # A table kept from before was merged against the table of public text of that time.
+    summary["public"] = public_id() if merged_all else previous.get("public", "")
     summary["seconds"] = round(time.time() - started, 1)
     atomic_write(CACHE / "summary.json", json.dumps(summary, indent=1))
     return summary
@@ -1039,12 +1074,18 @@ def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
     """Per area, the tables a sent line is looked up in: the full build and what changed since."""
     summary_path = CACHE / "summary.json"
     summary, full = None, True
+    # The table of public text first: an edited background.txt is read before the areas' tables
+    # are held against it.
+    public_now = public_id()
     if summary_path.is_file() and not refresh:
         summary = json.loads(summary_path.read_text())
         current = (summary.get("checked") and summary["run"] == [RUN, LATIN_RUN]
                    and set(summary["areas"]) == {n for n in areas if n not in UNSCANNED})
-        full = not current
-        if not current or time.time() - summary["built"] >= MAX_AGE:
+        # The areas' tables were merged against another table of public text: what became public
+        # since is still in them, and what is public no longer is still missing. Merge them anew.
+        moved = summary.get("public", "") != public_now
+        full = not current or moved
+        if not current or moved or time.time() - summary["built"] >= MAX_AGE:
             summary = None
         else:
             summary = catch_up(areas, summary)
@@ -1353,7 +1394,22 @@ def main(argv: list[str] | None = None) -> int:
         with lock_file(wait=False, name=PUBLIC_LOCK) as mine:
             if mine and source.is_file() and not (cached.is_file() and not public_is_edited(cached, source)
                                                    and not public_is_old(cached)):
-                build_public(source)
+                before = read_public_id()
+                table, ident = build_public(source)
+                try:
+                    areas = load_areas()
+                except ValueError:
+                    areas = {}
+                if ident == before or not areas or not (CACHE / "summary.json").is_file():
+                    publish_public(table, ident)
+                    return 0
+                # What is public changed, and the areas' tables were merged against the old table.
+                # They are merged anew here, so that no scan has to do it. The build lock is taken
+                # before the new table shows: a scan never finds it beside tables nobody is merging.
+                _PUBLIC[:] = [(table, ident)]
+                with lock_file(wait=True):
+                    publish_public(table, ident)
+                    _build_locked(areas, full=True)
         return 0
     try:
         areas = load_areas()

@@ -733,10 +733,10 @@ sys.exit(0 if os.path.realpath(sys.argv[1]) in index else 1)" "$1"
 
 # --- the table of public text ---------------------------------------------------------
 #
-# These tests watch the table through a row of a license: whether a whole row is public is
-# decided when a line is judged, from the table as it is then. (A line of code is taken out of
-# an area's own table when that table is merged, so a change of what is public reaches it at
-# the next full merge.)
+# Most of these tests watch the table through a row of a license: whether a whole row is public
+# is decided when a line is judged, from the table as it is then. A line of code is taken out of
+# an area's own table when that table is merged: the last two tests watch that merge happen
+# when what is public changes.
 
 SCAN="${GUARD_ROOT}/scanners/corpus-scan.py"
 LICENSE_ROW="Permission is hereby granted, free of charge, to any person obtaining a copy"
@@ -906,6 +906,67 @@ os.utime(sys.argv[1], ns=(status.st_atime_ns, status.st_mtime_ns))
     printf 'published %s\n' "${BATS_TEST_TMPDIR}/mine" > "${GUARD_CONFIG_DIR}/background.txt"
     mk_repo other
     commit_line "${CODE_LINE}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+# public_code — a client's line of code, a folder of public code that does not hold it yet, and a
+# commit of that line in a repository outside every area.
+public_code() {
+    export GUARD_CORPUS_CODE_LINES=1
+    client_code "${CODE_LINE}"
+    mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
+    printf 'print("nothing shared yet")\n' > "${BATS_TEST_TMPDIR}/public/lib/other.py"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line "${CODE_LINE}"
+}
+
+# wait_public_merged — until the areas' tables have been merged against the table of public text
+# now on disk (10 s at most).
+wait_public_merged() {
+    for _ in $(seq 1 100); do
+        python3 -c '
+import glob, json, os, sys
+names = glob.glob(os.path.join(sys.argv[1], "background-*.id"))
+want = open(names[0]).read().strip() if names else ""
+have = json.load(open(os.path.join(sys.argv[1], "summary.json"))).get("public", "")
+sys.exit(0 if want and want == have else 1)
+' "${GUARD_CORPUS_CACHE}" 2>/dev/null && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+@test "corpus: an edit of background.txt reaches a line of code an area's table already holds, within the scan" {
+    public_code
+    scan_last
+    [ "$status" -eq 1 ]                 # the client's table holds the line
+    age_public 1
+    mkdir -p "${BATS_TEST_TMPDIR}/more"
+    printf '%s\n' "${CODE_LINE}" > "${BATS_TEST_TMPDIR}/more/same.py"
+    printf '%s\n%s\n' "${BATS_TEST_TMPDIR}/public" "${BATS_TEST_TMPDIR}/more" > "${GUARD_CONFIG_DIR}/background.txt"
+    scan_last
+    [ "$status" -eq 0 ]                 # the tables were merged anew against what is public now
+    # ... and once more, with nothing changed: the merge is not done over and over.
+    before="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["public"])' "${GUARD_CORPUS_CACHE}/summary.json")"
+    scan_last
+    [ "$status" -eq 0 ]
+    [ -n "${before}" ]
+    [ "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["public"])' "${GUARD_CORPUS_CACHE}/summary.json")" = "${before}" ]
+}
+
+@test "corpus: the process that rebuilds the table of public text merges the areas' tables against it" {
+    public_code
+    scan_last
+    [ "$status" -eq 1 ]
+    printf '%s\n' "${CODE_LINE}" > "${BATS_TEST_TMPDIR}/public/lib/same.py"     # the line becomes public
+    age_public 8
+    scan_last
+    [ "$status" -eq 1 ]                 # the old tables answered: this scan merged nothing anew
+    [[ "$output" == *"8 days old"* ]]
+    wait_public_rebuilt
+    wait_public_merged
     scan_last
     [ "$status" -eq 0 ]
 }
