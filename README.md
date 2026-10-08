@@ -217,6 +217,17 @@ output and vendored folders (`third_party/`, `vendor/`, ...) are someone
 else's. Runs and lines that also appear in the background text and code are
 not specific to any area and are dropped.
 
+The table of that public text keeps for a week. Past its week a scan uses the
+old table as it is, and a process of its own rebuilds it: a commit does not
+wait for text that almost never changes, and until the rebuild is done the
+only cost is that text made public since may still be flagged. A rebuild reads
+only what changed — a file whose size or modification time moved, a published
+file whose content did — and one process rebuilds at a time. An edit of
+`background.txt` is read within the next scan. A line of code or a run of
+prose already in an area's table leaves it when that table is next merged in
+full, so after listing a new folder `corpus-scan.py --refresh` applies it at
+once. Every scan ends by saying how long it took.
+
 Prints are kept per document and reused while a document is unchanged.
 Documents changed since the last scan are found through Spotlight and added at
 once. When Spotlight cannot answer (indexing off, an area it does not index, or

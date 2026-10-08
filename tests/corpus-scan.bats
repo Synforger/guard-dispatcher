@@ -430,7 +430,7 @@ client_code() {
 }
 
 @test "corpus: a row that is public text (a license in a .txt) is not the area's" {
-    printf 'Permission is hereby granted, free of charge, to any person obtaining a copy\n' > "${CLIENT}/received/notices.txt"
+    printf 'Permission is hereby granted, free of charge, to any person obtaining a copy\n' > "${CLIENT}/received/terms.txt"
     mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
     printf 'Permission is hereby granted, free of charge, to any\nperson obtaining a copy of this software\n' > "${BATS_TEST_TMPDIR}/public/lib/LICENSE"
     printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
@@ -731,20 +731,212 @@ sys.exit(0 if os.path.realpath(sys.argv[1]) in index else 1)" "$1"
     [[ "$output" != *"walking the private documents"* ]]
 }
 
+# --- the table of public text ---------------------------------------------------------
+#
+# These tests watch the table through a row of a license: whether a whole row is public is
+# decided when a line is judged, from the table as it is then. (A line of code is taken out of
+# an area's own table when that table is merged, so a change of what is public reaches it at
+# the next full merge.)
+
+SCAN="${GUARD_ROOT}/scanners/corpus-scan.py"
+LICENSE_ROW="Permission is hereby granted, free of charge, to any person obtaining a copy"
+
+# public_row — a client's file holds a row of a license, a folder of public text does not hold
+# the license yet, and the row is committed in a repository outside every area.
+public_row() {
+    printf '%s\n' "${LICENSE_ROW}" > "${CLIENT}/received/terms.txt"
+    mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
+    printf 'print("nothing shared yet")\n' > "${BATS_TEST_TMPDIR}/public/lib/other.py"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line "${LICENSE_ROW}"
+}
+
+# publish_license <folder> — the license becomes public text there (wrapped as its own copy wraps it).
+publish_license() {
+    mkdir -p "$1"
+    printf 'Permission is hereby granted, free of charge, to any\nperson obtaining a copy of this software\n' > "$1/LICENSE"
+}
+
+# age_public <days> — make the table of public text look built that many days ago, and
+# background.txt older still: the table is then old, not overtaken by an edit.
+age_public() {
+    python3 -c '
+import glob, os, sys, time
+then = time.time() - float(sys.argv[3]) * 86400
+for table in glob.glob(os.path.join(sys.argv[1], "background-*.bin")):
+    os.utime(table, (then, then))
+os.utime(sys.argv[2], (then - 60, then - 60))
+' "${GUARD_CORPUS_CACHE}" "${GUARD_CONFIG_DIR}/background.txt" "$1"
+}
+
+# public_age_days — how old the table of public text is, in whole days.
+public_age_days() {
+    python3 -c '
+import glob, os, sys, time
+tables = glob.glob(os.path.join(sys.argv[1], "background-*.bin"))
+print(int((time.time() - max(os.path.getmtime(p) for p in tables)) // 86400))
+' "${GUARD_CORPUS_CACHE}"
+}
+
+# wait_public_rebuilt — until the table of public text has been written again (10 s at most).
+wait_public_rebuilt() {
+    for _ in $(seq 1 100); do
+        [ "$(public_age_days)" -eq 0 ] && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+@test "corpus: a table of public text past its week answers as it is and is rebuilt apart from the scan" {
+    public_row
+    scan_last
+    [ "$status" -eq 1 ]                 # the table is built, and the license is not public
+    publish_license "${BATS_TEST_TMPDIR}/public/lib"                            # now it is
+    age_public 8
+    scan_last
+    [ "$status" -eq 1 ]                 # the old table answered: the scan did not stop to rebuild it
+    [[ "$output" == *"8 days old"* ]]
+    wait_public_rebuilt
+    scan_last
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"days old"* ]]
+}
+
+@test "corpus: while one process rebuilds the table of public text, a scan neither waits nor starts another" {
+    public_row
+    scan_last
+    [ "$status" -eq 1 ]
+    publish_license "${BATS_TEST_TMPDIR}/public/lib"
+    age_public 8
+    hold_lock "${GUARD_CORPUS_CACHE}" 4 background.lock
+    started="$(date +%s)"
+    scan_last
+    elapsed=$(( $(date +%s) - started ))
+    [ "$status" -eq 1 ]
+    [ "${elapsed}" -lt 3 ]
+    # Asked to rebuild while another holds the lock, the process leaves without building.
+    run python3 "${SCAN}" --refresh-public
+    [ "$status" -eq 0 ]
+    [ "$(public_age_days)" -eq 8 ]
+    kill "${LOCK_PID}" 2>/dev/null || true
+}
+
+@test "corpus: a background.txt edited since the table was built is read again within the scan" {
+    public_row
+    scan_last
+    [ "$status" -eq 1 ]
+    age_public 1
+    publish_license "${BATS_TEST_TMPDIR}/more"
+    printf '%s\n%s\n' "${BATS_TEST_TMPDIR}/public" "${BATS_TEST_TMPDIR}/more" > "${GUARD_CONFIG_DIR}/background.txt"
+    scan_last
+    [ "$status" -eq 0 ]                 # the operator changed what is public: the next scan knows
+    [[ "$output" != *"days old"* ]]
+}
+
+@test "corpus: a rebuild of the table of public text reads only the files that changed" {
+    public_row
+    publish_license "${BATS_TEST_TMPDIR}/public/lib"
+    scan_last
+    [ "$status" -eq 0 ]
+    # Other text under the same size and time: a rebuild that read the file again would lose the license.
+    python3 -c '
+import os, sys
+status = os.stat(sys.argv[1])
+with open(sys.argv[1], "w") as fh:
+    fh.write("#" * (status.st_size - 1) + "\n")
+os.utime(sys.argv[1], ns=(status.st_atime_ns, status.st_mtime_ns))
+' "${BATS_TEST_TMPDIR}/public/lib/LICENSE"
+    age_public 8
+    run python3 "${SCAN}" --refresh-public
+    [ "$status" -eq 0 ]
+    [ "$(public_age_days)" -eq 0 ]
+    scan_last
+    [ "$status" -eq 0 ]
+    # A file that did change is read again: what it used to hold is public no longer.
+    printf 'This copy now holds other words altogether, and is of another length.\n' > "${BATS_TEST_TMPDIR}/public/lib/LICENSE"
+    age_public 8
+    run python3 "${SCAN}" --refresh-public
+    [ "$status" -eq 0 ]
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: the table a rebuild puts together from kept prints is the one a build from nothing gives" {
+    public_row
+    publish_license "${BATS_TEST_TMPDIR}/public/lib"
+    for n in 1 2 3 4; do
+        printf 'def step_%s(frames):\n    return normalise_every_frame_of_the_batch(frames, pass_number=%s)\n' "${n}" "${n}" \
+            > "${BATS_TEST_TMPDIR}/public/lib/step${n}.py"
+    done
+    printf 'A page of public prose, long enough to leave more than one run of forty characters.\n' \
+        > "${BATS_TEST_TMPDIR}/public/README.md"
+    scan_last
+    [ "$status" -eq 0 ]
+    printf 'def step_2(frames):\n    return a_different_body_for_the_second_step_entirely(frames)\n' \
+        > "${BATS_TEST_TMPDIR}/public/lib/step2.py"
+    rm "${BATS_TEST_TMPDIR}/public/lib/step3.py"
+    printf 'def added(frames):\n    return a_file_that_was_not_there_the_first_time(frames, kept=True)\n' \
+        > "${BATS_TEST_TMPDIR}/public/lib/added.py"
+    age_public 8
+    run python3 "${SCAN}" --refresh-public
+    [ "$status" -eq 0 ]
+    cp "${GUARD_CORPUS_CACHE}"/background-*.bin "${BATS_TEST_TMPDIR}/kept.bin"
+    [ "$(wc -c < "${BATS_TEST_TMPDIR}/kept.bin")" -gt 0 ]
+    rm -rf "${GUARD_CORPUS_CACHE}"/public-* "${GUARD_CORPUS_CACHE}"/background-*.bin
+    scan_last
+    [ "$status" -eq 0 ]
+    cmp "${GUARD_CORPUS_CACHE}"/background-*.bin "${BATS_TEST_TMPDIR}/kept.bin"
+}
+
+@test "corpus: a published repository clears what its remote carries, under a name that is not ASCII too" {
+    export GUARD_CORPUS_CODE_LINES=1
+    client_code "${CODE_LINE}"
+    git init -q --bare "${BATS_TEST_TMPDIR}/remote.git"
+    mkdir -p "${BATS_TEST_TMPDIR}/mine"
+    git clone -q "${BATS_TEST_TMPDIR}/remote.git" "${BATS_TEST_TMPDIR}/mine/kit" 2>/dev/null
+    cd "${BATS_TEST_TMPDIR}/mine/kit"
+    git config user.email "${ALLOWED_EMAIL}"
+    git config user.name "Fixture"
+    git config commit.gpgsign false
+    printf '%s\n' "${CODE_LINE}" > "手引き.py"
+    git add . && commit_bypassing_hooks "a kit"
+    git -c core.hooksPath=/dev/null push -q origin HEAD
+    git remote set-head origin -a >/dev/null
+    printf 'published %s\n' "${BATS_TEST_TMPDIR}/mine" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line "${CODE_LINE}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a scan says how long it took, clean or not" {
+    mk_repo other
+    commit_line "nothing private"
+    scan_last
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ clean\ \([0-9]+\ lines\ against\ 2\ areas\)\ in\ [0-9]+\.[0-9]s ]]
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" =~ scanned\ in\ [0-9]+\.[0-9]s ]]
+}
+
 # --- only one process at a time builds or writes the fingerprints -------------------
 
-# hold_lock <cache-dir> <seconds> — take the build lock in a background process and wait
-# until it is really held, so the test that follows races a lock it is sure to lose.
+# hold_lock <cache-dir> <seconds> [lock] — take the build lock (or the one named) in a background
+# process and wait until it is really held, so the test that follows races a lock it is sure to lose.
 hold_lock() {
+    rm -f "$1/lock-held"
     python3 -c "
 import fcntl, os, sys, time
 cache = sys.argv[1]
 os.makedirs(cache, exist_ok=True)
-fh = open(os.path.join(cache, 'build.lock'), 'a+')
+fh = open(os.path.join(cache, sys.argv[3]), 'a+')
 fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
 open(os.path.join(cache, 'lock-held'), 'w').close()
 time.sleep(float(sys.argv[2]))
-" "$1" "$2" &
+" "$1" "$2" "${3:-build.lock}" &
     LOCK_PID=$!
     for _ in $(seq 1 50); do
         [ -f "$1/lock-held" ] && return 0
