@@ -172,6 +172,7 @@ documents themselves. Everything it reads is configured on this machine only:
                                         <name> <path>/* ...          every sub-folder joins <name>
                                         _outside <path> ...          in no area
                                         _exempt <path> ...           never scanned
+                                        _carries <area> <other> ...  what a repository in <area> may hold
 ~/.config/guard/patterns/<name>.txt     regular expressions for identifiers of a shape
                                         (product codes, client names), case-insensitive
 ~/.config/guard/allow.txt               phrases that are fine to send
@@ -198,6 +199,18 @@ company around one of its clients — is still one a send there is checked again
 what goes to a client does not take the company's own text. Text the company's
 templates also hold (the kit a client repository starts from, the deck template)
 is no area's: list the template folders in `background.txt`.
+
+An area that gathers what others hold — the notes of someone who reads the
+company's meetings and every client's mail — writes down text of each of them.
+`_carries hub company client-*` lets a repository inside `hub` be committed to
+with the text of `company` and of every `client-…` area (a name, or a glob over
+names). It holds for a commit only, and only while the repository has no
+remote: a commit stays on this machine, and a repository with no remote sends
+what it holds nowhere. Its files are still documents of `hub`, and whatever
+leaves it — a push, a `gh` call, a tool's send, a message to another session —
+is judged as before. The scan says when it is at work (`it may hold the text
+of 2 areas more`). The line is the operator's to write: the agent writes
+nothing in the settings folder.
 
 An area's documents are everything under it that holds its words:
 

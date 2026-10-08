@@ -18,6 +18,10 @@ Areas are defined on this machine only (never in a repository):
         _outside <path> ...            folders in no area, whatever holds them
                                        (a personal folder on the company's machine)
         _exempt <path> ...             repositories that are never scanned
+        _carries <area> <other> ...    a repository inside <area> that has no remote may
+                                       be committed to with the text of the areas named
+                                       (a glob names several: `client-*`). Only a commit:
+                                       whatever leaves that repository is judged as before
     ~/.config/guard/patterns/<name>.txt
         one regular expression per line (case-insensitive) for identifiers of
         that area that follow a shape: product codes, client names
@@ -78,6 +82,9 @@ a public repository leaves the client all the same:
     corpus-scan.py --range <from>..<to> [--dest <url>]   a push (pre-push passes the push URL;
                                           several bases come as "<to> ^<from> ^<from>")
     corpus-scan.py --text <file> --gh-argv <file>        one gh payload (gh-guard)
+    corpus-scan.py --text <file> --repo <dir> --commit   what a commit adds to the repository at <dir>
+                                          (pre-commit): it stays on this machine, so the areas a
+                                          `_carries` line lets that repository hold are not checked
     corpus-scan.py --where [--dest <url> | --gh-argv <file>]
                                           print where the destination lives, or OUTSIDE
     corpus-scan.py --refresh              rebuild the fingerprints now
@@ -150,6 +157,8 @@ EXEMPT = "_exempt"
 NO_AREA = "_outside"
 # Names on areas.txt that hold no documents of their own.
 UNSCANNED = {EXEMPT, NO_AREA}
+#: Not an area: a line of areas.txt that says which other areas' text an area's repositories may hold.
+CARRIES = "_carries"
 OFFICE = {".pptx", ".docx", ".xlsx", ".pptm", ".docm", ".xlsm"}
 TEXT = {".md", ".csv", ".tsv", ".txt"}
 LOCKFILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock", "uv.lock",
@@ -276,7 +285,7 @@ def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
     templates: list[tuple[str, list[Path]]] = []
     for line in read_lines(source or CONFIG / "areas.txt"):
         parts = shlex.split(line, comments=True)
-        if len(parts) < 2:
+        if len(parts) < 2 or parts[0] == CARRIES:       # `_carries` names areas, not paths: load_carries
             continue
         # A relative path would resolve against wherever the scan runs -- an `_exempt .` would
         # exempt every folder. A line that is not a definition is a broken file, not a pass.
@@ -301,6 +310,38 @@ def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
                 if child not in named:
                     areas.setdefault(template.replace("*", child.name), []).append(child)
     return areas
+
+
+def load_carries(areas: dict[str, list[Path]], source: Path | None = None) -> dict[str, list[str]]:
+    """Which other areas' text a repository inside an area may hold when it is committed to:
+    area -> the names (or globs over names) its `_carries` lines give.
+
+    An area that gathers what others hold -- the notes of someone who reads the company's
+    meetings and each client's mail -- writes down text of every one of them, and a repository
+    of those notes that has no remote sends it nowhere. A commit there is then not refused for
+    carrying it. Nothing else changes: the repository's own files are documents of its area, and
+    whatever leaves it (a push, a `gh` call, a tool's send, a message to another session) is
+    judged as before. A line that is not `_carries <an area> <a name or glob> ...` is a broken
+    file, not a pass."""
+    carries: dict[str, list[str]] = {}
+    for line in read_lines(source or CONFIG / "areas.txt"):
+        parts = shlex.split(line, comments=True)
+        if not parts or parts[0] != CARRIES:
+            continue
+        if len(parts) < 3:
+            raise ValueError(f"areas.txt: {line!r} is not `{CARRIES} <area> <other area> ...`")
+        if parts[1] not in areas or parts[1] in UNSCANNED:
+            raise ValueError(f"areas.txt: {line!r} names {parts[1]!r}, which is no area")
+        if bad := [w for w in parts[2:] if w.startswith(("/", "~", "$", "_"))]:
+            raise ValueError(f"areas.txt: {line!r} names {bad[0]!r}, not an area's name")
+        carries.setdefault(parts[1], []).extend(parts[2:])
+    return carries
+
+
+def has_remote(repo: Path) -> bool:
+    """A repository with a remote has somewhere to send what it holds."""
+    listed = subprocess.run(["git", "-C", str(repo), "remote"], capture_output=True, text=True)
+    return listed.returncode != 0 or bool(listed.stdout.strip())
 
 
 def built_summary() -> dict | None:
@@ -1381,6 +1422,9 @@ def main(argv: list[str] | None = None) -> int:
                         "(a service a tool sends to, declared in destinations.txt); several areas "
                         "joined by commas are a place inside each (a session that has read in all)")
     parser.add_argument("--where", action="store_true", help=f"print where the destination lives, or {OUTSIDE}")
+    parser.add_argument("--commit", action="store_true",
+                        help="the text is what a commit adds to the repository at --repo: it stays on this "
+                        f"machine, so the areas a `{CARRIES}` line lets that repository hold are not checked")
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--refresh-public", action="store_true")
     parser.add_argument("--status", action="store_true")
@@ -1413,6 +1457,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         areas = load_areas()
+        carries = load_carries(areas)
     except ValueError as error:
         say(f"REFUSED — {error} (fix {CONFIG / 'areas.txt'})")
         return 2
@@ -1485,7 +1530,20 @@ def main(argv: list[str] | None = None) -> int:
     # client) is still checked: what goes to a client does not take the company's own text.
     own = {n for n in held if not any(n != m and outer(n, m, areas) for m in held)}
     checked = [n for n in areas if n not in UNSCANNED and n not in own]
+    # A commit stays on this machine. Where areas.txt lets a repository of this area hold other
+    # areas' text, those are not checked -- while the repository has no remote to send it to.
+    holds: list[str] = []
+    could_hold: list[str] = []
+    if args.commit:
+        named = [n for n in checked if any(fnmatch.fnmatchcase(n, pattern) for o in own for pattern in carries.get(o, ()))]
+        if named and has_remote(sender):
+            could_hold = named
+        elif named:
+            holds, checked = named, [n for n in checked if n not in named]
     if not checked:
+        if holds:
+            say(f"not checked: this repository may hold the text of the {areas_count(holds)} it is outside of "
+                f"({CARRIES} in {CONFIG / 'areas.txt'})")
         return 0
 
     # (group, where, line): a group is one file of one commit, or one payload -- a block of copied
@@ -1516,10 +1574,14 @@ def main(argv: list[str] | None = None) -> int:
         say(f"this carries text from a private area that {here or 'the destination'} is outside of:")
         for line in found:
             print(f"    {line}", file=sys.stderr)
+        if could_hold:
+            say(f"areas.txt lets a repository here hold the text of {', '.join(could_hold)}, but only one with no "
+                "remote: this one has somewhere to send it")
         say(f"replace it with made-up text, or add a phrase that is fine to {CONFIG / 'allow.txt'}"
             f" (scanned in {time.time() - started:.1f}s)")
         return 1
-    say(f"clean ({len(lines)} lines against {areas_count(checked)}) in {time.time() - started:.1f}s")
+    also_held = f"; it may hold the text of {areas_count(holds)} more" if holds else ""
+    say(f"clean ({len(lines)} lines against {areas_count(checked)}{also_held}) in {time.time() - started:.1f}s")
     return 0
 
 

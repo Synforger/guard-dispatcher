@@ -1077,6 +1077,108 @@ time.sleep(float(sys.argv[2]))
     [[ "$output" == *"private area"* ]]
 }
 
+# --- an area whose repositories may hold other areas' text ---------------------------------------
+
+# hub_records [<names>] — an area inside the company for someone's gathered notes, a repository
+# of them with no remote, and (given names) the line that lets it hold those areas' text. What a
+# commit would add is in added.txt: a sentence of the company's and one of the client's.
+hub_records() {
+    mkdir -p "${WORK}/hub"
+    printf 'hub %s\n' "${WORK}/hub" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    [ -z "${1:-}" ] || printf '_carries hub %s\n' "$1" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo_at "${WORK}/hub/records"
+    printf '%s\n%s\n' "${COMPANY_TEXT}" "${CLIENT_TEXT}" > "${BATS_TEST_TMPDIR}/added.txt"
+}
+
+# commit_scan [args] — the scan pre-commit runs over what a commit adds to the repository here.
+commit_scan() {
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/added.txt" --repo "${PWD}" --commit "$@"
+}
+
+@test "corpus: a repository whose area carries others takes a commit holding their text" {
+    hub_records "company client"
+    commit_scan
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"may hold the text of the 2 areas"* ]]
+    # The line makes no area and moves none: the same text is still caught outside them all.
+    mk_repo other
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: without the line the commit is refused, and with it only the areas it names pass" {
+    hub_records
+    commit_scan
+    [ "$status" -eq 1 ]
+    printf '_carries hub company\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    commit_scan
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client text"* ]]
+    [[ "$output" != *"company text"* ]]
+}
+
+@test "corpus: a glob names several areas to carry, and a client's identifiers of a shape go with its text" {
+    hub_records "c*"
+    printf 'the unit is QX1234\n' >> "${BATS_TEST_TMPDIR}/added.txt"
+    commit_scan
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: only a commit carries: the same text judged as a payload or a push is refused" {
+    hub_records "company client"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/added.txt" --repo "${PWD}"
+    [ "$status" -eq 1 ]
+    cp "${BATS_TEST_TMPDIR}/added.txt" notes.md
+    git add notes.md
+    commit_bypassing_hooks "notes"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a repository with a remote carries nothing, and the refusal says why" {
+    hub_records "company client"
+    git remote add origin "${OTHER_URL}"
+    commit_scan
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"only one with no remote"* ]]
+}
+
+@test "corpus: a repository of another area is not let hold what the line names for hub" {
+    hub_records "company client"
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    commit_scan
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a _carries line that names no area, or a path, refuses instead of guessing" {
+    hub_records
+    cp "${GUARD_CONFIG_DIR}/areas.txt" "${BATS_TEST_TMPDIR}/areas.good"
+    local line
+    for line in "_carries hub" "_carries nosuch company" "_carries hub ${WORK}" "_carries _exempt company"; do
+        cp "${BATS_TEST_TMPDIR}/areas.good" "${GUARD_CONFIG_DIR}/areas.txt"
+        printf '%s\n' "${line}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+        commit_scan
+        [ "$status" -eq 2 ] || { echo "passed: ${line}"; return 1; }
+        [[ "$output" == *"REFUSED"* ]]
+    done
+}
+
+@test "pre-commit: a corpus-scope repository of an area that carries others takes their text, and refuses it again once it has a remote" {
+    hub_records "company client"
+    git config guard.scope corpus
+    cp "${BATS_TEST_TMPDIR}/added.txt" notes.md
+    git add notes.md
+    run_pre_commit
+    [ "$status" -eq 0 ]
+    git remote add origin "${OTHER_URL}"
+    run_pre_commit
+    [ "$status" -eq 1 ]
+}
+
 # --- guard.scope corpus: an agent's own notes, where the word list does not apply -----
 
 @test "pre-commit: a corpus-scope repository inside the company refuses a client's text staged into it" {

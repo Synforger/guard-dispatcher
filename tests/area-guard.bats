@@ -86,6 +86,15 @@ origin() { git -C "$1" remote remove origin 2>/dev/null || true; git -C "$1" rem
     agent Edit file_path "${PERSONAL}/b.py"; denied
 }
 
+@test "area-guard: a line that lets an area's repositories hold others is no area here, and changes no mark" {
+    mkdir -p "${H}/org/hub"
+    printf 'hub ~/org/hub\n_carries hub company client\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    write_to "${PERSONAL}/a.py"; passed
+    read_case
+    write_to "${PERSONAL}/a.py"; denied
+    write_to "${CASE}/received/note.md"; passed
+}
+
 @test "area-guard: a client reader cannot write a company repository" {
     read_case
     write_to "${COMPANY_REPO}/c.py"; denied
