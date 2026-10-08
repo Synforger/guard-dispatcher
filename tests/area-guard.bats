@@ -757,9 +757,9 @@ print(place == m.Path('${CASE_REPO}'), note)
     denied
 }
 
-# --- what an order for a send is judged from is the operator's to write -----------------------
+# --- what the guard judges from is the operator's to write --------------------------------------
 
-# session_files — the guard's two settings and a session's transcript, as the machine keeps them.
+# session_files — the guard's send settings and a session's transcript, as the machine keeps them.
 session_files() {
     TRANSCRIPT="${H}/.claude/projects/-home-tool/s1.jsonl"
     mkdir -p "$(dirname "${TRANSCRIPT}")/memory" "${H}/.claude-work/projects/p"
@@ -769,22 +769,32 @@ session_files() {
     printf 'send it\n' > "${GUARD_CONFIG_DIR}/orders.txt"
 }
 
-@test "area-guard: the agent writes neither the guard's send settings nor a transcript with Write or Edit" {
+@test "area-guard: the agent writes neither the guard's settings nor a transcript with Write or Edit" {
     session_files
-    local f
-    for f in "${GUARD_CONFIG_DIR}/destinations.txt" "${GUARD_CONFIG_DIR}/orders.txt" "${GUARD_CONFIG_DIR}/ORDERS.TXT" \
-             "${TRANSCRIPT}" "${H}/.claude-work/projects/p/other.jsonl" "${H}/.claude/projects/-home-tool/new.jsonl"; do
+    local f g="${GUARD_CONFIG_DIR}"
+    # Every file of the settings folder, the ones that are there and one made tomorrow.
+    for f in "${g}/destinations.txt" "${g}/orders.txt" "${g}/ORDERS.TXT" "${g}/areas.txt" "${g}/allow.txt" \
+             "${g}/background.txt" "${g}/ignore.txt" "${g}/patterns/client.txt" "${g}/notes.txt"; do
+        write_to "${f}"
+        denied || { echo "written: ${f}"; return 1; }
+        [[ "${output}" == *"what the guard lets through is judged from it"* ]]
+        agent Edit file_path "${f}"
+        denied || { echo "edited: ${f}"; return 1; }
+    done
+    for f in "${TRANSCRIPT}" "${H}/.claude-work/projects/p/other.jsonl" "${H}/.claude/projects/-home-tool/new.jsonl"; do
         write_to "${f}"
         denied || { echo "written: ${f}"; return 1; }
         [[ "${output}" == *"an order for a send is judged from it"* ]]
         agent Edit file_path "${f}"
         denied || { echo "edited: ${f}"; return 1; }
     done
-    for f in "${GUARD_CONFIG_DIR}/notes.txt" "${H}/.claude/projects/-home-tool/memory/fact.md" \
+    # A folder whose name only begins like the settings folder's is not it.
+    for f in "${g}-notes/areas.txt" "${H}/.claude/projects/-home-tool/memory/fact.md" \
              "${H}/scratch/log.jsonl" "${H}/.claude/settings.json"; do
         write_to "${f}"
         passed || { echo "refused: ${f}"; return 1; }
     done
+    agent Read file_path "${g}/areas.txt"; passed
     agent Read file_path "${GUARD_CONFIG_DIR}/orders.txt"; passed
     agent Read file_path "${TRANSCRIPT}"; passed
     # with the file gone, another case of its name would be the file on a file system that folds case
@@ -806,6 +816,7 @@ session_files() {
 @test "area-guard: the agent writes neither of them from the shell, nor removes the settings" {
     session_files
     ln -s "${GUARD_CONFIG_DIR}/orders.txt" "${H}/shortcut"
+    ln -s "${GUARD_CONFIG_DIR}" "${H}/settings-by-another-name"
     local c g="${GUARD_CONFIG_DIR}"
     for c in "echo 'send it' >> ${g}/orders.txt" "echo x > ~/.config/guard/destinations.txt" \
              "printf '' | tee ${g}/destinations.txt" "sudo tee -a ${g}/orders.txt" \
@@ -815,7 +826,17 @@ session_files() {
              "echo x >> ${H}/shortcut" "echo x >> ${g}/Orders.txt" \
              "python3 -c \"open('${g}/orders.txt','a').write('ok')\"" \
              "bash -c 'echo x >> ${g}/orders.txt'" \
-             "echo '{}' >> ${TRANSCRIPT}" "cp /tmp/forged.jsonl ${TRANSCRIPT}" \
+             "echo 'hub ~/org' >> ${g}/areas.txt" "sed -i '' '/client/d' ${g}/areas.txt" "rm ${g}/areas.txt" \
+             "echo 'a phrase the agent would like to send' >> ${g}/allow.txt" \
+             "echo ~/org >> ${g}/background.txt" "echo ~/org/clients >> ${g}/ignore.txt" \
+             "rm -rf ${g}/patterns" "echo 'QX[0-9]+' > ${g}/patterns/client.txt" "echo x > ${g}/notes.txt" \
+             "echo x >> ${H}/settings-by-another-name/areas.txt" \
+             "python3 -c \"open('${g}/areas.txt','a').write('x')\""; do
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+        [[ "${output}" == *"what the guard lets through is judged from it"* ]]
+    done
+    for c in "echo '{}' >> ${TRANSCRIPT}" "cp /tmp/forged.jsonl ${TRANSCRIPT}" \
              "python3 -c \"open('${TRANSCRIPT}','a').write('{}')\"" \
              "echo '{}' >> ~/.claude-work/projects/p/other.jsonl"; do
         bash_in "${H}" "${c}"
@@ -828,13 +849,14 @@ session_files() {
     bash_in "$(dirname "${TRANSCRIPT}")" "python3 -c \"open('s1.jsonl','a').write('{}')\""; denied
 }
 
-@test "area-guard: reading them, copying them out and writing beside them pass" {
+@test "area-guard: reading them and copying them out pass" {
     session_files
     local c g="${GUARD_CONFIG_DIR}"
     for c in "cat ${g}/destinations.txt ${g}/orders.txt" "grep -c order ${g}/destinations.txt" \
              "cp ${g}/destinations.txt ${H}/destinations.copy" "jq -c . ${TRANSCRIPT}" "wc -l ${TRANSCRIPT}" \
-             "tail -n 3 ${TRANSCRIPT} > ${H}/tail.jsonl.txt" "ls -la ${g}" "echo x > ${g}/notes.txt" \
-             "rm ${H}/destinations.copy" "echo destinations.txt orders.txt"; do
+             "tail -n 3 ${TRANSCRIPT} > ${H}/tail.jsonl.txt" "ls -la ${g}" "cat ${g}/areas.txt" \
+             "wc -l ${g}/areas.txt ${g}/allow.txt" "cp ${g}/areas.txt ${H}/areas.copy" "echo x > ${g}-notes.txt" \
+             "rm ${H}/destinations.copy" "echo destinations.txt orders.txt areas.txt"; do
         bash_in "${H}" "${c}"
         passed || { echo "refused: ${c}"; return 1; }
     done
