@@ -182,6 +182,8 @@ denied() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"permissionDecision": "d
     run python3 "${PEERS}" --to "${ID_PLAIN}" --text "${H}/message.txt"
     [ "${status}" -eq 1 ]
     [[ "${output}" == *"peers: not sent to session:${ID_PLAIN}"* ]]
+    [[ "${output}" == *": client text '"* ]]
+    [[ "${lines[${#lines[@]}-1]}" == "peers: not sent to session:${ID_PLAIN}"* ]]
     run python3 "${PEERS}" --to "${ID_CLIENT}" --text "${H}/message.txt"
     [ "${status}" -eq 0 ]
     [ -z "${output}" ]
@@ -244,6 +246,9 @@ AREAS
     [ "${status}" -eq 0 ]
     scan "client"
     [ "${status}" -eq 1 ]
+    # it says which run was hit, and the one line why stays the last line
+    [[ "${output}" == *": other text '"*"pale blue enclosure"* ]]
+    [[ "${lines[${#lines[@]}-1]}" == "send-scan: not sent to session:x"* ]]
     scan "other"
     [ "${status}" -eq 1 ]
     scan ""

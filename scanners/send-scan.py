@@ -192,6 +192,11 @@ def documents(name: str, place: str, dest_area: str, payload: Path, env: dict, r
     except OSError as error:
         return 2, f"not sent to {name}: the private-document scan could not run ({error})"
     if r.returncode == 1:
+        # Which run was hit, as the scan found it, ahead of the one line why: whoever wrote the
+        # payload rewrites that run, not a guess at it.
+        for line in r.stderr.splitlines():
+            if line.startswith("    "):
+                print(line, file=sys.stderr)
         return 1, (f"not sent to {name} ({place}): it carries text from a private area the destination "
                    f"is outside of. {remedy}")
     if r.returncode != 0:

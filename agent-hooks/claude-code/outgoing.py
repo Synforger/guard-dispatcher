@@ -900,7 +900,8 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
             if name == tool and tab_ids(args):
                 why += (". The guard does not know which page this tab shows: open it with a navigate call "
                         "in this session first, so the page's host names the destination")
-            return "outgoing: " + why.removeprefix("send-scan: ")
+            hits = [line.strip() for line in r.stderr.splitlines() if line.startswith("    ")]
+            return "outgoing: " + why.removeprefix("send-scan: ") + "".join(f"\n  {hit}" for hit in hits)
         if ordered is not None:
             why = order_module().spend(ordered, event, state) if state is not None \
                 else "the guard has nowhere to keep what the order lets through"
