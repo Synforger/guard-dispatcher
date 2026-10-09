@@ -47,6 +47,10 @@ An area's documents are everything under its paths that holds its words:
            CODE_LINES consecutive copied lines are a hit (a lone common line --
            an import, an idiom -- is written by the same people everywhere)
 
+A run, a row or a line with no letter and no digit in it is no print: the separator
+row of a table, a horizontal rule, a banner of signs, an empty row of a CSV say
+nothing, and every document that has one holds the same one.
+
 Inside a repository only what it tracks counts (untracked output and vendored
 third-party folders do not). A sent line is a hit when it holds a prose run or
 is a whole printed row, and a block of CODE_LINES sent lines is a hit when each
@@ -146,6 +150,10 @@ LATIN_RUN = int(os.environ.get("GUARD_CORPUS_LATIN_RUN", "40"))
 # How many consecutive whole lines of an area's code or data a sent file has to hold to be a hit.
 CODE_LINES = int(os.environ.get("GUARD_CORPUS_CODE_LINES", "2"))
 JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]")
+# A letter or a digit, of any script. What holds none is ruling, not writing.
+WORD = re.compile(r"[^\W_]")
+# A stretch of signs and spaces long enough to hold a whole run that says nothing.
+SIGNS = re.compile(r"[\W_]{%d,}" % LATIN_RUN)
 MAX_AGE = int(os.environ.get("GUARD_CORPUS_MAX_AGE", str(6 * 3600)))
 BACKGROUND_MAX_AGE = int(os.environ.get("GUARD_CORPUS_PUBLIC_MAX_AGE", str(7 * 24 * 3600)))
 # How many prints of public text are held as one set while the table is put together.
@@ -365,14 +373,23 @@ def digest(window: str) -> int:
 
 
 def windows(text: str):
-    """Every run that counts as a copy: RUN characters holding Japanese, or LATIN_RUN without."""
+    """Every run that counts as a copy: RUN characters holding Japanese, or LATIN_RUN without.
+    A run with no letter and no digit in it is not one (the separator row of a wide table, a rule
+    of dashes): it says nothing, and every document that has one holds the same one."""
     text = normalize(text)
     for i in range(len(text) - RUN + 1):
         short = text[i:i + RUN]
         # A particle after a word of English ("README.md を") is still English.
         if len(JAPANESE.findall(short)) * 2 >= RUN:
             yield short
+    # The runs that start inside [first, last] lie wholly in a stretch of signs.
+    silent = [(m.start(), m.end() - LATIN_RUN) for m in SIGNS.finditer(text)]
+    at = 0
     for i in range(len(text) - LATIN_RUN + 1):
+        while at < len(silent) and silent[at][1] < i:
+            at += 1
+        if at < len(silent) and silent[at][0] <= i:
+            continue
         long = text[i:i + LATIN_RUN]
         if len(JAPANESE.findall(long[:RUN])) * 2 < RUN:
             yield long
@@ -386,8 +403,11 @@ def line_print(line: str, kind: str = "line") -> int | None:
     """One print for a whole line of code ("line") or a row of data ("row"), long enough to mean
     something on its own (the same bar as a run: 12 characters holding Japanese, 40 without).
     Code is copied line by line, and printing every run of every line would hold hundreds of
-    millions of values. The kinds are kept apart: a row is one hit, code takes CODE_LINES."""
+    millions of values. The kinds are kept apart: a row is one hit, code takes CODE_LINES.
+    A line with no letter and no digit in it (a banner of signs, an empty row) is no print."""
     text = normalize(line)
+    if WORD.search(text) is None:
+        return None
     if len(text) >= LATIN_RUN or (len(text) >= RUN and len(JAPANESE.findall(text)) * 2 >= len(text)):
         return digest(f"\0{kind}\0" + text)
     return None

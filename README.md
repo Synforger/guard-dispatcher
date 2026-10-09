@@ -220,6 +220,8 @@ An area's documents are everything under it that holds its words:
 | rows | CSV, TSV, plain text | is, once whitespace is folded, a whole row of the same length bar |
 | lines | every other file a git repository inside the area tracks — its code and its Markdown | is one of `GUARD_CORPUS_CODE_LINES` (default 2) consecutive sent lines that are each a whole line of the same length bar |
 
+A run, a row or a line with no letter and no digit in it is never a hit: the separator row of a wide Markdown table, a horizontal rule, a banner of signs in a comment, an empty row of a CSV. It says nothing, and every document that has one holds the same one.
+
 Code is matched line by line because that is how it is copied, and because
 printing every run of every line of a code base would hold hundreds of
 millions of values. It takes two consecutive lines because a lone common line
