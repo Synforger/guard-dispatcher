@@ -1342,3 +1342,85 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
     [ "$status" -eq 1 ]
     [[ "$output" == *"declared outside every area"* ]]
 }
+
+# --- markup that says nothing is nobody's text -----------------------------------
+# A run or a line with no letter and no digit in it is ruling, not writing: the separator
+# row of a table, a horizontal rule, a banner of signs in a comment, an empty row of a CSV.
+# Every document that has a wide table holds the same one, so it cannot be a copy of any.
+
+# signs <piece> <times> — <piece> repeated <times> times (the fixtures say how long they are).
+signs() {
+    local out="" i
+    for ((i = 0; i < $2; i++)); do out+="$1"; done
+    printf '%s' "${out}"
+}
+
+# A separator row of twelve columns is 49 characters, past the 40 of a run without Japanese.
+SEPARATOR_12="|$(signs '---|' 12)"
+
+# commit_lines <line>... — add several lines in the current repo as one commit.
+commit_lines() {
+    printf '%s\n' "$@" >> sent.txt
+    git add sent.txt
+    commit_bypassing_hooks "add lines"
+}
+
+@test "corpus: the separator row of a wide table is markup, not a copy" {
+    printf '%s\n' '| a1 | a2 | a3 | a4 | a5 | a6 | a7 | a8 | a9 | b1 | b2 | b3 |' "${SEPARATOR_12}" \
+        '| x | x | x | x | x | x | x | x | x | x | x | x |' > "${CLIENT}/received/wide.md"
+    mk_repo other
+    commit_lines '| k1 | k2 | k3 | k4 | k5 | k6 | k7 | k8 | k9 | m1 | m2 | m3 |' "${SEPARATOR_12}" \
+        '| y | y | y | y | y | y | y | y | y | y | y | y |'
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a separator row with spaces and alignment marks is markup too" {
+    spaced="| --- | :---: | ---: $(signs '| --- ' 9)|"
+    printf '%s\n' '| a1 | a2 | a3 | a4 | a5 | a6 | a7 | a8 | a9 | b1 | b2 | b3 |' "${spaced}" > "${CLIENT}/received/wide.md"
+    mk_repo other
+    commit_lines '| k1 | k2 | k3 | k4 | k5 | k6 | k7 | k8 | k9 | m1 | m2 | m3 |' "${spaced}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a row of a wide table holding the client's words is still caught" {
+    printf '%s\n' "| ${CLIENT_TEXT} | a2 | a3 | a4 | a5 | a6 | a7 | a8 | a9 | b1 | b2 | b3 |" "${SEPARATOR_12}" \
+        > "${CLIENT}/received/wide.md"
+    mk_repo other
+    commit_lines "| ${CLIENT_TEXT} | k2 | k3 | k4 | k5 | k6 | k7 | k8 | k9 | m1 | m2 | m3 |" "${SEPARATOR_12}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client text"* ]]
+}
+
+@test "corpus: a horizontal rule or an underline of signs is not a copy" {
+    double="$(signs '=' 50)"; single="$(signs '-' 50)"; stars="$(signs '* ' 25)"
+    printf '%s\n' 'Report' "${double}" '' "${single}" "${stars}" > "${CLIENT}/received/ruled.md"
+    mk_repo other
+    commit_lines 'Changes' "${double}" "${single}" "${stars}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a line of code that is only signs is not the area's line" {
+    export GUARD_CORPUS_CODE_LINES=1
+    banner="    # $(signs '=' 70)"
+    client_code "${banner}"
+    mk_repo other
+    commit_line "${banner}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: an empty row of a CSV is not a row of the client's data" {
+    empty="$(signs ',' 45)"
+    printf 'id,label,score\n%s\n4411,acme-left-sleeve-measurement-batch,0.8731\n' "${empty}" > "${CLIENT}/received/table.csv"
+    mk_repo other
+    commit_line "${empty}"
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "4411,acme-left-sleeve-measurement-batch,0.8731"
+    scan_last
+    [ "$status" -eq 1 ]
+}
