@@ -346,7 +346,8 @@ step earlier, before each tool call, from the same `areas.txt`:
   itself, as above, and a whole string that reads as a relative path (one word
   that holds a `/`, ends in an extension, or names something in the command's
   folder). A word quoted inside a longer string (`` "see `notes.md`" ``) is
-  that string's text. A heredoc fed to anything else is text, not commands. A script run from a file
+  that string's text, and a media type (`application/json`, a header's value)
+  is a path only where a folder of its first name is there to hold a file. A heredoc fed to anything else is text, not commands. A script run from a file
   is not read, so what it writes is not judged. Destinations are judged
   exactly as the push-time scan judges them (`corpus-scan.py --where`). Files
   outside any repository and `_exempt` areas stay writable, and an `_exempt`

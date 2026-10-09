@@ -707,7 +707,7 @@ print(place == m.Path('${CASE_REPO}'), note)
 # --- inline code and heredocs in a Bash command -----------------------------------------------
 
 @test "area-guard: inline code naming a relative path writes it where the command runs" {
-    mkdir -p "${PERSONAL}/src"
+    mkdir -p "${PERSONAL}/src" "${PERSONAL}/image"
     printf 'x\n' > "${PERSONAL}/Makefile"
     read_case
     local c
@@ -717,6 +717,7 @@ print(place == m.Path('${CASE_REPO}'), note)
              $'bash <<\'EOF\'\necho x > out.txt\nEOF' \
              "python3 <<< \"open('a.txt','w')\"" "node -e \"require('fs').writeFileSync(\`b.txt\`, 'x')\"" \
              "ruby -e \"File.write('c.txt', 'x')\"" "python3 -c \"open('Makefile','a')\"" \
+             "python3 -c \"open('image/out.png','wb')\"" \
              "bash -lc 'echo x > d.txt'" "sudo tee e.txt" "LANG=C env A=1 cp /tmp/x f.txt"; do
         bash_in "${PERSONAL}" "${c}"
         denied || { echo "passed: ${c}"; return 1; }
@@ -731,6 +732,8 @@ print(place == m.Path('${CASE_REPO}'), note)
     for c in "python3 -c \"print('.'.join(['a', 'b']), 'utf-8', 'w')\"" \
              "python3 -c \"import sys; print(sys.version)\"" \
              "node -e \"console.log('https://example.com/a.txt')\"" \
+             "python3 -c \"headers = {'Content-Type': 'application/json', 'Accept': 'text/plain'}\"" \
+             $'python3 - <<\'EOF\'\nkind = "application/vnd.ms-excel"\nEOF' \
              $'python3 - <<\'EOF\'\nprint("a b", \'c\')\nEOF'; do
         bash_in "${PERSONAL}" "${c}"
         passed || { echo "refused: ${c}"; return 1; }
