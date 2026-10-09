@@ -440,6 +440,10 @@ RUNS_NEXT = {"sudo", "env", "command", "exec", "builtin", "nohup", "nice", "time
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 # A string of inline code that may be a relative path: one word, with no quote inside.
 CODE_WORD = re.compile(r"""[^'"`\s]+""")
+# A media type (`application/json`, the value of a header): one of the registered top-level types
+# and a subtype (RFC 6838). It names a file only where a folder of that first name is there to hold it.
+MEDIA_TYPE = re.compile(r"(?:application|audio|example|font|haptics|image|message|model|multipart|text|video)"
+                        r"/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*")
 
 
 def code_flags(tool: str) -> set[str]:
@@ -451,11 +455,14 @@ def code_paths(code: str, cwd: str) -> list[str]:
     """Every path inline code names (literals): an absolute or home path that stands by itself
     (standing), and a whole string that reads as a relative path (one word that holds a `/`, ends
     in an extension, or names something that exists in the command's folder). Whether the code
-    reads or writes it cannot be told. A word quoted inside a longer string is that string's text."""
+    reads or writes it cannot be told. A word quoted inside a longer string is that string's text,
+    and a media type is a path only when its first name is a folder of the command's folder."""
     found = []
     for text, whole in literals(code):
         found += standing(text)
         if not whole or text.startswith("/") or "://" in text or not text.strip(".") or not CODE_WORD.fullmatch(text):
+            continue
+        if MEDIA_TYPE.fullmatch(text) and not (Path(cwd) / text.split("/")[0]).is_dir():
             continue
         if "/" in text or re.search(r"\.\w{1,8}$", text) or (Path(cwd) / text).exists():
             found.append(text)
