@@ -123,6 +123,9 @@ def judge(to: str, payload: Path) -> tuple[int, str]:
         except OSError:
             return 2, f"not sent to {name}: the send scan could not run"
         if r.returncode != 0:
+            for line in r.stderr.splitlines():      # which run was hit, ahead of the one line why
+                if line.startswith("    "):
+                    print(line, file=sys.stderr)
             why = (r.stderr.strip().splitlines() or ["the send scan refused it"])[-1].removeprefix("send-scan: ")
             if not found:
                 why += (". No session running on this machine has that name, so it is taken to be one "
