@@ -31,8 +31,14 @@ areas the destination sits outside of; a destination outside every area also get
 scan (`anon-scan.sh`), as a public repository does, and one inside an area gets that area's own
 word list when the machine keeps one next to the master (`company.txt` beside `master.txt`).
 
+The ids a call names objects of the service by (`--handles`: the file to read, the page to write
+to) are not text it carries there: the service already holds what they name. They get the word
+list and not the private-document scan, which would take an id a private document links to for a
+run of that document.
+
 Usage:
-    send-scan.py --dest NAME --text FILE [--reading]   exit 0 passes, 1 refuses (one line why), 2 cannot judge
+    send-scan.py --dest NAME --text FILE [--handles FILE] [--reading]
+                                           exit 0 passes, 1 refuses (one line why), 2 cannot judge
     send-scan.py --where NAME              print where NAME sits: an area, outside, block or undeclared
                                            (followed by ` order` when its sends need one)
 
@@ -50,7 +56,6 @@ import argparse
 import fnmatch
 import importlib.util
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -135,9 +140,10 @@ def needs_order(name: str) -> bool:
     return find(name)[1]
 
 
-def judge(name: str, payload: Path, reading: bool = False) -> tuple[int, str]:
+def judge(name: str, payload: Path, reading: bool = False, handles: Path | None = None) -> tuple[int, str]:
     """(exit status, the line why) for a payload bound for `name`. A reading call to a destination
-    blocked for sending is judged as outside every area: reading through it still works."""
+    blocked for sending is judged as outside every area: reading through it still works. `handles`
+    holds the ids the call names the service's objects by: read against the word list only."""
     try:
         destination = where(name)
     except Broken as broken:
@@ -157,9 +163,10 @@ def judge(name: str, payload: Path, reading: bool = False) -> tuple[int, str]:
     if area_words is not None and area_words.is_file():
         env["ANON_WORDS_FILE"] = str(area_words)
     if (destination == OUTSIDE or env.get("ANON_WORDS_FILE") == str(area_words)) and ANON.is_file():
+        import subprocess   # loaded where it is used: the agent's entry guard reads this file on every call
         try:
             r = subprocess.run(["bash", str(ANON)], capture_output=True, text=True, timeout=60,
-                               env={**env, "ANON_SCAN_PATHS": str(payload)})
+                               env={**env, "ANON_SCAN_PATHS": "\n".join(map(str, filter(None, (payload, handles))))})
         except subprocess.TimeoutExpired:
             return 2, (f"not sent to {name}: the word-list scan did not finish within 60s -- refused "
                        f"because it could not be judged in time, not because of what it found")
@@ -174,6 +181,7 @@ def judge(name: str, payload: Path, reading: bool = False) -> tuple[int, str]:
 def documents(name: str, place: str, dest_area: str, payload: Path, env: dict, remedy: str) -> tuple[int, str]:
     """The private-document scan of a payload bound for a place in `dest_area` (corpus-scan's
     `--dest-area`: an area, several joined by commas, or OUTSIDE)."""
+    import subprocess
     try:
         r = subprocess.run(["python3", str(CORPUS), "--text", str(payload), "--dest-area", dest_area],
                            capture_output=True, text=True, timeout=120, env=env)
@@ -184,6 +192,11 @@ def documents(name: str, place: str, dest_area: str, payload: Path, env: dict, r
     except OSError as error:
         return 2, f"not sent to {name}: the private-document scan could not run ({error})"
     if r.returncode == 1:
+        # Which run was hit, as the scan found it, ahead of the one line why: whoever wrote the
+        # payload rewrites that run, not a guess at it.
+        for line in r.stderr.splitlines():
+            if line.startswith("    "):
+                print(line, file=sys.stderr)
         return 1, (f"not sent to {name} ({place}): it carries text from a private area the destination "
                    f"is outside of. {remedy}")
     if r.returncode != 0:
@@ -218,6 +231,8 @@ def main() -> int:
     parser.add_argument("--dest", help="the destination's name (a tool name, or host:<name>)")
     parser.add_argument("--text", type=Path, help="a file holding the payload")
     parser.add_argument("--where", metavar="NAME", help="print where NAME sits")
+    parser.add_argument("--handles", type=Path, help="a file holding the ids the call names the service's "
+                        "objects by: read against the word list, not against the private documents")
     parser.add_argument("--reading", action="store_true", help="the payload is a reading call's own strings")
     parser.add_argument("--session-areas", metavar="AREAS", help="the destination is another agent session that "
                         "has read inside these areas (joined by commas; empty for none)")
@@ -239,7 +254,7 @@ def main() -> int:
         return 0
     if not (args.dest and args.text):
         parser.error("give --dest and --text, or --where")
-    status, why = judge(args.dest, args.text, args.reading)
+    status, why = judge(args.dest, args.text, args.reading, args.handles)
     if why:
         print(f"send-scan: {why}", file=sys.stderr)
     return status

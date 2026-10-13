@@ -182,6 +182,8 @@ denied() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"permissionDecision": "d
     run python3 "${PEERS}" --to "${ID_PLAIN}" --text "${H}/message.txt"
     [ "${status}" -eq 1 ]
     [[ "${output}" == *"peers: not sent to session:${ID_PLAIN}"* ]]
+    [[ "${output}" == *": client text '"* ]]
+    [[ "${lines[${#lines[@]}-1]}" == "peers: not sent to session:${ID_PLAIN}"* ]]
     run python3 "${PEERS}" --to "${ID_CLIENT}" --text "${H}/message.txt"
     [ "${status}" -eq 0 ]
     [ -z "${output}" ]
@@ -244,6 +246,9 @@ AREAS
     [ "${status}" -eq 0 ]
     scan "client"
     [ "${status}" -eq 1 ]
+    # it says which run was hit, and the one line why stays the last line
+    [[ "${output}" == *": other text '"*"pale blue enclosure"* ]]
+    [[ "${lines[${#lines[@]}-1]}" == "send-scan: not sent to session:x"* ]]
     scan "other"
     [ "${status}" -eq 1 ]
     scan ""
@@ -287,6 +292,44 @@ AREAS
     bash_call "curl -s -d 'go' http://127.0.0.1:9000/pty/ses_1/send"
     passed
     bash_call "curl -s -d 'go' http://127.0.0.1/pty/ses_1/send"
+    passed
+}
+
+@test "local: a client's terminal socket is another endpoint: the line for its send call does not reach it" {
+    socket() { bash_call "python3 -c 'import websockets.sync.client as w; w.connect(\"ws://localhost:8766/ws/pty/ses_1\").send(b\"go\")'"; }
+    declare_also 'local:8766/pty/* block'
+    socket
+    passed
+    bash_call "echo go | websocat ws://127.0.0.1:8766/ws/pty/ses_1"
+    passed
+    declare_also 'local:8766/ws/pty/* block'
+    socket
+    denied
+    [[ "${output}" == *"local:8766/ws/pty/ses_1 is blocked for sending"* ]]
+    bash_call "echo go | websocat ws://127.0.0.1:8766/ws/pty/ses_1"
+    denied
+    [[ "${output}" == *"not sent to local:8766/ws/pty/ses_1"* ]]
+    bash_call "websocat -b ws://localhost:8766/ws/pty/ses_1 <<< go"
+    denied
+    [[ "${output}" == *"local:8766/ws/pty/ses_1 is blocked for sending"* ]]
+    bash_call "wscat -c ws://127.0.0.1:8766/ws/pty/ses_1 -x '{\"type\": \"input\", \"data\": \"go\"}'"
+    denied
+    # with nothing to send, a client only listens
+    bash_call "websocat ws://127.0.0.1:8766/ws/pty/ses_1"
+    passed
+    bash_call "$(printf 'python3 - <<EOF\nimport websockets.sync.client as w\nw.connect("ws://127.0.0.1:8766/ws/pty/ses_1").send(b"go")\nEOF')"
+    denied
+    bash_call "curl -s -d '{\"text\": \"hello\"}' http://127.0.0.1:8766/agent-messages"
+    passed
+}
+
+@test "tmux: a wrapped typing command is named alone by tmux:[?], since ? in a pattern is any one character" {
+    fake_tmux
+    declare_also 'tmux:[?] block'
+    bash_call "tmux run-shell 'tmux send-keys -t agents-1 go Enter'"
+    denied
+    [[ "${output}" == *"tmux:? is blocked"* ]]
+    bash_call "tmux send-keys -t agents-1 go Enter"
     passed
 }
 

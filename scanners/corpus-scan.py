@@ -18,6 +18,10 @@ Areas are defined on this machine only (never in a repository):
         _outside <path> ...            folders in no area, whatever holds them
                                        (a personal folder on the company's machine)
         _exempt <path> ...             repositories that are never scanned
+        _carries <area> <other> ...    a repository inside <area> that has no remote may
+                                       be committed to with the text of the areas named
+                                       (a glob names several: `client-*`). Only a commit:
+                                       whatever leaves that repository is judged as before
     ~/.config/guard/patterns/<name>.txt
         one regular expression per line (case-insensitive) for identifiers of
         that area that follow a shape: product codes, client names
@@ -26,7 +30,10 @@ Areas are defined on this machine only (never in a repository):
                                        of it (an external corpus, build logs)
     ~/.config/guard/background.txt     folders of public text and code; whatever
                                        also appears there is not specific to an
-                                       area and is dropped
+                                       area and is dropped (a table of it keeps for a
+                                       week; past that a scan uses the old table while
+                                       it is rebuilt apart, and a rebuild reads only
+                                       the files that changed)
 
 An area's documents are everything under its paths that holds its words:
 
@@ -39,6 +46,10 @@ An area's documents are everything under its paths that holds its words:
            Markdown) -- every whole line of at least that length is a print, and
            CODE_LINES consecutive copied lines are a hit (a lone common line --
            an import, an idiom -- is written by the same people everywhere)
+
+A run, a row or a line with no letter and no digit in it is no print: the separator
+row of a table, a horizontal rule, a banner of signs, an empty row of a CSV say
+nothing, and every document that has one holds the same one.
 
 Inside a repository only what it tracks counts (untracked output and vendored
 third-party folders do not). A sent line is a hit when it holds a prose run or
@@ -55,10 +66,11 @@ hours (MAX_AGE). Only one process at a time walks or writes the
 fingerprints (a lock file in the cache); the rest use what is already there
 rather than wait or walk beside it.
 
-What is checked depends on where the text is going: every area that does not
-contain the destination. A repository inside an area may carry that area's
-text, and an area nested inside another (a client inside a company) may carry
-the outer one's.
+What is checked depends on where the text is going: every area but the
+destination's own, the innermost ones that contain it. A repository inside an
+area may carry that area's text; an area around it (the company around one of
+its clients) is still checked, so what goes to a client does not take the
+company's own text.
 
 The destination is the GitHub repository being sent to, not the folder the
 command was typed in -- a pull request opened from inside a client folder onto
@@ -74,9 +86,15 @@ a public repository leaves the client all the same:
     corpus-scan.py --range <from>..<to> [--dest <url>]   a push (pre-push passes the push URL;
                                           several bases come as "<to> ^<from> ^<from>")
     corpus-scan.py --text <file> --gh-argv <file>        one gh payload (gh-guard)
+    corpus-scan.py --text <file> --repo <dir> --commit   what a commit adds to the repository at <dir>
+                                          (pre-commit): it stays on this machine, so the areas a
+                                          `_carries` line lets that repository hold are not checked
     corpus-scan.py --where [--dest <url> | --gh-argv <file>]
                                           print where the destination lives, or OUTSIDE
     corpus-scan.py --refresh              rebuild the fingerprints now
+    corpus-scan.py --refresh-public       rebuild the table of public text if it is not current, unless
+                                          another process is at it (what a scan starts when it finds
+                                          the table past its week)
     corpus-scan.py --status               what is configured and how fresh, naming each area and
                                           each document that could not be read, and why (for the
                                           operator)
@@ -89,26 +107,40 @@ Exit: 0 clean or not configured, 1 hit, 2 usage / configuration error.
 from __future__ import annotations
 
 import argparse
-import bisect
 import contextlib
 import fcntl
 import fnmatch
-import hashlib
-import heapq
-import html
+import importlib
 import json
 import os
 import re
 import shlex
-import subprocess
 import sys
-import tempfile
 import time
-import unicodedata
-import zipfile
 from array import array
 from collections import Counter
 from pathlib import Path
+
+
+class later:
+    """A standard-library module that is loaded when something of it is first used.
+
+    This file is also read as a module, for its areas alone, by the agent's entry guard -- before
+    every tool call -- and each run of it as a command pays for what it loads. What only a scan
+    uses is not loaded until a scan uses it."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def __getattr__(self, attribute: str):
+        value = getattr(importlib.import_module(self._name), attribute)
+        setattr(self, attribute, value)     # the next use finds it here, at the cost of a plain attribute
+        return value
+
+
+bisect, hashlib, heapq, html = later("bisect"), later("hashlib"), later("heapq"), later("html")
+subprocess, tempfile = later("subprocess"), later("tempfile")
+unicodedata, zipfile = later("unicodedata"), later("zipfile")
 
 # How many consecutive characters count as copied. Twelve characters of
 # Japanese are a phrase; twelve of English are two common words ("machine with"),
@@ -118,14 +150,23 @@ LATIN_RUN = int(os.environ.get("GUARD_CORPUS_LATIN_RUN", "40"))
 # How many consecutive whole lines of an area's code or data a sent file has to hold to be a hit.
 CODE_LINES = int(os.environ.get("GUARD_CORPUS_CODE_LINES", "2"))
 JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]")
+# A letter or a digit, of any script. What holds none is ruling, not writing.
+WORD = re.compile(r"[^\W_]")
+# A stretch of signs and spaces long enough to hold a whole run that says nothing.
+SIGNS = re.compile(r"[\W_]{%d,}" % LATIN_RUN)
 MAX_AGE = int(os.environ.get("GUARD_CORPUS_MAX_AGE", str(6 * 3600)))
-BACKGROUND_MAX_AGE = 7 * 24 * 3600
+BACKGROUND_MAX_AGE = int(os.environ.get("GUARD_CORPUS_PUBLIC_MAX_AGE", str(7 * 24 * 3600)))
+# How many prints of public text are held as one set while the table is put together.
+PUBLIC_RUN = 2_000_000
+BUILD_LOCK, PUBLIC_LOCK = "build.lock", "background.lock"
 CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
 CACHE = Path(os.environ.get("GUARD_CORPUS_CACHE", Path.home() / ".cache/guard-corpus"))
 EXEMPT = "_exempt"
 NO_AREA = "_outside"
 # Names on areas.txt that hold no documents of their own.
 UNSCANNED = {EXEMPT, NO_AREA}
+#: Not an area: a line of areas.txt that says which other areas' text an area's repositories may hold.
+CARRIES = "_carries"
 OFFICE = {".pptx", ".docx", ".xlsx", ".pptm", ".docm", ".xlsm"}
 TEXT = {".md", ".csv", ".tsv", ".txt"}
 LOCKFILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock", "uv.lock",
@@ -187,15 +228,16 @@ def atomic_write(path: Path, data: bytes | str) -> None:
 
 
 @contextlib.contextmanager
-def lock_file(wait: bool):
+def lock_file(wait: bool, name: str = BUILD_LOCK):
     """The one lock a build or a catch-up takes, so several processes never write the same cache
-    files at once: only the holder walks or writes; the rest read what is already there.
+    files at once: only the holder walks or writes; the rest read what is already there. The table
+    of public text has a lock of its own (PUBLIC_LOCK): rebuilding it holds up no walk.
 
     Non-blocking unless `wait` (nothing usable exists yet, so there is nothing to fall back to,
     and this run must be the one that builds it). A process that loses a non-blocking race yields
     False having touched nothing -- it goes on to use whatever is already on disk."""
     CACHE.mkdir(parents=True, exist_ok=True)
-    with open(CACHE / "build.lock", "a+") as fh:
+    with open(CACHE / name, "a+") as fh:
         try:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -251,7 +293,7 @@ def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
     templates: list[tuple[str, list[Path]]] = []
     for line in read_lines(source or CONFIG / "areas.txt"):
         parts = shlex.split(line, comments=True)
-        if len(parts) < 2:
+        if len(parts) < 2 or parts[0] == CARRIES:       # `_carries` names areas, not paths: load_carries
             continue
         # A relative path would resolve against wherever the scan runs -- an `_exempt .` would
         # exempt every folder. A line that is not a definition is a broken file, not a pass.
@@ -278,6 +320,38 @@ def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
     return areas
 
 
+def load_carries(areas: dict[str, list[Path]], source: Path | None = None) -> dict[str, list[str]]:
+    """Which other areas' text a repository inside an area may hold when it is committed to:
+    area -> the names (or globs over names) its `_carries` lines give.
+
+    An area that gathers what others hold -- the notes of someone who reads the company's
+    meetings and each client's mail -- writes down text of every one of them, and a repository
+    of those notes that has no remote sends it nowhere. A commit there is then not refused for
+    carrying it. Nothing else changes: the repository's own files are documents of its area, and
+    whatever leaves it (a push, a `gh` call, a tool's send, a message to another session) is
+    judged as before. A line that is not `_carries <an area> <a name or glob> ...` is a broken
+    file, not a pass."""
+    carries: dict[str, list[str]] = {}
+    for line in read_lines(source or CONFIG / "areas.txt"):
+        parts = shlex.split(line, comments=True)
+        if not parts or parts[0] != CARRIES:
+            continue
+        if len(parts) < 3:
+            raise ValueError(f"areas.txt: {line!r} is not `{CARRIES} <area> <other area> ...`")
+        if parts[1] not in areas or parts[1] in UNSCANNED:
+            raise ValueError(f"areas.txt: {line!r} names {parts[1]!r}, which is no area")
+        if bad := [w for w in parts[2:] if w.startswith(("/", "~", "$", "_"))]:
+            raise ValueError(f"areas.txt: {line!r} names {bad[0]!r}, not an area's name")
+        carries.setdefault(parts[1], []).extend(parts[2:])
+    return carries
+
+
+def has_remote(repo: Path) -> bool:
+    """A repository with a remote has somewhere to send what it holds."""
+    listed = subprocess.run(["git", "-C", str(repo), "remote"], capture_output=True, text=True)
+    return listed.returncode != 0 or bool(listed.stdout.strip())
+
+
 def built_summary() -> dict | None:
     try:
         return json.loads((CACHE / "summary.json").read_text())
@@ -299,14 +373,23 @@ def digest(window: str) -> int:
 
 
 def windows(text: str):
-    """Every run that counts as a copy: RUN characters holding Japanese, or LATIN_RUN without."""
+    """Every run that counts as a copy: RUN characters holding Japanese, or LATIN_RUN without.
+    A run with no letter and no digit in it is not one (the separator row of a wide table, a rule
+    of dashes): it says nothing, and every document that has one holds the same one."""
     text = normalize(text)
     for i in range(len(text) - RUN + 1):
         short = text[i:i + RUN]
         # A particle after a word of English ("README.md を") is still English.
         if len(JAPANESE.findall(short)) * 2 >= RUN:
             yield short
+    # The runs that start inside [first, last] lie wholly in a stretch of signs.
+    silent = [(m.start(), m.end() - LATIN_RUN) for m in SIGNS.finditer(text)]
+    at = 0
     for i in range(len(text) - LATIN_RUN + 1):
+        while at < len(silent) and silent[at][1] < i:
+            at += 1
+        if at < len(silent) and silent[at][0] <= i:
+            continue
         long = text[i:i + LATIN_RUN]
         if len(JAPANESE.findall(long[:RUN])) * 2 < RUN:
             yield long
@@ -320,8 +403,11 @@ def line_print(line: str, kind: str = "line") -> int | None:
     """One print for a whole line of code ("line") or a row of data ("row"), long enough to mean
     something on its own (the same bar as a run: 12 characters holding Japanese, 40 without).
     Code is copied line by line, and printing every run of every line would hold hundreds of
-    millions of values. The kinds are kept apart: a row is one hit, code takes CODE_LINES."""
+    millions of values. The kinds are kept apart: a row is one hit, code takes CODE_LINES.
+    A line with no letter and no digit in it (a banner of signs, an empty row) is no print."""
     text = normalize(line)
+    if WORD.search(text) is None:
+        return None
     if len(text) >= LATIN_RUN or (len(text) >= RUN and len(JAPANESE.findall(text)) * 2 >= len(text)):
         return digest(f"\0{kind}\0" + text)
     return None
@@ -471,8 +557,9 @@ def documents(roots: list[Path], inner: list[Path], ignored: list[Path], repos: 
                     yield (here / name, *found)
 
 
-def published_texts(parent: Path):
-    """Text files of every repository under parent, as published on its remote.
+def published_files(parent: Path):
+    """(key, stamp, name, read) for every file of every repository under parent, as published on
+    its remote: the stamp is the blob's id, and read() gives its text (None when it is not text).
 
     Only what the remote's default branch already carries -- never the working
     tree, where the leak being prepared would whitelist itself.
@@ -483,14 +570,56 @@ def published_texts(parent: Path):
                               capture_output=True, text=True).stdout.strip()
         if not head:
             continue
-        names = subprocess.run(["git", "-C", repo, "ls-tree", "-r", "--name-only", head],
-                               capture_output=True, text=True).stdout.split("\n")
-        for name in names:
-            if not name:
+        # -z: a name is given as it is, whatever characters it holds (quoted, `git show` would not find it).
+        listing = subprocess.run(["git", "-C", repo, "ls-tree", "-r", "-z", head], capture_output=True)
+        for row in listing.stdout.decode("utf-8", "replace").split("\0"):
+            meta, _, name = row.partition("\t")
+            words = meta.split()
+            if not name or len(words) != 3 or words[1] != "blob":
                 continue
-            blob = subprocess.run(["git", "-C", repo, "show", f"{head}:{name}"], capture_output=True)
-            if blob.returncode == 0 and len(blob.stdout) <= MAX_FILE and b"\0" not in blob.stdout[:8192]:
-                yield name, blob.stdout.decode("utf-8", "replace")
+
+            def read(repo: str = repo, head: str = head, name: str = name) -> str | None:
+                blob = subprocess.run(["git", "-C", repo, "show", f"{head}:{name}"], capture_output=True)
+                if blob.returncode != 0 or len(blob.stdout) > MAX_FILE or b"\0" in blob.stdout[:8192]:
+                    return None
+                return blob.stdout.decode("utf-8", "replace")
+
+            yield f"{repo}\0{name}", words[2], name, read
+
+
+def walked_files(root: Path):
+    """(key, stamp, name, read) for every file under a folder of public text: the stamp is its
+    size and modification time, and read() gives its text (None when it is not text)."""
+    for folder, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+        for name in files:
+            path = Path(folder, name)
+            try:
+                if path.is_symlink():
+                    continue
+                status = path.stat()
+            except OSError:
+                continue
+            if status.st_size > MAX_FILE:
+                continue
+
+            def read(path: Path = path) -> str | None:
+                try:
+                    data = path.read_bytes()
+                except OSError:
+                    return None
+                return None if b"\0" in data[:8192] else data.decode("utf-8", "replace")
+
+            yield str(path), f"{status.st_size}:{status.st_mtime_ns}", name, read
+
+
+def public_files(source: Path):
+    """Every file background.txt makes public, with the stamp its prints were taken at."""
+    for entry in read_lines(source):
+        if entry.startswith("published "):
+            yield from published_files(expand(entry.split(None, 1)[1]))
+        else:
+            yield from walked_files(expand(entry))
 
 
 def public_prints(name: str, text: str) -> set[int]:
@@ -503,36 +632,169 @@ def public_prints(name: str, text: str) -> set[int]:
     return prints
 
 
-def background_prints() -> array:
-    """Runs of public text, sorted. Public text changes rarely, so it keeps for a week."""
+def public_table() -> Path:
     # The format is in the name: public text read another way is never mistaken for the old table.
-    cached, source = CACHE / f"background-{PRINT_FORMAT}.bin", CONFIG / "background.txt"
-    if (cached.is_file() and source.is_file() and cached.stat().st_mtime > source.stat().st_mtime
-            and time.time() - cached.stat().st_mtime < BACKGROUND_MAX_AGE):
-        table = array("Q")
-        table.frombytes(cached.read_bytes())
-        return table
-    prints: set[int] = set()
-    for entry in read_lines(source):
-        if entry.startswith("published "):
-            for name, text in published_texts(expand(entry.split(None, 1)[1])):
-                prints |= public_prints(name, text)
-            continue
-        for folder, dirs, files in os.walk(expand(entry)):
-            dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
-            for name in files:
-                path = Path(folder, name)
-                try:
-                    if path.stat().st_size > MAX_FILE or path.is_symlink():
-                        continue
-                    data = path.read_bytes()
-                except OSError:
-                    continue
-                if b"\0" not in data[:8192]:
-                    prints |= public_prints(name, data.decode("utf-8", "replace"))
-    table = array("Q", sorted(prints))
-    atomic_write(cached, table.tobytes())
-    return table
+    return CACHE / f"background-{PRINT_FORMAT}.bin"
+
+
+def public_id_path() -> Path:
+    return CACHE / f"background-{PRINT_FORMAT}.id"
+
+
+def read_public_id() -> str:
+    """The name the table of public text on disk goes by: a hash of what it holds ("" when there
+    is no table, or it was built before tables had a name). An area's tables are merged against
+    one table of public text, and the summary keeps that table's name (`public`): when the two
+    differ, what became public since is still in the area's tables."""
+    try:
+        return public_id_path().read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def publish_public(table: array, ident: str) -> None:
+    """Put a built table in place, then its name beside it. Stopped between the two, the old name
+    stays beside the new table: the areas' tables are then not merged again until the next
+    rebuild, which only leaves flagged what the new table would have cleared."""
+    atomic_write(public_table(), table.tobytes())
+    atomic_write(public_id_path(), ident)
+
+
+def public_is_edited(cached: Path, source: Path) -> bool:
+    """background.txt was written after the table was built: the operator changed what is public."""
+    return source.stat().st_mtime >= cached.stat().st_mtime
+
+
+def public_is_old(cached: Path) -> bool:
+    return time.time() - cached.stat().st_mtime >= BACKGROUND_MAX_AGE
+
+
+def build_public(source: Path) -> tuple[array, str]:
+    """Build the table of public text, reading only the files that changed since the last build.
+    Returns the table and the name it goes by (`read_public_id`); `publish_public` puts it in place.
+
+    Each file's prints are kept, with the stamp they were taken at, in one pack beside an index
+    (key -> stamp, where its prints start in the pack, how many). A file whose stamp holds is
+    copied from the old pack; only a new or changed one is read and printed. The table is the
+    union of them all, put together from sorted runs of at most PUBLIC_RUN prints so that the
+    whole of it is never held as one set."""
+    kept_in = CACHE / f"public-{PRINT_FORMAT}"
+    kept_in.mkdir(parents=True, exist_ok=True)
+    index_path = kept_in / "index.json"
+    try:
+        old = json.loads(index_path.read_text()) if index_path.is_file() else {}
+    except ValueError:
+        old = {}
+    old_pack = kept_in / old.get("pack", "") if old.get("pack") else None
+    if old_pack is None or not old_pack.is_file():
+        old, old_pack = {}, None
+    known = old.get("files", {})
+    files: dict = {}
+    runs: list[array] = []
+    pending: set[int] = set()
+    fd, tmp = tempfile.mkstemp(dir=kept_in, prefix="pack.", suffix=".bin")
+    try:
+        with os.fdopen(fd, "wb") as out, (open(old_pack, "rb") if old_pack else contextlib.nullcontext()) as before:
+            position = 0
+            for key, stamp, name, read in public_files(source):
+                chunk, was = array("Q"), known.get(key)
+                if was and was[0] == stamp:
+                    before.seek(was[1] * chunk.itemsize)
+                    chunk.frombytes(before.read(was[2] * chunk.itemsize))
+                if not was or was[0] != stamp or len(chunk) != was[2]:
+                    text = read()
+                    prints = public_prints(name, text) if text is not None else set()
+                    chunk = array("Q", prints)       # in no order: the table is sorted from the runs
+                    pending |= prints
+                else:
+                    pending.update(chunk)
+                out.write(chunk.tobytes())
+                files[key] = [stamp, position, len(chunk)]
+                position += len(chunk)
+                if len(pending) >= PUBLIC_RUN:
+                    runs.append(array("Q", sorted(pending)))
+                    pending = set()
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    runs.append(array("Q", sorted(pending)))
+    table, last = array("Q"), None
+    for value in heapq.merge(*runs):
+        if value != last:
+            table.append(value)
+        last = value
+    # The index names its pack, so the two are replaced as one: until the index is written the
+    # old index still points at the old pack, whole.
+    atomic_write(index_path, json.dumps({"pack": Path(tmp).name, "files": files}))
+    for stale in kept_in.glob("pack.*.bin"):
+        if stale.name != Path(tmp).name:
+            stale.unlink(missing_ok=True)
+    return table, hashlib.blake2b(table.tobytes(), digest_size=8).hexdigest()
+
+
+def rebuild_public_apart() -> None:
+    """Start the rebuild of the public table as a process of its own, unless one is at it. The
+    process outlives the scan that started it: a commit that ends, or is given up on, does not
+    stop the rebuild half way."""
+    with lock_file(wait=False, name=PUBLIC_LOCK) as free:
+        if not free:
+            return
+    subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--refresh-public"],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
+#: The table of public text, once this process has it: a scan asks for it more than once (to take
+#: public runs out of an area's table, then to judge a line), and reads it from disk one time.
+_PUBLIC: list[tuple[array, str]] = []
+
+
+def background_prints(wait: bool = False) -> array:
+    """The table of public text, as this process first found it (`current_public`)."""
+    if not _PUBLIC:
+        _PUBLIC.append(current_public(wait))
+    return _PUBLIC[0][0]
+
+
+def public_id() -> str:
+    """The name of the table `background_prints` gives this process."""
+    background_prints()
+    return _PUBLIC[0][1]
+
+
+def current_public(wait: bool = False) -> tuple[array, str]:
+    """Runs of public text, sorted, and the name the table goes by. Public text changes rarely,
+    so it keeps for a week.
+
+    A table past its week is used as it is while a process of its own rebuilds it
+    (`rebuild_public_apart`): a commit does not wait for text that almost never changes, and an
+    old table only fails to clear what became public since it was built. A table older than
+    background.txt is rebuilt here and now -- the operator changed what is public and expects the
+    next scan to know -- and so is one that does not exist yet, or any that is not current when
+    the caller asks to wait (`--refresh`). One process builds at a time; another that needs the
+    table waits for it rather than build beside it."""
+    cached, source = public_table(), CONFIG / "background.txt"
+    if not source.is_file():
+        return array("Q"), ""
+    if cached.is_file() and not public_is_edited(cached, source):
+        if not public_is_old(cached):
+            return read_table(cached), read_public_id()
+        if not wait:
+            days = int((time.time() - cached.stat().st_mtime) // 86400)
+            say(f"the table of public text is {days} days old: this scan uses it as it is, and it is "
+                "being rebuilt apart from the scan (text made public since may still be flagged)")
+            rebuild_public_apart()
+            return read_table(cached), read_public_id()
+    with lock_file(wait=True, name=PUBLIC_LOCK):
+        # Whoever held the lock may have built it while this process waited.
+        if cached.is_file() and not public_is_edited(cached, source) and not public_is_old(cached):
+            return read_table(cached), read_public_id()
+        say("reading the public text (files unchanged since the last time are not read again)...")
+        started = time.time()
+        table, ident = build_public(source)
+        publish_public(table, ident)
+        say(f"table of public text built in {time.time() - started:.1f}s: {len(table)} prints")
+        return table, ident
 
 
 def present(table: array, value: int) -> bool:
@@ -635,6 +897,7 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
     repos = Repos()
     summary = {"built": started, "checked": started, "run": [RUN, LATIN_RUN], "areas": {}, "unreadable": []}
     folders: dict = {}
+    merged_all = True       # every area's table was merged anew against this table of public text
     for name, roots in areas.items():
         if name in UNSCANNED:
             continue
@@ -654,6 +917,7 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
         keep_base = (not full and base.is_file() and name in previous.get("areas", {})
                      and len(changed) <= MAX_DELTA)
         if keep_base:
+            merged_all = False
             atomic_write(CACHE / f"{name}.delta.bin", merged(changed, allowed, public).tobytes())
             count = len(read_table(base))
         else:
@@ -670,6 +934,8 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
         (DOCS / f"{stale}.bin").unlink(missing_ok=True)
     atomic_write(INDEX, json.dumps(index))
     atomic_write(FOLDERS, json.dumps(folders))
+    # A table kept from before was merged against the table of public text of that time.
+    summary["public"] = public_id() if merged_all else previous.get("public", "")
     summary["seconds"] = round(time.time() - started, 1)
     atomic_write(CACHE / "summary.json", json.dumps(summary, indent=1))
     return summary
@@ -869,12 +1135,18 @@ def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
     """Per area, the tables a sent line is looked up in: the full build and what changed since."""
     summary_path = CACHE / "summary.json"
     summary, full = None, True
+    # The table of public text first: an edited background.txt is read before the areas' tables
+    # are held against it.
+    public_now = public_id()
     if summary_path.is_file() and not refresh:
         summary = json.loads(summary_path.read_text())
         current = (summary.get("checked") and summary["run"] == [RUN, LATIN_RUN]
                    and set(summary["areas"]) == {n for n in areas if n not in UNSCANNED})
-        full = not current
-        if not current or time.time() - summary["built"] >= MAX_AGE:
+        # The areas' tables were merged against another table of public text: what became public
+        # since is still in them, and what is public no longer is still missing. Merge them anew.
+        moved = summary.get("public", "") != public_now
+        full = not current or moved
+        if not current or moved or time.time() - summary["built"] >= MAX_AGE:
             summary = None
         else:
             summary = catch_up(areas, summary)
@@ -1159,6 +1431,7 @@ def patterns(name: str) -> list[re.Pattern]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    started = time.time()
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--range", dest="span")
     parser.add_argument("--text", type=Path)
@@ -1169,13 +1442,42 @@ def main(argv: list[str] | None = None) -> int:
                         "(a service a tool sends to, declared in destinations.txt); several areas "
                         "joined by commas are a place inside each (a session that has read in all)")
     parser.add_argument("--where", action="store_true", help=f"print where the destination lives, or {OUTSIDE}")
+    parser.add_argument("--commit", action="store_true",
+                        help="the text is what a commit adds to the repository at --repo: it stays on this "
+                        f"machine, so the areas a `{CARRIES}` line lets that repository hold are not checked")
     parser.add_argument("--refresh", action="store_true")
+    parser.add_argument("--refresh-public", action="store_true")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--summary", action="store_true")
     args = parser.parse_args(argv)
 
+    if args.refresh_public:
+        # Started by a scan that found the table past its week, or by hand. Whoever holds the lock
+        # is already at it: this one leaves.
+        cached, source = public_table(), CONFIG / "background.txt"
+        with lock_file(wait=False, name=PUBLIC_LOCK) as mine:
+            if mine and source.is_file() and not (cached.is_file() and not public_is_edited(cached, source)
+                                                   and not public_is_old(cached)):
+                before = read_public_id()
+                table, ident = build_public(source)
+                try:
+                    areas = load_areas()
+                except ValueError:
+                    areas = {}
+                if ident == before or not areas or not (CACHE / "summary.json").is_file():
+                    publish_public(table, ident)
+                    return 0
+                # What is public changed, and the areas' tables were merged against the old table.
+                # They are merged anew here, so that no scan has to do it. The build lock is taken
+                # before the new table shows: a scan never finds it beside tables nobody is merging.
+                _PUBLIC[:] = [(table, ident)]
+                with lock_file(wait=True):
+                    publish_public(table, ident)
+                    _build_locked(areas, full=True)
+        return 0
     try:
         areas = load_areas()
+        carries = load_carries(areas)
     except ValueError as error:
         say(f"REFUSED — {error} (fix {CONFIG / 'areas.txt'})")
         return 2
@@ -1186,6 +1488,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.refresh:
             for stale in ("visibility.json", "clones.json"):
                 (CACHE / stale).unlink(missing_ok=True)
+            background_prints(wait=True)
             load(areas, refresh=True)
         summary = json.loads((CACHE / "summary.json").read_text()) if (CACHE / "summary.json").is_file() else None
         if summary:
@@ -1212,7 +1515,7 @@ def main(argv: list[str] | None = None) -> int:
             say("fingerprints not built yet")
         return 0
     if not (args.span or args.text or args.where):
-        parser.error("give --range, --text, --where, --refresh, --status or --summary")
+        parser.error("give --range, --text, --where, --refresh, --refresh-public, --status or --summary")
 
     sender = expand(str(args.repo or (sending_repo() if args.span else os.getcwd())))
     here: Path | None = sender
@@ -1247,7 +1550,20 @@ def main(argv: list[str] | None = None) -> int:
     # client) is still checked: what goes to a client does not take the company's own text.
     own = {n for n in held if not any(n != m and outer(n, m, areas) for m in held)}
     checked = [n for n in areas if n not in UNSCANNED and n not in own]
+    # A commit stays on this machine. Where areas.txt lets a repository of this area hold other
+    # areas' text, those are not checked -- while the repository has no remote to send it to.
+    holds: list[str] = []
+    could_hold: list[str] = []
+    if args.commit:
+        named = [n for n in checked if any(fnmatch.fnmatchcase(n, pattern) for o in own for pattern in carries.get(o, ()))]
+        if named and has_remote(sender):
+            could_hold = named
+        elif named:
+            holds, checked = named, [n for n in checked if n not in named]
     if not checked:
+        if holds:
+            say(f"not checked: this repository may hold the text of the {areas_count(holds)} it is outside of "
+                f"({CARRIES} in {CONFIG / 'areas.txt'})")
         return 0
 
     # (group, where, line): a group is one file of one commit, or one payload -- a block of copied
@@ -1278,9 +1594,14 @@ def main(argv: list[str] | None = None) -> int:
         say(f"this carries text from a private area that {here or 'the destination'} is outside of:")
         for line in found:
             print(f"    {line}", file=sys.stderr)
-        say(f"replace it with made-up text, or add a phrase that is fine to {CONFIG / 'allow.txt'}")
+        if could_hold:
+            say(f"areas.txt lets a repository here hold the text of {', '.join(could_hold)}, but only one with no "
+                "remote: this one has somewhere to send it")
+        say(f"replace it with made-up text, or add a phrase that is fine to {CONFIG / 'allow.txt'}"
+            f" (scanned in {time.time() - started:.1f}s)")
         return 1
-    say(f"clean ({len(lines)} lines against {areas_count(checked)})")
+    also_held = f"; it may hold the text of {areas_count(holds)} more" if holds else ""
+    say(f"clean ({len(lines)} lines against {areas_count(checked)}{also_held}) in {time.time() - started:.1f}s")
     return 0
 
 

@@ -35,7 +35,9 @@ fi
 
 # `corpus`: only the private-document scan, over the lines this commit adds,
 # against the areas the repository sits outside of (a client's text staged into
-# the company's notes). GUARD_CORPUS_SKIP=1 is the audited escape hatch.
+# the company's notes). It is told this is a commit: a repository with no remote
+# may hold the areas a `_carries` line of areas.txt names for its area.
+# GUARD_CORPUS_SKIP=1 is the audited escape hatch.
 if [ "${kind}" = "corpus" ]; then
     if [ "${GUARD_CORPUS_SKIP:-0}" = "1" ]; then
         exit "${local_status}"
@@ -47,7 +49,7 @@ if [ "${kind}" = "corpus" ]; then
     fi
     added="$(mktemp -t guard-added.XXXXXX)"
     git diff --cached -U0 --no-color --diff-filter=ACMRT | awk '/^\+\+\+ /{next} /^\+/{print substr($0, 2)}' > "${added}"
-    if [ -s "${added}" ] && ! python3 "${corpus}" --text "${added}" --repo "$(git rev-parse --show-toplevel)"; then
+    if [ -s "${added}" ] && ! python3 "${corpus}" --text "${added}" --repo "$(git rev-parse --show-toplevel)" --commit; then
         rm -f "${added}"
         exit 1
     fi

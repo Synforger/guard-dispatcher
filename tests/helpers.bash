@@ -30,17 +30,10 @@ setup_words() {
 # seed_visibility <owner/repo> <public|private> — answer the corpus scan's
 # visibility question for one repo without asking GitHub.
 seed_visibility() {
+    local known="${GUARD_CORPUS_CACHE}/visibility.json"
     mkdir -p "${GUARD_CORPUS_CACHE}"
-    python3 - "${GUARD_CORPUS_CACHE}/visibility.json" "$1" "$2" <<'PY'
-import json, sys, time
-path, slug, seen = sys.argv[1:]
-try:
-    known = json.load(open(path))
-except (OSError, ValueError):
-    known = {}
-known[slug] = [seen, time.time()]
-json.dump(known, open(path, "w"))
-PY
+    [ -s "${known}" ] || printf '{}' > "${known}"
+    jq -c --arg slug "$1" --arg seen "$2" '.[$slug] = [$seen, now]' "${known}" > "${known}.new" && mv "${known}.new" "${known}"
 }
 
 # mk_repo <kind> — create a fixture repo and cd into it.

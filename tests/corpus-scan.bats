@@ -430,7 +430,7 @@ client_code() {
 }
 
 @test "corpus: a row that is public text (a license in a .txt) is not the area's" {
-    printf 'Permission is hereby granted, free of charge, to any person obtaining a copy\n' > "${CLIENT}/received/notices.txt"
+    printf 'Permission is hereby granted, free of charge, to any person obtaining a copy\n' > "${CLIENT}/received/terms.txt"
     mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
     printf 'Permission is hereby granted, free of charge, to any\nperson obtaining a copy of this software\n' > "${BATS_TEST_TMPDIR}/public/lib/LICENSE"
     printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
@@ -731,20 +731,273 @@ sys.exit(0 if os.path.realpath(sys.argv[1]) in index else 1)" "$1"
     [[ "$output" != *"walking the private documents"* ]]
 }
 
+# --- the table of public text ---------------------------------------------------------
+#
+# Most of these tests watch the table through a row of a license: whether a whole row is public
+# is decided when a line is judged, from the table as it is then. A line of code is taken out of
+# an area's own table when that table is merged: the last two tests watch that merge happen
+# when what is public changes.
+
+SCAN="${GUARD_ROOT}/scanners/corpus-scan.py"
+LICENSE_ROW="Permission is hereby granted, free of charge, to any person obtaining a copy"
+
+# public_row — a client's file holds a row of a license, a folder of public text does not hold
+# the license yet, and the row is committed in a repository outside every area.
+public_row() {
+    printf '%s\n' "${LICENSE_ROW}" > "${CLIENT}/received/terms.txt"
+    mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
+    printf 'print("nothing shared yet")\n' > "${BATS_TEST_TMPDIR}/public/lib/other.py"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line "${LICENSE_ROW}"
+}
+
+# publish_license <folder> — the license becomes public text there (wrapped as its own copy wraps it).
+publish_license() {
+    mkdir -p "$1"
+    printf 'Permission is hereby granted, free of charge, to any\nperson obtaining a copy of this software\n' > "$1/LICENSE"
+}
+
+# age_public <days> — make the table of public text look built that many days ago, and
+# background.txt older still: the table is then old, not overtaken by an edit.
+age_public() {
+    python3 -c '
+import glob, os, sys, time
+then = time.time() - float(sys.argv[3]) * 86400
+for table in glob.glob(os.path.join(sys.argv[1], "background-*.bin")):
+    os.utime(table, (then, then))
+os.utime(sys.argv[2], (then - 60, then - 60))
+' "${GUARD_CORPUS_CACHE}" "${GUARD_CONFIG_DIR}/background.txt" "$1"
+}
+
+# public_age_days — how old the table of public text is, in whole days.
+public_age_days() {
+    python3 -c '
+import glob, os, sys, time
+tables = glob.glob(os.path.join(sys.argv[1], "background-*.bin"))
+print(int((time.time() - max(os.path.getmtime(p) for p in tables)) // 86400))
+' "${GUARD_CORPUS_CACHE}"
+}
+
+# wait_public_rebuilt — until the table of public text has been written again (10 s at most).
+wait_public_rebuilt() {
+    for _ in $(seq 1 100); do
+        [ "$(public_age_days)" -eq 0 ] && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+@test "corpus: a table of public text past its week answers as it is and is rebuilt apart from the scan" {
+    public_row
+    scan_last
+    [ "$status" -eq 1 ]                 # the table is built, and the license is not public
+    publish_license "${BATS_TEST_TMPDIR}/public/lib"                            # now it is
+    age_public 8
+    scan_last
+    [ "$status" -eq 1 ]                 # the old table answered: the scan did not stop to rebuild it
+    [[ "$output" == *"8 days old"* ]]
+    wait_public_rebuilt
+    scan_last
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"days old"* ]]
+}
+
+@test "corpus: while one process rebuilds the table of public text, a scan neither waits nor starts another" {
+    public_row
+    scan_last
+    [ "$status" -eq 1 ]
+    publish_license "${BATS_TEST_TMPDIR}/public/lib"
+    age_public 8
+    hold_lock "${GUARD_CORPUS_CACHE}" 4 background.lock
+    started="$(date +%s)"
+    scan_last
+    elapsed=$(( $(date +%s) - started ))
+    [ "$status" -eq 1 ]
+    [ "${elapsed}" -lt 3 ]
+    # Asked to rebuild while another holds the lock, the process leaves without building.
+    run python3 "${SCAN}" --refresh-public
+    [ "$status" -eq 0 ]
+    [ "$(public_age_days)" -eq 8 ]
+    kill "${LOCK_PID}" 2>/dev/null || true
+}
+
+@test "corpus: a background.txt edited since the table was built is read again within the scan" {
+    public_row
+    scan_last
+    [ "$status" -eq 1 ]
+    age_public 1
+    publish_license "${BATS_TEST_TMPDIR}/more"
+    printf '%s\n%s\n' "${BATS_TEST_TMPDIR}/public" "${BATS_TEST_TMPDIR}/more" > "${GUARD_CONFIG_DIR}/background.txt"
+    scan_last
+    [ "$status" -eq 0 ]                 # the operator changed what is public: the next scan knows
+    [[ "$output" != *"days old"* ]]
+}
+
+@test "corpus: a rebuild of the table of public text reads only the files that changed" {
+    public_row
+    publish_license "${BATS_TEST_TMPDIR}/public/lib"
+    scan_last
+    [ "$status" -eq 0 ]
+    # Other text under the same size and time: a rebuild that read the file again would lose the license.
+    python3 -c '
+import os, sys
+status = os.stat(sys.argv[1])
+with open(sys.argv[1], "w") as fh:
+    fh.write("#" * (status.st_size - 1) + "\n")
+os.utime(sys.argv[1], ns=(status.st_atime_ns, status.st_mtime_ns))
+' "${BATS_TEST_TMPDIR}/public/lib/LICENSE"
+    age_public 8
+    run python3 "${SCAN}" --refresh-public
+    [ "$status" -eq 0 ]
+    [ "$(public_age_days)" -eq 0 ]
+    scan_last
+    [ "$status" -eq 0 ]
+    # A file that did change is read again: what it used to hold is public no longer.
+    printf 'This copy now holds other words altogether, and is of another length.\n' > "${BATS_TEST_TMPDIR}/public/lib/LICENSE"
+    age_public 8
+    run python3 "${SCAN}" --refresh-public
+    [ "$status" -eq 0 ]
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: the table a rebuild puts together from kept prints is the one a build from nothing gives" {
+    public_row
+    publish_license "${BATS_TEST_TMPDIR}/public/lib"
+    for n in 1 2 3 4; do
+        printf 'def step_%s(frames):\n    return normalise_every_frame_of_the_batch(frames, pass_number=%s)\n' "${n}" "${n}" \
+            > "${BATS_TEST_TMPDIR}/public/lib/step${n}.py"
+    done
+    printf 'A page of public prose, long enough to leave more than one run of forty characters.\n' \
+        > "${BATS_TEST_TMPDIR}/public/README.md"
+    scan_last
+    [ "$status" -eq 0 ]
+    printf 'def step_2(frames):\n    return a_different_body_for_the_second_step_entirely(frames)\n' \
+        > "${BATS_TEST_TMPDIR}/public/lib/step2.py"
+    rm "${BATS_TEST_TMPDIR}/public/lib/step3.py"
+    printf 'def added(frames):\n    return a_file_that_was_not_there_the_first_time(frames, kept=True)\n' \
+        > "${BATS_TEST_TMPDIR}/public/lib/added.py"
+    age_public 8
+    run python3 "${SCAN}" --refresh-public
+    [ "$status" -eq 0 ]
+    cp "${GUARD_CORPUS_CACHE}"/background-*.bin "${BATS_TEST_TMPDIR}/kept.bin"
+    [ "$(wc -c < "${BATS_TEST_TMPDIR}/kept.bin")" -gt 0 ]
+    rm -rf "${GUARD_CORPUS_CACHE}"/public-* "${GUARD_CORPUS_CACHE}"/background-*.bin
+    scan_last
+    [ "$status" -eq 0 ]
+    cmp "${GUARD_CORPUS_CACHE}"/background-*.bin "${BATS_TEST_TMPDIR}/kept.bin"
+}
+
+@test "corpus: a published repository clears what its remote carries, under a name that is not ASCII too" {
+    export GUARD_CORPUS_CODE_LINES=1
+    client_code "${CODE_LINE}"
+    git init -q --bare "${BATS_TEST_TMPDIR}/remote.git"
+    mkdir -p "${BATS_TEST_TMPDIR}/mine"
+    git clone -q "${BATS_TEST_TMPDIR}/remote.git" "${BATS_TEST_TMPDIR}/mine/kit" 2>/dev/null
+    cd "${BATS_TEST_TMPDIR}/mine/kit"
+    git config user.email "${ALLOWED_EMAIL}"
+    git config user.name "Fixture"
+    git config commit.gpgsign false
+    printf '%s\n' "${CODE_LINE}" > "手引き.py"
+    git add . && commit_bypassing_hooks "a kit"
+    git -c core.hooksPath=/dev/null push -q origin HEAD
+    git remote set-head origin -a >/dev/null
+    printf 'published %s\n' "${BATS_TEST_TMPDIR}/mine" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line "${CODE_LINE}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+# public_code — a client's line of code, a folder of public code that does not hold it yet, and a
+# commit of that line in a repository outside every area.
+public_code() {
+    export GUARD_CORPUS_CODE_LINES=1
+    client_code "${CODE_LINE}"
+    mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
+    printf 'print("nothing shared yet")\n' > "${BATS_TEST_TMPDIR}/public/lib/other.py"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line "${CODE_LINE}"
+}
+
+# wait_public_merged — until the areas' tables have been merged against the table of public text
+# now on disk (10 s at most).
+wait_public_merged() {
+    for _ in $(seq 1 100); do
+        python3 -c '
+import glob, json, os, sys
+names = glob.glob(os.path.join(sys.argv[1], "background-*.id"))
+want = open(names[0]).read().strip() if names else ""
+have = json.load(open(os.path.join(sys.argv[1], "summary.json"))).get("public", "")
+sys.exit(0 if want and want == have else 1)
+' "${GUARD_CORPUS_CACHE}" 2>/dev/null && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+@test "corpus: an edit of background.txt reaches a line of code an area's table already holds, within the scan" {
+    public_code
+    scan_last
+    [ "$status" -eq 1 ]                 # the client's table holds the line
+    age_public 1
+    mkdir -p "${BATS_TEST_TMPDIR}/more"
+    printf '%s\n' "${CODE_LINE}" > "${BATS_TEST_TMPDIR}/more/same.py"
+    printf '%s\n%s\n' "${BATS_TEST_TMPDIR}/public" "${BATS_TEST_TMPDIR}/more" > "${GUARD_CONFIG_DIR}/background.txt"
+    scan_last
+    [ "$status" -eq 0 ]                 # the tables were merged anew against what is public now
+    # ... and once more, with nothing changed: the merge is not done over and over.
+    before="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["public"])' "${GUARD_CORPUS_CACHE}/summary.json")"
+    scan_last
+    [ "$status" -eq 0 ]
+    [ -n "${before}" ]
+    [ "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["public"])' "${GUARD_CORPUS_CACHE}/summary.json")" = "${before}" ]
+}
+
+@test "corpus: the process that rebuilds the table of public text merges the areas' tables against it" {
+    public_code
+    scan_last
+    [ "$status" -eq 1 ]
+    printf '%s\n' "${CODE_LINE}" > "${BATS_TEST_TMPDIR}/public/lib/same.py"     # the line becomes public
+    age_public 8
+    scan_last
+    [ "$status" -eq 1 ]                 # the old tables answered: this scan merged nothing anew
+    [[ "$output" == *"8 days old"* ]]
+    wait_public_rebuilt
+    wait_public_merged
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a scan says how long it took, clean or not" {
+    mk_repo other
+    commit_line "nothing private"
+    scan_last
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ clean\ \([0-9]+\ lines\ against\ 2\ areas\)\ in\ [0-9]+\.[0-9]s ]]
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" =~ scanned\ in\ [0-9]+\.[0-9]s ]]
+}
+
 # --- only one process at a time builds or writes the fingerprints -------------------
 
-# hold_lock <cache-dir> <seconds> — take the build lock in a background process and wait
-# until it is really held, so the test that follows races a lock it is sure to lose.
+# hold_lock <cache-dir> <seconds> [lock] — take the build lock (or the one named) in a background
+# process and wait until it is really held, so the test that follows races a lock it is sure to lose.
 hold_lock() {
+    rm -f "$1/lock-held"
     python3 -c "
 import fcntl, os, sys, time
 cache = sys.argv[1]
 os.makedirs(cache, exist_ok=True)
-fh = open(os.path.join(cache, 'build.lock'), 'a+')
+fh = open(os.path.join(cache, sys.argv[3]), 'a+')
 fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
 open(os.path.join(cache, 'lock-held'), 'w').close()
 time.sleep(float(sys.argv[2]))
-" "$1" "$2" &
+" "$1" "$2" "${3:-build.lock}" &
     LOCK_PID=$!
     for _ in $(seq 1 50); do
         [ -f "$1/lock-held" ] && return 0
@@ -822,6 +1075,108 @@ time.sleep(float(sys.argv[2]))
     run_pre_push "refs/heads/feature/x ${head} refs/heads/feature/x ${base}"
     [ "$status" -ne 0 ]
     [[ "$output" == *"private area"* ]]
+}
+
+# --- an area whose repositories may hold other areas' text ---------------------------------------
+
+# hub_records [<names>] — an area inside the company for someone's gathered notes, a repository
+# of them with no remote, and (given names) the line that lets it hold those areas' text. What a
+# commit would add is in added.txt: a sentence of the company's and one of the client's.
+hub_records() {
+    mkdir -p "${WORK}/hub"
+    printf 'hub %s\n' "${WORK}/hub" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    [ -z "${1:-}" ] || printf '_carries hub %s\n' "$1" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo_at "${WORK}/hub/records"
+    printf '%s\n%s\n' "${COMPANY_TEXT}" "${CLIENT_TEXT}" > "${BATS_TEST_TMPDIR}/added.txt"
+}
+
+# commit_scan [args] — the scan pre-commit runs over what a commit adds to the repository here.
+commit_scan() {
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/added.txt" --repo "${PWD}" --commit "$@"
+}
+
+@test "corpus: a repository whose area carries others takes a commit holding their text" {
+    hub_records "company client"
+    commit_scan
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"may hold the text of the 2 areas"* ]]
+    # The line makes no area and moves none: the same text is still caught outside them all.
+    mk_repo other
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: without the line the commit is refused, and with it only the areas it names pass" {
+    hub_records
+    commit_scan
+    [ "$status" -eq 1 ]
+    printf '_carries hub company\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    commit_scan
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client text"* ]]
+    [[ "$output" != *"company text"* ]]
+}
+
+@test "corpus: a glob names several areas to carry, and a client's identifiers of a shape go with its text" {
+    hub_records "c*"
+    printf 'the unit is QX1234\n' >> "${BATS_TEST_TMPDIR}/added.txt"
+    commit_scan
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: only a commit carries: the same text judged as a payload or a push is refused" {
+    hub_records "company client"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/added.txt" --repo "${PWD}"
+    [ "$status" -eq 1 ]
+    cp "${BATS_TEST_TMPDIR}/added.txt" notes.md
+    git add notes.md
+    commit_bypassing_hooks "notes"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a repository with a remote carries nothing, and the refusal says why" {
+    hub_records "company client"
+    git remote add origin "${OTHER_URL}"
+    commit_scan
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"only one with no remote"* ]]
+}
+
+@test "corpus: a repository of another area is not let hold what the line names for hub" {
+    hub_records "company client"
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    commit_scan
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a _carries line that names no area, or a path, refuses instead of guessing" {
+    hub_records
+    cp "${GUARD_CONFIG_DIR}/areas.txt" "${BATS_TEST_TMPDIR}/areas.good"
+    local line
+    for line in "_carries hub" "_carries nosuch company" "_carries hub ${WORK}" "_carries _exempt company"; do
+        cp "${BATS_TEST_TMPDIR}/areas.good" "${GUARD_CONFIG_DIR}/areas.txt"
+        printf '%s\n' "${line}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+        commit_scan
+        [ "$status" -eq 2 ] || { echo "passed: ${line}"; return 1; }
+        [[ "$output" == *"REFUSED"* ]]
+    done
+}
+
+@test "pre-commit: a corpus-scope repository of an area that carries others takes their text, and refuses it again once it has a remote" {
+    hub_records "company client"
+    git config guard.scope corpus
+    cp "${BATS_TEST_TMPDIR}/added.txt" notes.md
+    git add notes.md
+    run_pre_commit
+    [ "$status" -eq 0 ]
+    git remote add origin "${OTHER_URL}"
+    run_pre_commit
+    [ "$status" -eq 1 ]
 }
 
 # --- guard.scope corpus: an agent's own notes, where the word list does not apply -----
@@ -986,4 +1341,86 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
     run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
     [ "$status" -eq 1 ]
     [[ "$output" == *"declared outside every area"* ]]
+}
+
+# --- markup that says nothing is nobody's text -----------------------------------
+# A run or a line with no letter and no digit in it is ruling, not writing: the separator
+# row of a table, a horizontal rule, a banner of signs in a comment, an empty row of a CSV.
+# Every document that has a wide table holds the same one, so it cannot be a copy of any.
+
+# signs <piece> <times> — <piece> repeated <times> times (the fixtures say how long they are).
+signs() {
+    local out="" i
+    for ((i = 0; i < $2; i++)); do out+="$1"; done
+    printf '%s' "${out}"
+}
+
+# A separator row of twelve columns is 49 characters, past the 40 of a run without Japanese.
+SEPARATOR_12="|$(signs '---|' 12)"
+
+# commit_lines <line>... — add several lines in the current repo as one commit.
+commit_lines() {
+    printf '%s\n' "$@" >> sent.txt
+    git add sent.txt
+    commit_bypassing_hooks "add lines"
+}
+
+@test "corpus: the separator row of a wide table is markup, not a copy" {
+    printf '%s\n' '| a1 | a2 | a3 | a4 | a5 | a6 | a7 | a8 | a9 | b1 | b2 | b3 |' "${SEPARATOR_12}" \
+        '| x | x | x | x | x | x | x | x | x | x | x | x |' > "${CLIENT}/received/wide.md"
+    mk_repo other
+    commit_lines '| k1 | k2 | k3 | k4 | k5 | k6 | k7 | k8 | k9 | m1 | m2 | m3 |' "${SEPARATOR_12}" \
+        '| y | y | y | y | y | y | y | y | y | y | y | y |'
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a separator row with spaces and alignment marks is markup too" {
+    spaced="| --- | :---: | ---: $(signs '| --- ' 9)|"
+    printf '%s\n' '| a1 | a2 | a3 | a4 | a5 | a6 | a7 | a8 | a9 | b1 | b2 | b3 |' "${spaced}" > "${CLIENT}/received/wide.md"
+    mk_repo other
+    commit_lines '| k1 | k2 | k3 | k4 | k5 | k6 | k7 | k8 | k9 | m1 | m2 | m3 |' "${spaced}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a row of a wide table holding the client's words is still caught" {
+    printf '%s\n' "| ${CLIENT_TEXT} | a2 | a3 | a4 | a5 | a6 | a7 | a8 | a9 | b1 | b2 | b3 |" "${SEPARATOR_12}" \
+        > "${CLIENT}/received/wide.md"
+    mk_repo other
+    commit_lines "| ${CLIENT_TEXT} | k2 | k3 | k4 | k5 | k6 | k7 | k8 | k9 | m1 | m2 | m3 |" "${SEPARATOR_12}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client text"* ]]
+}
+
+@test "corpus: a horizontal rule or an underline of signs is not a copy" {
+    double="$(signs '=' 50)"; single="$(signs '-' 50)"; stars="$(signs '* ' 25)"
+    printf '%s\n' 'Report' "${double}" '' "${single}" "${stars}" > "${CLIENT}/received/ruled.md"
+    mk_repo other
+    commit_lines 'Changes' "${double}" "${single}" "${stars}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a line of code that is only signs is not the area's line" {
+    export GUARD_CORPUS_CODE_LINES=1
+    banner="    # $(signs '=' 70)"
+    client_code "${banner}"
+    mk_repo other
+    commit_line "${banner}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: an empty row of a CSV is not a row of the client's data" {
+    empty="$(signs ',' 45)"
+    printf 'id,label,score\n%s\n4411,acme-left-sleeve-measurement-batch,0.8731\n' "${empty}" > "${CLIENT}/received/table.csv"
+    mk_repo other
+    commit_line "${empty}"
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "4411,acme-left-sleeve-measurement-batch,0.8731"
+    scan_last
+    [ "$status" -eq 1 ]
 }

@@ -172,6 +172,7 @@ documents themselves. Everything it reads is configured on this machine only:
                                         <name> <path>/* ...          every sub-folder joins <name>
                                         _outside <path> ...          in no area
                                         _exempt <path> ...           never scanned
+                                        _carries <area> <other> ...  what a repository in <area> may hold
 ~/.config/guard/patterns/<name>.txt     regular expressions for identifiers of a shape
                                         (product codes, client names), case-insensitive
 ~/.config/guard/allow.txt               phrases that are fine to send
@@ -199,6 +200,18 @@ what goes to a client does not take the company's own text. Text the company's
 templates also hold (the kit a client repository starts from, the deck template)
 is no area's: list the template folders in `background.txt`.
 
+An area that gathers what others hold — the notes of someone who reads the
+company's meetings and every client's mail — writes down text of each of them.
+`_carries hub company client-*` lets a repository inside `hub` be committed to
+with the text of `company` and of every `client-…` area (a name, or a glob over
+names). It holds for a commit only, and only while the repository has no
+remote: a commit stays on this machine, and a repository with no remote sends
+what it holds nowhere. Its files are still documents of `hub`, and whatever
+leaves it — a push, a `gh` call, a tool's send, a message to another session —
+is judged as before. The scan says when it is at work (`it may hold the text
+of 2 areas more`). The line is the operator's to write: the agent writes
+nothing in the settings folder.
+
 An area's documents are everything under it that holds its words:
 
 | kind | files | a sent line is a hit when it |
@@ -206,6 +219,8 @@ An area's documents are everything under it that holds its words:
 | prose | Office (`.pptx` `.docx` `.xlsx`, read from their XML, never their compressed bytes), PDF (`pdftotext`, wrapped lines rejoined), Markdown | holds a run of 12 characters of Japanese, or 40 without (twelve characters of English are two common words) |
 | rows | CSV, TSV, plain text | is, once whitespace is folded, a whole row of the same length bar |
 | lines | every other file a git repository inside the area tracks — its code and its Markdown | is one of `GUARD_CORPUS_CODE_LINES` (default 2) consecutive sent lines that are each a whole line of the same length bar |
+
+A run, a row or a line with no letter and no digit in it is never a hit: the separator row of a wide Markdown table, a horizontal rule, a banner of signs in a comment, an empty row of a CSV. It says nothing, and every document that has one holds the same one.
 
 Code is matched line by line because that is how it is copied, and because
 printing every run of every line of a code base would hold hundreds of
@@ -216,6 +231,18 @@ data is specific on its own, so one copied row is a hit. Inside a repository onl
 output and vendored folders (`third_party/`, `vendor/`, ...) are someone
 else's. Runs and lines that also appear in the background text and code are
 not specific to any area and are dropped.
+
+The table of that public text keeps for a week. Past its week a scan uses the
+old table as it is, and a process of its own rebuilds it: a commit does not
+wait for text that almost never changes, and until the rebuild is done the
+only cost is that text made public since may still be flagged. A rebuild reads
+only what changed — a file whose size or modification time moved, a published
+file whose content did — and one process rebuilds at a time. An edit of
+`background.txt` is read within the next scan. An area's table is merged
+against one table of public text, and when that table changes the areas'
+tables are merged anew — by the process that rebuilt it, or within the scan
+that read an edited `background.txt` — so a folder added to the list clears
+what the areas already held of it. Every scan ends by saying how long it took.
 
 Prints are kept per document and reused while a document is unchanged.
 Documents changed since the last scan are found through Spotlight and added at
@@ -233,11 +260,11 @@ one. A document that could not be read is listed by `--status`, with why —
 timed out, its extractor is not installed, or its exit code — and `--summary`
 / `doctor.sh` show the same grouped by why, without naming any of them.
 
-**Where the text is going decides what it may carry**: every area that does
-not contain the destination is checked. Areas nest — a client inside a
-company — so a client's repository may carry the company's text, a company
-repository may not carry the client's, and a repository outside both carries
-neither.
+**Where the text is going decides what it may carry**: every area but the
+destination's own is checked, and its own areas are the innermost ones holding
+it. Areas nest — a client inside a company — so a client's repository carries
+the client's text and not the company's, a company repository carries the
+company's and not the client's, and a repository outside both carries neither.
 
 The destination is the GitHub repository being sent to — the push URL, or for
 `gh` the `-R` / `GH_REPO` / `api repos/<owner>/<repo>` target, falling back to
@@ -272,13 +299,32 @@ copying a single line, so `agent-hooks/claude-code/area-guard.py` stops it one
 step earlier, before each tool call, from the same `areas.txt`:
 
 - A session that reads inside an area (a `Read` / `Grep` / `Glob` target, an
-  area path named in a `Bash` command, a `Bash` working directory) is marked
-  with the area's name. A command that only checks the paths it names marks
-  nothing: `test`, `[ … ]`, `stat`, `realpath`, `readlink` or `ls -d` run on
-  its own, every argument literal (no second command, pipe, redirect,
-  substitution, glob or variable other than `$HOME`). Anything else is taken
-  to read what it names. Marks are kept per session under
-  `~/.cache/area-guard/`, so they outlive the agent compacting its context.
+  area path a `Bash` command names, a `Bash` working directory) is marked
+  with the name of the area the path is in. A command names a path where the
+  path **stands by itself**:
+  - a word of the command line or the file of a redirection (`cat <path>`,
+    `--file=<path>`, `A=<path>`, `host:<path>`, `-d @<path>`, a glob that
+    matches it), and the same inside a command substitution, a shell's `-c`
+    string, `eval`, or a heredoc fed to a shell;
+  - a string of code written into the command (`python3 -c`, `node -e`, a
+    heredoc or a here-string fed to an interpreter): `open("<path>")`,
+    `["cat", "<path>"]`, a line of a string that runs over lines;
+  - a line of a heredoc or here-string fed to anything else, which may list
+    files (`xargs cat`, `while read f`).
+
+  A path inside a sentence is text, and names nothing: a commit message, a
+  line of a note being written, a replacement string (`"the format is kept in
+  <path> now"`). Nothing opens it, so writing about an area is not reading it.
+  A command line written as one string inside other code
+  (`os.system("cat <path>")`) is a sentence too and is not read; neither is a
+  script run from a file.
+
+  A command that only checks the paths it names marks nothing either: `test`,
+  `[ … ]`, `stat`, `realpath`, `readlink` or `ls -d` run on its own, every
+  argument literal (no second command, pipe, redirect, substitution, glob or
+  variable other than `$HOME`). Anything else is taken to read what it names.
+  Marks are kept per session under `~/.cache/area-guard/`, so they outlive the
+  agent compacting its context.
 - A marked session may write a file inside a git repository, commit there,
   push or send through `gh`, when the place is one it may carry its marks to:
   - **a place in no area passes** — the guard stops what it knows leaves an
@@ -295,13 +341,15 @@ step earlier, before each tool call, from the same `areas.txt`:
   redirection, `tee`, `touch`, `truncate`, the destination of `cp` / `mv` /
   `install` / `ln`, `sed -i`, `dd of=`), whatever stands before the command
   (`sudo`, `env`, a variable). A shell's `-c` string, and a heredoc fed to a
-  shell, is read as a command line of its own. Every path inside other code
-  written into the command counts (`python3 -c`, `node -e`, a heredoc or a
-  here-string fed to an interpreter), since code that reads a file cannot be
-  told apart from code that writes it: an absolute or home path anywhere in
-  the code, and a quoted word that reads as a relative path (it holds a `/`,
-  ends in an extension, or names something in the command's folder). A
-  heredoc fed to anything else is text, not commands. A script run from a file
+  shell, is read as a command line of its own. Every path that other code
+  written into the command names counts (`python3 -c`, `node -e`, a heredoc or
+  a here-string fed to an interpreter), since code that reads a file cannot be
+  told apart from code that writes it: an absolute or home path that stands by
+  itself, as above, and a whole string that reads as a relative path (one word
+  that holds a `/`, ends in an extension, or names something in the command's
+  folder). A word quoted inside a longer string (`` "see `notes.md`" ``) is
+  that string's text, and a media type (`application/json`, a header's value)
+  is a path only where a folder of its first name is there to hold a file. A heredoc fed to anything else is text, not commands. A script run from a file
   is not read, so what it writes is not judged. Destinations are judged
   exactly as the push-time scan judges them (`corpus-scan.py --where`). Files
   outside any repository and `_exempt` areas stay writable, and an `_exempt`
@@ -313,13 +361,16 @@ step earlier, before each tool call, from the same `areas.txt`:
   `guard.exemptPrefix`, clearing the marks, creating the off switch, removing
   the installed hooks, or sending from a repository the git hooks do not reach. The operator types
   those; the agent does not.
-- On every machine too, the agent writes neither `destinations.txt` nor
-  `orders.txt` in `$GUARD_CONFIG_DIR`, nor removes them (or the folder holding
-  them), nor writes a session's transcript (`~/.claude*/projects/**/*.jsonl`,
-  and the one the call itself names), through `Edit` / `Write` or the shell:
-  an order for a send is judged from these (see *A send the operator orders*
-  below), so an agent that could write them would make an order itself.
-  Reading them, and copying them elsewhere, passes.
+- On every machine too, the agent writes nothing in the guard's settings folder
+  (`~/.config/guard/`: `areas.txt`, `allow.txt`, `background.txt`, `ignore.txt`,
+  `patterns/`, `destinations.txt`, `orders.txt`, and a file put there tomorrow),
+  nor removes it, nor writes a session's transcript
+  (`~/.claude*/projects/**/*.jsonl`), through Edit / Write or the shell: what the
+  guard lets through is judged from the settings, and an order for a send from
+  the transcript (see *A send the operator orders* below). An agent that could
+  write them would draw an area around what it wants to send, call a phrase fine
+  to send, or make an order itself. Reading them and copying them out pass; a
+  change is the operator's to make, on the agent's telling why.
 - **The operator's switch** is one file: while `$GUARD_CONFIG_DIR/agent-off`
   exists, the entry guard passes every call. Installing or updating the guard
   leaves it alone, so a guard switched off stays off until the file is
@@ -372,6 +423,7 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   scanned), `ssh` / `nc` (the remote command and standard input), `mail` /
   `mailx` / `sendmail` (subject, body and attachments, named `mail:<domain>`),
   HTTPie (`http` / `https` / `xh`: request items and uploaded files),
+  `websocat` / `wscat` (standard input and the message given to send),
   `aws s3` / `gcloud storage` / `gsutil` / `rclone` (local sources copied to
   `s3:<bucket>`, `gs:<bucket>` or `rclone:<remote>`). `socat` and `sftp` to
   another host are refused, since what they send is only known as they run.
@@ -391,6 +443,13 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   call whose payload is its URL, decoded (a query string reaches the host).
   A local path among a call's arguments — a file to upload, a folder to save
   into — is not scanned as text: the service receives the file, not its name.
+  An argument whose name says id (`id`, `file_id`, `fileId`, `ids`) names an
+  object the service already holds, such as the file to read or the page to
+  write to. When its value is one word of ASCII it is not compared with the
+  private documents: a file id that one of them links to can be used to open
+  that file. It is still read against the word list, and the same id as a
+  search term, or the whole link under another argument, is text like any
+  other.
   Anything sent to the loopback host is not a send, unless a line names it
   (see *What stays on this machine* below).
 - **Against what**: the private-document scan compares the payload with the
@@ -492,16 +551,25 @@ them:
 ```
 # pattern                       area | outside | block
 local:8766/pty/*                block      # the client's own way of typing into a session
+local:8766/ws/pty/*             block      # the socket its terminal view types through
 tmux:agents-*                   block      # typing into the sessions the client runs
 ```
 
-- `local:<port><path>` is a `curl` / `wget` / HTTPie call, or code written
-  into the command, bound for the loopback host.
+A client often has more than one endpoint that types (a send call, a terminal
+socket), and a pattern is matched from the start of the name: the line for one
+does not reach another under a different path. Give each its own line; the
+client's documentation should list them.
+
+- `local:<port><path>` is a `curl` / `wget` / HTTPie call, a WebSocket
+  client's (`websocat` / `wscat`), or code written into the command (an
+  `http://` or `ws://` address in it), bound for the loopback host. A script
+  file's own calls are not seen.
 - `tmux:<session>` is `tmux send-keys` / `send-prefix` / `paste-buffer` /
   `pipe-pane`. The session is the one tmux itself resolves the target to (a
   pane id, a prefix, the pane the command runs in); a target tmux cannot
   resolve is named as spelled, and a typing command wrapped in another
-  (`run-shell`, `if-shell`) is `tmux:?`, which only `tmux:*` reaches.
+  (`run-shell`, `if-shell`) is `tmux:?`, which `tmux:*` reaches, or
+  `tmux:[?]` alone (a bare `?` in a pattern is any one character).
 
 #### A send the operator orders
 
@@ -564,6 +632,38 @@ its pasted-text tag; the opening is looked for inside that tag too.
 
 This holds as long as agents cannot reach the client's own way of typing as
 the operator: block it (see *What stays on this machine*).
+
+#### A message from another machine
+
+A client may also carry messages between machines. Whoever sits at the other
+machine can have such a message written, so it is held to more than a message
+from a session here: it **holds the session it came into** until the operator
+has seen it. Have the client open those messages with a line of their own, and
+give that line to `orders.txt` after `>>`:
+
+```
+>> Message from a session on another machine, relayed by the client:
+```
+
+- From the moment such a message comes in until the operator types a message
+  of their own, the session's tool calls are refused, all but the ones that
+  only read (`Read` / `Grep` / `Glob`) and a question to the operator. The
+  refusal tells the agent to say what the message asks and wait.
+- The operator's next message lifts the hold, whatever it says: typed to open
+  a turn, or while the agent works. The agent then goes by that message.
+- A message relayed from a session on this machine does not lift it, and
+  neither does a tool's result, a hook's text or a task's notice: only typing
+  does. Going back from the end of the conversation, the guard looks for a
+  message from another machine before any message the operator typed.
+- A `>>` line is a `>` line too: the message orders nothing and takes no
+  order.
+- This is on every machine, with or without areas, and is read from the
+  session's transcript (`transcript_path`). With no `>>` line nothing is held
+  and the transcript is not read for it.
+
+As with `>`, this holds while agents cannot type as the operator or reach the
+other machine's client themselves: block the client's typing endpoint, and
+declare the other machine's host (`host:<name>   block`).
 
 A reading call and a tool that drafts (its name says `draft`) need no order.
 A command (`curl` and the like) never sends to such a destination: it cannot
@@ -653,6 +753,12 @@ contract:
 
 ### Not covered — know your gaps
 
+- The hold a message from another machine puts on a session is read from the
+  session's transcript, and only a tool call is refused: the agent still
+  reads the message and still answers in words. A script the agent started
+  before the message came in keeps running. A message is known to be from
+  another machine by the line it opens with, so the hold is as good as the
+  client's promise to open every such message with that line.
 - `git commit --no-verify` skips the commit-time scan by design; the
   content is still caught at `pre-push` — but `git push --no-verify`
   skips that too. Bypass is a deliberate operator action, never a

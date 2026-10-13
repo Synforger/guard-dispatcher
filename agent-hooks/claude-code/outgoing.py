@@ -37,6 +37,13 @@ read, and a destination blocked for sending still takes reads. A local path in a
 (a file to upload, a folder to save into) is not what the service receives: the files' text is. A network command without a body
 is not a send.
 
+An argument whose name says id (`id`, `file_id`, `fileId`, `ids`) names an object the service
+already holds -- the file to read, the page to write to. Its value, when it is one word of ASCII,
+is that object's name and not text the call carries: an id a private document links to is long
+enough to be a run of that document, and reading the file by it would be refused as a copy. It is
+left out of the private-document scan and still read against the word list. The same id as a
+search term, and the link it was taken from, are text like any other.
+
 What stays on this machine is named apart: `local:<port><path>` for a call to the loopback host,
 `tmux:<session>` for tmux typing into a pane. Neither leaves the machine, so both pass unless a
 line of destinations.txt names the kind (see send-scan.py): the operator blocks the endpoints that
@@ -53,7 +60,6 @@ import importlib.util
 import os
 import re
 import shlex
-import subprocess
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote_plus, urlsplit
@@ -67,6 +73,12 @@ READING = re.compile(r"(^|_)(get|list|search|read|fetch|query|view|find|describe
 HOST_SENDERS = {"Artifact", "ArtifactData", "ArtifactComments", "WebFetch", "WebSearch"}
 ARTIFACT_READING = {"read", "list", "open", "quickstart"}
 ARTIFACT_DATA_READING = {"get", "list", "query"}
+# The name of an argument whose value names an object the service holds: its last word is `id`
+# or `ids` (`id`, `file_id`, `file-ID`, `fileId`, `documentIDs`). A name that only ends in those
+# letters (`valid`, `android`) is not one.
+ID_KEY = re.compile(r"(?:^|[_-])(?i:ids?)$|[a-z0-9]I[Dd]s?$")
+# What such a name looks like: one word of printable ASCII. A sentence holds a space, or Japanese.
+HANDLE = re.compile(r"[!-~]+")
 # Keys of a tool's input that name local files whose contents are uploaded.
 FILE_KEYS = {"file_path", "file_paths", "files", "path", "paths", "attachment", "attachments"}
 MAX_FILE = 8 * 1024 * 1024
@@ -148,8 +160,26 @@ def is_local_path(text: str) -> bool:
     return Path(os.path.expanduser(text)).parent.is_dir()
 
 
-def sent_strings(args: dict) -> list[str]:
-    return [t for t in strings(args) if not is_local_path(t)]
+def carried(args: dict) -> tuple[list[str], list[str]]:
+    """(texts, handles) of a call's arguments: the strings the service receives as text, and the
+    ones that name an object it holds (one word of ASCII under an argument whose name says id; a
+    list under such a name holds several). A local path is neither."""
+    texts: list[str] = []
+    handles: list[str] = []
+
+    def walk(value, key: str = "") -> None:
+        if isinstance(value, str):
+            if not is_local_path(value):
+                (handles if ID_KEY.search(key) and HANDLE.fullmatch(value) else texts).append(value)
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                walk(v, k if isinstance(k, str) else "")
+        elif isinstance(value, list):
+            for v in value:
+                walk(v, key)
+
+    walk(args)
+    return texts, handles
 
 
 def local_files(args: dict, cwd: str) -> list[Path]:
@@ -175,6 +205,7 @@ class Send(NamedTuple):
     unreadable: list[tuple[Path, str]]   # files it uploads whose text cannot be taken out, and why
     unknown: str | None = None          # why the body is only known when the command runs, if it is
     reading: bool = False                # a reading call: only its own strings reach the service
+    handles: str = ""                    # the ids it names objects of the service by: not text it carries
 
 
 @functools.lru_cache(maxsize=None)
@@ -259,17 +290,19 @@ def tool_send(tool: str, args: dict, cwd: str, send_scan: Path, tabs: dict | Non
     if not (tool.startswith("mcp__") or tool in HOST_SENDERS):
         return None
     name = destination_of(tool, args, tabs)
+    texts, handles = carried(args)
+    named = "\n".join(handles)
     if reads_only(tool, args):
         # A search term, a query or a URL still reaches the service; the files named are not uploaded.
-        return Send(name, "\n".join(sent_strings(args)), [], reading=True)
-    texts, unreadable = sent_strings(args), []
+        return Send(name, "\n".join(texts), [], reading=True, handles=named)
+    unreadable = []
     for p in local_files(args, cwd):
         text, why = file_text(p, send_scan)
         if text is None:
             unreadable.append((p, why))
         else:
             texts.append(text)
-    return Send(name, "\n".join(texts), unreadable)
+    return Send(name, "\n".join(texts), unreadable, handles=named)
 
 
 def body_text(tool: str, flag: str, value: str, cwd: str, send_scan: Path) -> tuple[str, list[tuple[Path, str]]]:
@@ -604,6 +637,24 @@ def socat_sends(words: list[str]) -> list[Send]:
     return [Send(f"host:{h}", "", [], "socat relays whatever it reads") for h in hosts if h not in LOOPBACK]
 
 
+# WebSocket clients: a `ws://` or `wss://` address among the words, and wscat's message to send.
+WS_ADDRESS = re.compile(r"(?i)^wss?://\S+$")
+WS_MESSAGE = {"-x", "--execute"}
+
+
+def ws_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
+    """websocat / wscat: standard input, and the message wscat is given to send (`-x`), go to the
+    address it connects to. With neither, the client only listens."""
+    places = list(dict.fromkeys(p for p in (place_of(w) for w in words if WS_ADDRESS.match(w)) if p))
+    said = [words[i + 1] for i, w in enumerate(words[:-1]) if w in WS_MESSAGE]
+    text, unreadable, unknown = stdin_payload(stdin, cwd, send_scan)
+    if any(RUNTIME_TEXT.search(w) for w in said):
+        unknown = unknown or "a substitution or a variable"
+    if not (said or stdin):
+        return []
+    return [Send(place, "\n".join([*said, text]), unreadable, unknown) for place in places]
+
+
 # tmux commands that type into a pane, as whoever sits at that terminal would.
 TMUX_TYPES = {"send-keys", "send", "send-prefix", "paste-buffer", "pasteb", "pipe-pane", "pipep"}
 TMUX_TYPES_INSIDE = re.compile(r"(?<![\w-])(send-keys|send-prefix|paste-buffer|pasteb|pipe-pane|pipep)(?![\w-])")
@@ -615,6 +666,7 @@ def tmux_session(server: list[str], target: str | None) -> str:
     """The name of the tmux session a target is in, asked of tmux itself (a target may be a
     prefix, a pattern or a pane id; none is the pane the command runs in). `?` when tmux cannot
     say and the target does not spell a session's name."""
+    import subprocess   # loaded where it is used: most calls run no other program
     target = target or os.environ.get("TMUX_PANE")
     try:
         r = subprocess.run(["tmux", *server, "display-message", "-p", *(["-t", target] if target else []),
@@ -717,6 +769,8 @@ def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
             out += bucket_sends(tool, words, stdin, cwd, send_scan)
         elif tool == "socat":
             out += socat_sends(words)
+        elif tool in ("websocat", "wscat"):
+            out += ws_sends(args, stdin, cwd, send_scan)
         elif tool == "tmux":
             out += tmux_sends(args)
         elif tool in TMUX_TYPES - {"send"}:
@@ -792,7 +846,7 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
     from the hook's `event` (its transcript); once everything else has passed it takes one of
     the order's shown blocks, kept under `state`."""
     judged = send_scan_module(send_scan)
-    for name, payload, unreadable, unknown, reading in sends(tool, args, cwd, send_scan, tabs):
+    for name, payload, unreadable, unknown, reading, handles in sends(tool, args, cwd, send_scan, tabs):
         if name.startswith(SESSION):
             if why := to_session(name[len(SESSION):], payload, event):
                 return why
@@ -820,13 +874,17 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
                 because = (f"this session has read inside {', '.join(sorted(marks))}" if marks
                            else f"the file sits inside {area}")
                 return f"outgoing: not sent to {name}: {path} cannot be scanned ({why}), and {because}"
+        import subprocess
         import tempfile   # loaded only when a call sends: most hook calls never get here
-        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8",
-                                         dir=os.environ.get("TMPDIR") or None) as fh:
-            fh.write(payload)
-            path = fh.name
+        written = []
+        for text in (payload, handles) if handles else (payload,):
+            with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8",
+                                             dir=os.environ.get("TMPDIR") or None) as fh:
+                fh.write(text)
+                written.append(fh.name)
         try:
-            r = subprocess.run(["python3", str(send_scan), "--dest", name, "--text", path,
+            r = subprocess.run(["python3", str(send_scan), "--dest", name, "--text", written[0],
+                                *(["--handles", written[1]] if handles else []),
                                 *(["--reading"] if reading else [])],
                                capture_output=True, text=True, timeout=180)
         except subprocess.TimeoutExpired:
@@ -835,13 +893,15 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
         except OSError:
             return f"outgoing: not sent to {name}: the send scan could not run"
         finally:
-            os.unlink(path)
+            for path in written:
+                os.unlink(path)
         if r.returncode != 0:
             why = (r.stderr.strip().splitlines() or ["the send scan refused it"])[-1]
             if name == tool and tab_ids(args):
                 why += (". The guard does not know which page this tab shows: open it with a navigate call "
                         "in this session first, so the page's host names the destination")
-            return "outgoing: " + why.removeprefix("send-scan: ")
+            hits = [line.strip() for line in r.stderr.splitlines() if line.startswith("    ")]
+            return "outgoing: " + why.removeprefix("send-scan: ") + "".join(f"\n  {hit}" for hit in hits)
         if ordered is not None:
             why = order_module().spend(ordered, event, state) if state is not None \
                 else "the guard has nowhere to keep what the order lets through"
