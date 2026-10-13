@@ -185,6 +185,18 @@ def load_areas() -> list[tuple[str, Path]]:
     return sorted(out, key=lambda a: len(str(a[1])), reverse=True)
 
 
+@functools.cache
+def load_carries() -> dict[str, list[str]]:
+    """area -> the names (or globs over names) of the areas whose text a repository inside it may
+    hold (the `_carries` lines, read where the scan reads them). Empty when the file cannot be
+    read: nothing is carried on a guess."""
+    try:
+        module = corpus_module()
+        return module.load_carries(module.load_areas(AREAS), AREAS)
+    except Exception:  # noqa: BLE001 — a broken line refuses the commit in the scan; here it carries nothing
+        return {}
+
+
 def area_of(path: Path, areas) -> str | None:
     for name, root in areas:
         if path == root or root in path.parents:
@@ -857,16 +869,32 @@ def outer(name: str, inner: str, areas) -> bool:
     return any(n == name and m == inner and r != i and r in i.parents for n, r in areas for m, i in areas)
 
 
-def allowed(target: Path, marks: set[str], areas) -> bool:
+def carried(target: Path, areas) -> list[str]:
+    """The names (or globs) of the areas whose text a repository at this place may hold: what the
+    `_carries` lines give the place's own areas, the innermost ones holding it."""
+    held = {n for n, _ in areas if n not in (EXEMPT, NO_AREA) and inside(target, n, areas)}
+    own = {n for n in held if not any(n != m and outer(n, m, areas) for m in held)}
+    lines = load_carries()
+    return [pattern for name in sorted(own) for pattern in lines.get(name, ())]
+
+
+def allowed(target: Path, marks: set[str], areas, held_here: list[str] | tuple = ()) -> bool:
     """Whether a session with these marks may write or send to a place it resolved to (a public or
     personal destination is None and never reaches here). A place in no area passes: the guard stops
     what it knows leaves an area, not what is unlisted. A place in areas passes when it is inside
-    every mark and in no other area, but an area around a mark (the company around its client)."""
+    every mark and in no other area, but an area around a mark (the company around its client).
+    A mark that `held_here` names is one the place may hold the text of (see carried): it does not
+    count against the place."""
     if area_of(target, areas) == EXEMPT:
         return True
     held = {n for n, _ in areas if n not in (EXEMPT, NO_AREA) and inside(target, n, areas)}
     if not held:
         return True
+    if held_here:
+        import fnmatch   # loaded where it is used: most calls carry nothing
+        marks = {m for m in marks if not any(fnmatch.fnmatchcase(m, pattern) for pattern in held_here)}
+        if not marks:
+            return True
     return (all(inside(target, m, areas) for m in marks)
             and all(h in marks or any(outer(h, m, areas) for m in marks) for h in held))
 
@@ -874,12 +902,18 @@ def allowed(target: Path, marks: set[str], areas) -> bool:
 def may_write(target: Path, marks: set[str], areas) -> bool:
     """A marked session may write a file inside a git repository when the repository is allowed
     where it sits, and -- for one in no area -- when what it pushes to is not outside every area
-    (a public repository, or one declared outside such as a personal account's)."""
+    (a public repository, or one declared outside such as a personal account's).
+
+    A repository with no remote, in an area whose `_carries` line names other areas, may hold their
+    text: a session that read them writes and commits there. It sends nothing anywhere, and what
+    leaves it later (a push once it has a remote, a `gh` call, a message) is judged as before."""
     root = repo_root(target)
     if root is None:
         return True
     if not allowed(target, marks, areas):
-        return False
+        held_here = carried(target, areas)
+        if not held_here or has_remote(root) or not allowed(target, marks, areas, held_here):
+            return False
     if area_of(target, areas) is not None:   # inside an area, or the exempt notes
         return True
     url = push_url(root, None)
