@@ -648,6 +648,48 @@ cat ${c}/received/memo.md" "[ -d ${c} ] && cat ${c}/received/memo.md" "stat ${c}
     passed
 }
 
+@test "area-guard: a relative name after a cd is a file of the folder the command moved to" {
+    mkdir -p "${H}/scratch"
+    read_case
+    local c
+    # standing in the personal repository, writing somewhere a client reader may
+    for c in "cd ${H}/scratch && echo x > out.json" "cd ${H}/scratch || exit 1; touch a b" \
+             "D=${H}/scratch; echo x > \$D/x" "export D=${H}/scratch && echo x > \${D}/y" \
+             "pushd ${H}/scratch; echo x > one" "cd ${CASE_REPO} && echo x > ok.txt" \
+             "cd ${H}/scratch && python3 -c \"open('rel.txt','w')\"" "cd ${H}/scratch && bash -c 'echo x > inner'"; do
+        bash_in "${PERSONAL}" "${c}"
+        passed || { echo "refused: ${c}"; return 1; }
+    done
+    # standing somewhere fine, moving into the personal repository to write
+    for c in "cd ${PERSONAL} && echo x > a.txt" "cd ${PERSONAL} || exit 1; touch a.txt" \
+             "D=${PERSONAL}; echo x > \$D/a.txt" "cd ${H} && cd repos/public-tool && echo x > a.txt" \
+             "pushd ${PERSONAL}; echo x > a.txt" "cd ${PERSONAL} && python3 -c \"open('rel.txt','w')\""; do
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+    done
+    # `cd -` goes back to where the command stood before
+    bash_in "${PERSONAL}" "cd ${H}/scratch; cd -; echo x > a.txt"
+    denied
+    bash_in "${H}" "cd ${PERSONAL}; cd -; echo x > a.txt"
+    passed
+}
+
+@test "area-guard: a cd in a subshell, or one that cannot be read, leaves a relative name where the command stood" {
+    mkdir -p "${H}/scratch"
+    read_case
+    local c
+    for c in "(cd ${H}/scratch); echo x > out" "cd \$NOWHERE && echo x > out" \
+             "D=\$(mktemp -d); echo x > \$D/out" "pushd ${H}/scratch; popd; echo x > out" \
+             "(D=${H}/scratch); echo x > \$D/out"; do
+        bash_in "${PERSONAL}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+    done
+    bash_in "${H}" "(cd ${PERSONAL}); echo x > out"
+    passed
+    bash_in "${H}" "(cd ${PERSONAL} && echo x > in.txt); echo y > out"
+    denied
+}
+
 @test "area-guard: a lone check run from inside an area still marks by its folder" {
     bash_in "${CASE}" "test -d received"
     write_to "${PERSONAL}/a.py"; denied

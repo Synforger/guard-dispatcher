@@ -340,7 +340,13 @@ step earlier, before each tool call, from the same `areas.txt`:
   The shell's writes are the paths a command names as written (a `>` / `>>`
   redirection, `tee`, `touch`, `truncate`, the destination of `cp` / `mv` /
   `install` / `ln`, `sed -i`, `dd of=`), whatever stands before the command
-  (`sudo`, `env`, a variable). A shell's `-c` string, and a heredoc fed to a
+  (`sudo`, `env`, a variable). A relative name is a file of the folder the
+  command stands in when it reaches that word: `cd`, `pushd` / `popd` move it
+  and a `( … )` subshell gives the place back, so `cd /a && echo x > out`
+  writes `/a/out`. A variable the command line set to a literal before
+  (`D=/a/b; echo x > $D/out`) is written out. Where neither can be read
+  (`cd $X`, a value that comes from a substitution), the name is judged as it
+  was written, from where the command stood. A shell's `-c` string, and a heredoc fed to a
   shell, is read as a command line of its own. Every path that other code
   written into the command names counts (`python3 -c`, `node -e`, a heredoc or
   a here-string fed to an interpreter), since code that reads a file cannot be

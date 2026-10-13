@@ -262,10 +262,21 @@ def literals(code: str):
     yield from ((word, False) for word in CODE_BREAK.split(code[pos:]) if word)
 
 
-def simple_commands(line: str):
+def glued(token: str) -> list[str]:
+    """Control operators the lexer hands over as one token (`);` `)&&`), one by one."""
+    out, rest = [], token
+    while rest:
+        op = next((o for o in ("&&", "||", ";;", "|&") if rest.startswith(o)), rest[0])
+        out.append(op)
+        rest = rest[len(op):]
+    return out
+
+
+def stepped_commands(line: str):
     """The simple commands of a command line whose heredoc bodies are taken out, in order:
-    (its words, its redirections as (operator, word), its here-string or None). `2>&1` names no file
-    and is left out. Raises ValueError on an unclosed quote, as `shlex.split` does."""
+    (its words, its redirections as (operator, word), its here-string or None, the control operator
+    that ends it, "" for the last). `2>&1` names no file and is left out. Raises ValueError on an
+    unclosed quote, as `shlex.split` does."""
     lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     breaks = outgoing_module().SHELL_BREAK
@@ -279,16 +290,23 @@ def simple_commands(line: str):
             elif not operator.endswith("&"):
                 redirects.append((operator, token))
             operator = None
-        elif token in breaks:
-            yield words, redirects, here
-            words, redirects, here = [], [], None
+        elif token in breaks or (token and set(token) <= set(";&|()")):
+            for ended_by in glued(token):
+                yield words, redirects, here, ended_by
+                words, redirects, here = [], [], None
         elif token and set(token) <= set("<>&|") and set(token) & set("<>"):
             if words and words[-1].isdigit():   # the fd of `2>`
                 words.pop()
             operator = token
         else:
             words.append(token)
-    yield words, redirects, here
+    yield words, redirects, here, ""
+
+
+def simple_commands(line: str):
+    """stepped_commands without the operator that ends each command."""
+    for words, redirects, here, _ in stepped_commands(line):
+        yield words, redirects, here
 
 
 def split_heredocs(text: str) -> tuple[str, list[tuple[str, str]]]:
@@ -438,6 +456,11 @@ CODE_FLAGS = {"python": {"-c"}, "node": {"-e", "--eval", "-p", "--print"}, "perl
 # What stands before a command and runs it (`sudo tee f`), and a variable set for it (`A=1 cp a b`).
 RUNS_NEXT = {"sudo", "env", "command", "exec", "builtin", "nohup", "nice", "time", "caffeinate"}
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
+# Builtins that set the variables written after them, a variable as a word spells it (`$D`, `${D}`),
+# and what makes a value one this command line cannot know.
+DECLARES = {"export", "local", "declare", "typeset", "readonly"}
+VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+UNKNOWN = re.compile(r"[$`]")
 # A string of inline code that may be a relative path: one word, with no quote inside.
 CODE_WORD = re.compile(r"""[^'"`\s]+""")
 # A media type (`application/json`, the value of a header): one of the registered top-level types
@@ -480,26 +503,51 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
     a shell, is a command line of its own, read the same way. Removed: the files of rm / unlink / rmdir /
     shred, and what mv moves away. A glob stands for the files it matches now. What stands
     before a command (`sudo`, `env`, a variable) is skipped. A script run from a file is not
-    read, and neither is a heredoc's body fed to anything else (it is text, not commands)."""
+    read, and neither is a heredoc's body fed to anything else (it is text, not commands).
+
+    A relative name is a file of the folder the command stands in when it reaches that word: `cd`,
+    `pushd` / `popd` move it and a subshell gives the place back. A variable the command line set to
+    a literal before (`D=/a/b; echo x > $D/out`) is written out. Where neither can be read (`cd $X`,
+    a value from a substitution), the name is judged as it was written, from where the command stood."""
     line, fed = split_heredocs(spell_home(command))
     try:
-        commands = list(simple_commands(line))
+        commands = list(stepped_commands(line))
     except ValueError:
         commands = []
-    written: list[str] = []
-    removed: list[str] = []
+    written: list[tuple[str, str]] = []     # (the name as written, the folder the command stood in)
+    removed: list[tuple[str, str]] = []
     found: tuple[list[Path], list[Path]] = ([], [])
+    here = previous = str(real(cwd))
+    dirs: list[str] = []
+    subshells: list[tuple[str, str, list[str], dict[str, str]]] = []
+    values: dict[str, str] = {}
 
-    def run(tool: str, code: str) -> None:
+    def filled(word: str) -> str:
+        """The word with the variables this command line set to a literal written out."""
+        return VARIABLE.sub(lambda m: values.get(m.group(1) or m.group(2), m.group(0)), word)
+
+    def run(tool: str, code: str, base: str) -> None:
         """Code handed to a program that runs it."""
         if SHELL_CODE.fullmatch(tool):
-            inner = named(code, cwd)
+            inner = named(code, base)
             found[0].extend(inner[0])
             found[1].extend(inner[1])
         elif code_flags(tool):
-            written.extend(code_paths(code, cwd))
+            written.extend((path, base) for path in code_paths(code, base))
 
     def one(words: list[str], stdin: str | None) -> None:
+        nonlocal here, previous
+        if words and all(ASSIGNMENT.fullmatch(w) for w in words[words[0] in DECLARES:]):
+            # `D=/a/b` alone on its command (or after export / local): later words may spell it $D.
+            # A value this line cannot know (a substitution, a variable set elsewhere) is forgotten.
+            for word in words[words[0] in DECLARES:]:
+                name, _, value = word.partition("=")
+                value = filled(value)
+                if UNKNOWN.search(value):
+                    values.pop(name, None)
+                else:
+                    values[name] = value
+            return
         while words and (ASSIGNMENT.fullmatch(words[0]) or os.path.basename(words[0]) in RUNS_NEXT):
             wrapper = not ASSIGNMENT.fullmatch(words[0])
             words = words[1:]
@@ -507,42 +555,62 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
                 words = words[1:]
         if not words:
             return
-        tool, args = os.path.basename(words[0]), words[1:]
+        tool, args = os.path.basename(words[0]), [filled(a) for a in words[1:]]
+        if tool in ("cd", "pushd"):
+            target = next((a for a in args if not a.startswith("-") or a == "-"), None)
+            if target is not None and UNKNOWN.search(target):
+                return      # where it goes cannot be read: the command is judged where it stood
+            if tool == "pushd":
+                dirs.append(here)
+            new = previous if target == "-" else str(real(target or str(Path.home()), here))
+            previous, here = here, new
+            return
+        if tool == "popd":
+            if dirs:
+                previous, here = here, dirs.pop()
+            return
         paths = [a for a in args if not a.startswith("-")]
         if tool in CREATES:
-            written.extend(paths)
+            written.extend((p, here) for p in paths)
         elif tool in COPIES and len(paths) >= 2:
-            written.append(paths[-1])
+            written.append((paths[-1], here))
             if tool in MOVES:
-                removed.extend(paths[:-1])
+                removed.extend((p, here) for p in paths[:-1])
         elif tool in REMOVES:
-            removed.extend(paths)
+            removed.extend((p, here) for p in paths)
         elif tool in IN_PLACE and any(a.startswith(("-i", "--in-place")) for a in args):
-            written.extend(p for p in paths if Path(real(p, cwd)).is_file())
+            written.extend((p, here) for p in paths if Path(real(p, here)).is_file())
         elif tool == "dd":
-            written.extend(a[3:] for a in args if a.startswith("of="))
+            written.extend((a[3:], here) for a in args if a.startswith("of="))
         shell = bool(SHELL_CODE.fullmatch(tool))
         flags = code_flags(tool)
         for flag, code in zip(args, args[1:]):
             # a shell takes its command line after -c, alone or among other letters (`-lc`)
             if flag in flags or (shell and re.fullmatch(r"-[A-Za-z]*c", flag)):
-                run(tool, code)
+                run(tool, code, here)
         if stdin is not None:
-            run(tool, stdin)
+            run(tool, stdin, here)
 
-    for words, redirects, here in commands:
-        written.extend(target for operator, target in redirects if ">" in operator)
-        one(words, here)
+    # The command line is read in order, following where it stands, as sends_of does for a send:
+    # `cd`, `pushd` / `popd` move it and a `( ... )` subshell gives the place back, so
+    # `cd /a && echo x > out` writes /a/out and `(cd /a); echo x > out` writes where it started.
+    for words, redirects, stdin, ended_by in commands:
+        written.extend((filled(target), here) for operator, target in redirects if ">" in operator)
+        one(words, stdin)
+        if ended_by == "(":
+            subshells.append((here, previous, list(dirs), dict(values)))
+        elif ended_by == ")" and subshells:
+            here, previous, dirs, values = subshells.pop()
     for program, body in fed:
-        run(program, body)
+        run(program, body, str(real(cwd)))
 
-    def spelled(names: list[str]) -> list[Path]:
+    def spelled(names: list[tuple[str, str]]) -> list[Path]:
         out = []
-        for name in names:
+        for name, stood in names:
             if not name or name in ("-", "/dev/null"):
                 continue
             base = os.path.expanduser(name)
-            base = base if os.path.isabs(base) else os.path.join(cwd, base)
+            base = base if os.path.isabs(base) else os.path.join(stood, base)
             out.extend(real(m) for m in (glob.glob(base) if GLOB.search(name) else []) or [base])
         return out
 
