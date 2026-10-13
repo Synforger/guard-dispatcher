@@ -95,6 +95,70 @@ origin() { git -C "$1" remote remove origin 2>/dev/null || true; git -C "$1" rem
     write_to "${CASE}/received/note.md"; passed
 }
 
+# A hub gathers what the company and its clients hold. Its repository has no remote, and a
+# `_carries` line says whose text it may hold: the sessions that read them write it.
+hub_repo() {
+    HUB="${H}/org/hub"
+    mkdir -p "${HUB}"
+    git init -q "${HUB}"
+    printf 'hub ~/org/hub\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    [ -z "${1:-}" ] || printf '_carries hub %s\n' "$1" >> "${GUARD_CONFIG_DIR}/areas.txt"
+}
+
+@test "area-guard: a session that read the areas a repository may hold writes and commits it" {
+    hub_repo "company client"
+    read_case
+    agent Read file_path "${COMPANY_REPO}/notes.md"; passed
+    agent Read file_path "${HUB}/journal.md"; passed
+    [ "$(jq -c .areas "${AREA_GUARD_STATE}/s1.json")" = '["client","company","hub"]' ]
+    write_to "${HUB}/journal.md"; passed
+    bash_in "${H}" "echo x > ${HUB}/a.md"; passed
+    bash_in "${HUB}" "git commit -qm notes"; passed
+    # one that read the client and never opened the hub
+    read_case s2
+    write_to "${HUB}/journal.md" s2; passed
+    # one that read only the company: its text is carried too
+    agent Read file_path "${COMPANY_REPO}/notes.md" "${H}" s3
+    write_to "${HUB}/journal.md" s3; passed
+}
+
+@test "area-guard: a repository holds only the areas its line names, and nothing once it has a remote" {
+    hub_repo "company"
+    read_case
+    write_to "${HUB}/journal.md"; denied
+    bash_in "${H}" "echo x > ${HUB}/a.md"; denied
+    bash_in "${HUB}" "git commit -qm notes"; denied
+    agent Read file_path "${COMPANY_REPO}/notes.md" "${H}" s2
+    write_to "${HUB}/journal.md" s2; passed
+    # with a remote, what is written there can leave: it holds nothing of the others
+    git -C "${HUB}" remote add origin git@github.com:o/r.git
+    write_to "${HUB}/journal.md" s2; denied
+}
+
+@test "area-guard: with no such line, a repository is written only by a session inside every mark" {
+    hub_repo
+    read_case
+    write_to "${HUB}/journal.md"; denied
+    agent Read file_path "${COMPANY_REPO}/notes.md" "${H}" s2
+    write_to "${HUB}/journal.md" s2; denied
+    agent Read file_path "${HUB}/journal.md" "${H}" s2
+    write_to "${HUB}/journal.md" s2; passed
+}
+
+@test "area-guard: a name written as a glob holds every area it matches" {
+    hub_repo "company cl*"
+    read_case
+    write_to "${HUB}/journal.md"; passed
+}
+
+@test "area-guard: what a repository may hold does not let a session send it anywhere" {
+    hub_repo "company client"
+    read_case
+    write_to "${PERSONAL}/a.py"; denied
+    write_to "${COMPANY_REPO}/c.py"; denied
+    bash_in "${HUB}" "git push git@github.com:me/public-tool.git main"; denied
+}
+
 @test "area-guard: a client reader cannot write a company repository" {
     read_case
     write_to "${COMPANY_REPO}/c.py"; denied

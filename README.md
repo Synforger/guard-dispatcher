@@ -206,7 +206,8 @@ company's meetings and every client's mail — writes down text of each of them.
 with the text of `company` and of every `client-…` area (a name, or a glob over
 names). It holds for a commit only, and only while the repository has no
 remote: a commit stays on this machine, and a repository with no remote sends
-what it holds nowhere. Its files are still documents of `hub`, and whatever
+what it holds nowhere. An agent's session that read those areas may write the
+repository's files and commit there, for the same reason (*Agent entry guard*). Its files are still documents of `hub`, and whatever
 leaves it — a push, a `gh` call, a tool's send, a message to another session —
 is judged as before. The scan says when it is at work (`it may hold the text
 of 2 areas more`). The line is the operator's to write: the agent writes
@@ -336,7 +337,13 @@ step earlier, before each tool call, from the same `areas.txt`:
     but one around a mark. A session that read the client writes the client's
     repository (the company around it does not count against it) but not the
     company's; one that read only the company writes neither a client's
-    repository nor a personal one.
+    repository nor a personal one;
+  - **a repository with no remote, in an area whose `_carries` line names
+    other areas, is written and committed to by a session that read them** —
+    the line says the repository may hold their text, and with no remote it
+    sends that nowhere. Only the areas the line names: a mark it does not name
+    still refuses. A push from there, a `gh` call or a message is judged as
+    above, and once the repository has a remote it holds nothing of the others.
   The shell's writes are the paths a command names as written (a `>` / `>>`
   redirection, `tee`, `touch`, `truncate`, the destination of `cp` / `mv` /
   `install` / `ln`, `sed -i`, `dd of=`), whatever stands before the command
