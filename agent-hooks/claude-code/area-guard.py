@@ -257,11 +257,72 @@ STRING = re.compile(r"""(\"{3}|'{3})((?:\\.|(?!\1).)*)\1|(["'])((?:\\.|(?!\3)[^\
 CODE_BREAK = re.compile(r"[\s()\[\]{},;]+")
 
 
+# A call that joins its arguments into one path, the opening parenthesis included.
+PATH_JOINS = re.compile(r"(?:\bos\.path\.join|\bposixpath\.join|\bPure(?:Posix)?Path|\bPath|\.joinpath)\s*\(")
+# What tells a string is a template filled in when the code runs: `{name}` in an f-string or a
+# format string, `%s` and its kind.
+TEMPLATE = re.compile(r"\{[^{}]*\}|%[-+ #0-9.]*[sdrif]")
+
+
+def _closing(code: str, opening: int) -> int:
+    """Where the parenthesis opened at `opening` closes (strings skipped), or -1."""
+    depth, pos = 0, opening
+    while pos < len(code):
+        m = STRING.match(code, pos)
+        if m:
+            pos = m.end()
+            continue
+        if code[pos] in "([{":
+            depth += 1
+        elif code[pos] in ")]}":
+            depth -= 1
+            if depth == 0:
+                return pos
+        pos += 1
+    return -1
+
+
+def _joins(code: str) -> tuple[list[str], list[tuple[int, int]]]:
+    """The calls of `code` that join their arguments into a path (PATH_JOINS): (the paths that can be
+    told, the stretches of code their arguments take). A call whose arguments are all strings names
+    the path they join into; one with a variable among them names a path this line cannot know."""
+    told, spans = [], []
+    for m in PATH_JOINS.finditer(code):
+        end = _closing(code, m.end() - 1)
+        if end < 0:
+            continue
+        inside = code[m.end():end]
+        spans.append((m.end(), end))
+        pieces = [piece.strip() for piece in inside.split(",") if piece.strip()]
+        strings = [STRING.fullmatch(piece) for piece in pieces]
+        if pieces and all(strings) and not m.group(0).startswith(".joinpath"):
+            parts = [next(g for g in (s.group(2), s.group(4), s.group(5)) if g is not None) for s in strings]
+            if not any("\n" in part or TEMPLATE.search(part) for part in parts):
+                told.append(os.path.join(*parts))
+    return told, spans
+
+
+def _alone(code: str, m: re.Match) -> bool:
+    """Whether a string literal stands for a whole path: not one piece glued to another (`H + 'x'`,
+    `base / 'x'`, `'%s/x' % H`), not a template filled in when the code runs (an f-string, `{}`)."""
+    prefix = re.search(r"[A-Za-z]*$", code[:m.start()]).group(0).lower()
+    body = next(g for g in (m.group(2), m.group(4), m.group(5)) if g is not None)
+    if "f" in prefix or TEMPLATE.search(body):
+        return False
+    before, after = code[:m.start() - len(prefix)].rstrip(), code[m.end():].lstrip()
+    return not (before.endswith(("+", "/")) or after.startswith(("+", "/", "%")))
+
+
 def literals(code: str):
     """Inline code as the stretches that can name a file: (text, whether it is a whole string).
-    A string literal on one line is one stretch, whole. One that runs over lines gives a stretch per
-    line, and the code outside the strings gives its words. What is quoted inside a string -- a
-    `name` in a sentence -- is part of that string, not a string of the code."""
+    A string literal on one line is one stretch, whole -- unless it is a piece of a path the code
+    puts together (`H + 'todo.md'`, `os.path.join(H, 'todo.md')`, an f-string): then it is text,
+    since the path it ends up in is not the string. A join of strings alone is given as the path it
+    makes. One that runs over lines gives a stretch per line, and the code outside the strings gives
+    its words. What is quoted inside a string -- a `name` in a sentence -- is part of that string,
+    not a string of the code."""
+    told, spans = _joins(code)
+    yield from ((path, True) for path in told)
     pos = 0
     for m in STRING.finditer(code):
         yield from ((word, False) for word in CODE_BREAK.split(code[pos:m.start()]) if word)
@@ -269,7 +330,8 @@ def literals(code: str):
         if "\n" in body:
             yield from ((line, False) for line in body.splitlines())
         else:
-            yield body, True
+            joined = any(start <= m.start() and m.end() <= end for start, end in spans)
+            yield body, not joined and _alone(code, m)
         pos = m.end()
     yield from ((word, False) for word in CODE_BREAK.split(code[pos:]) if word)
 
@@ -606,14 +668,21 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
     # The command line is read in order, following where it stands, as sends_of does for a send:
     # `cd`, `pushd` / `popd` move it and a `( ... )` subshell gives the place back, so
     # `cd /a && echo x > out` writes /a/out and `(cd /a); echo x > out` writes where it started.
+    # A heredoc's body is read from where the command it feeds stands (`cd /a && python3 - <<EOF`
+    # runs the body in /a), in the order the heredocs open. One the line could not be read for is
+    # read from where the command started.
+    waiting = list(fed)
     for words, redirects, stdin, ended_by in commands:
         written.extend((filled(target), here) for operator, target in redirects if ">" in operator)
         one(words, stdin)
+        for operator, _ in redirects:
+            if operator in ("<<", "<<-") and waiting:
+                run(*waiting.pop(0), here)
         if ended_by == "(":
             subshells.append((here, previous, list(dirs), dict(values)))
         elif ended_by == ")" and subshells:
             here, previous, dirs, values = subshells.pop()
-    for program, body in fed:
+    for program, body in waiting:
         run(program, body, str(real(cwd)))
 
     def spelled(names: list[tuple[str, str]]) -> list[Path]:

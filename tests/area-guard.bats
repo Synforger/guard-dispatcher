@@ -832,6 +832,41 @@ print(place == m.Path('${CASE_REPO}'), note)
     done
 }
 
+@test "area-guard: a string glued to a path the code builds is a piece of it, not a relative name" {
+    mkdir -p "${H}/scratch" "${PERSONAL}/src"
+    read_case
+    local c
+    # standing in the personal repository, writing into a folder a client reader may write
+    local -a commands=(
+        $'python3 - <<\'EOF\'\nH = \''"${H}"$'/scratch/\'\np = H + \'todo.md\'\nopen(p, \'w\').write(\'x\')\nEOF'
+        $'python3 - <<\'EOF\'\nimport os\nH = \''"${H}"$'/scratch\'\nopen(os.path.join(H, \'todo.md\'), \'w\')\nEOF'
+        $'python3 - <<\'EOF\'\nH = \''"${H}"$'/scratch\'\nopen(f\'{H}/todo.md\', \'w\')\nEOF'
+        $'python3 - <<\'EOF\'\nfrom pathlib import Path\nbase = Path(\''"${H}"$'/scratch\')\n(base / \'todo.md\').write_text(\'x\')\nEOF'
+        $'python3 - <<\'EOF\'\nH = \''"${H}"$'/scratch\'\nopen(\'%s/todo.md\' % H, \'w\')\nEOF'
+    )
+    for c in "${commands[@]}"; do
+        bash_in "${PERSONAL}" "${c}"
+        passed || { echo "refused: ${c}"; return 1; }
+    done
+    # strings alone joined into a relative path still name it
+    for c in "python3 -c \"import os; open(os.path.join('src', 'a.py'), 'w')\"" \
+             "python3 -c \"from pathlib import Path; Path('src', 'a.py').write_text('x')\""; do
+        bash_in "${PERSONAL}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+    done
+}
+
+@test "area-guard: a heredoc's body runs where the command it feeds stands" {
+    mkdir -p "${H}/scratch"
+    read_case
+    bash_in "${PERSONAL}" $'cd '"${H}"$'/scratch && python3 - <<\'EOF\'\nopen(\'todo.md\', \'w\').write(\'x\')\nEOF'
+    passed
+    bash_in "${H}" $'cd '"${PERSONAL}"$' && python3 - <<\'EOF\'\nopen(\'todo.md\', \'w\').write(\'x\')\nEOF'
+    denied
+    bash_in "${H}" $'(cd '"${PERSONAL}"$'); python3 - <<\'EOF\'\nopen(\'todo.md\', \'w\').write(\'x\')\nEOF'
+    passed
+}
+
 @test "area-guard: inline code that names no path is not a write" {
     read_case
     local c
