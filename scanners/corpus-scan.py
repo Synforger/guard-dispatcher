@@ -62,9 +62,12 @@ built from are compared with what `stat` gives now instead, and only the folders
 whose modification time moved are listed again (a file created, removed or
 renamed changes its folder's time): a document edited, deleted or created since
 the last look is caught at once without walking everything. A full walk still comes at least every six
-hours (MAX_AGE). Only one process at a time walks or writes the
-fingerprints (a lock file in the cache); the rest use what is already there
-rather than wait or walk beside it.
+hours (MAX_AGE), and when more than MAX_DELTA documents changed since the last one. A scan that finds
+one due starts it as a process of its own and waits for it up to WALK_WAIT; past that, the scan goes
+on with the tables it has just brought up to date and the walk finishes apart (a send is judged
+within its own time limit however long the walk takes). Only one process at a time walks or writes
+the fingerprints (a lock file in the cache); the rest use what is already there rather than wait or
+walk beside it.
 
 What is checked depends on where the text is going: every area but the
 destination's own, the innermost ones that contain it. A repository inside an
@@ -183,8 +186,13 @@ INDEX = DOCS / "index.json"
 # or renamed in a folder changes that folder's time, so the stat fallback of catch_up() finds new
 # documents by listing only the folders whose time moved.
 FOLDERS = DOCS / "folders.json"
-# Past this many changed documents since the last full walk, walk again instead of growing the delta.
-MAX_DELTA = 200
+# Past this many changed documents since the last full walk, a full walk is due (= the delta is still
+# written, so nothing changed goes unseen until the walk folds it into the area's table).
+MAX_DELTA = int(os.environ.get("GUARD_CORPUS_MAX_DELTA", "200"))
+# How long a scan waits for a full walk it started (walk_apart). Past it the scan goes on with the
+# tables on disk and the walk finishes apart. send-scan.py gives the whole scan 120s; this leaves room
+# for Spotlight's answer (up to 30s, spotlight_changes) and the scan itself.
+WALK_WAIT = int(os.environ.get("GUARD_CORPUS_WALK_WAIT", "60"))
 # One PDF's extractor gets far less than the judgement's own budget (send-scan.py's 120s for the
 # whole scan): a single huge attachment must not eat that budget, so it is marked unreadable
 # instead, on its own, well before the outer timeout could fire.
@@ -1068,9 +1076,9 @@ def folder_changes(index: dict) -> list[Path] | None:
 
 
 def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
-    """Add the documents changed since the last look to per-area delta tables.
-    None = a full walk is needed instead (Spotlight could not answer and the delta this fell back
-    to grew large). A deleted document Spotlight reports stays in the tables until the next full
+    """Add the documents changed since the last look to per-area delta tables. Past MAX_DELTA of
+    them the summary says a full walk is due (`walk_due`). None = a full walk is needed first
+    (Spotlight could not answer and there is no folder list yet to fall back to). A deleted document Spotlight reports stays in the tables until the next full
     walk (= the safe side); one the stat fallback finds gone is dropped from the index at once (it
     can name no folder to have missed a new document in, so there is nothing more to catch there).
 
@@ -1116,7 +1124,9 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
                 touched.add(area)
         deltas = {n: [v[1] for v in index.values() if v[2] == n and v[-1] == "delta"] for n in touched}
         if sum(len(f) for f in deltas.values()) > MAX_DELTA:
-            return None
+            # The delta is written all the same (= what changed is seen now); the full walk that
+            # folds it into the area's table is due, and kept due until a walk writes a new summary.
+            summary["walk_due"] = True
         if touched:
             allowed: set[int] = set()
             for phrase in read_lines(CONFIG / "allow.txt"):
@@ -1129,6 +1139,41 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
         summary["checked"] = started
         atomic_write(CACHE / "summary.json", json.dumps(summary, indent=1))
         return summary
+
+
+def say_built(summary: dict) -> None:
+    documents = sum(a["documents"] for a in summary["areas"].values())
+    say(f"built in {summary['seconds']}s: {documents} documents in {areas_count(summary['areas'])}"
+        " (--status names them)")
+    if summary["unreadable"]:
+        say(unreadable_line(summary["unreadable"]))
+
+
+def walk_apart(summary: dict) -> dict:
+    """A full walk is due (the tables are past MAX_AGE, or the delta past MAX_DELTA). Start it as a
+    process of its own -- unless one is at it -- and wait for it up to WALK_WAIT: a walk done by then
+    is used as if walked here. Past that, this scan goes on with the tables on disk, which catch_up()
+    has just brought up to date, and the walk finishes apart: a scan given up on by its caller does
+    not stop it half way, and the next scan finds it done."""
+    with lock_file(wait=False) as free:
+        if not free:
+            return summary
+    say("walking the private documents (unchanged ones are reused)...")
+    walk = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--walk"],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
+    try:
+        code = walk.wait(timeout=WALK_WAIT)
+    except subprocess.TimeoutExpired:
+        say(f"the walk takes longer than {WALK_WAIT}s: it goes on apart from this scan, which uses the "
+            "tables brought up to date just now")
+        return summary
+    built = built_summary()
+    if code != 0 or built is None or built["built"] <= summary["built"]:
+        say(f"the walk did not finish (exit {code}): this scan uses the tables brought up to date just now")
+        return summary
+    say_built(built)
+    return built
 
 
 def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
@@ -1146,18 +1191,18 @@ def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
         # since is still in them, and what is public no longer is still missing. Merge them anew.
         moved = summary.get("public", "") != public_now
         full = not current or moved
-        if not current or moved or time.time() - summary["built"] >= MAX_AGE:
+        if full:
+            # The tables on disk do not fit these areas or this table of public text: nothing to
+            # judge with until they are built anew, here.
             summary = None
         else:
             summary = catch_up(areas, summary)
+            if summary is not None and (summary.get("walk_due") or time.time() - summary["built"] >= MAX_AGE):
+                summary = walk_apart(summary)
     if summary is None:
         say("walking the private documents (unchanged ones are reused)...")
         summary = build(areas, full=full)
-        documents = sum(a["documents"] for a in summary["areas"].values())
-        say(f"built in {summary['seconds']}s: {documents} documents in {areas_count(summary['areas'])}"
-            " (--status names them)")
-        if summary["unreadable"]:
-            say(unreadable_line(summary["unreadable"]))
+        say_built(summary)
     return {name: [read_table(CACHE / f"{name}.bin"), read_table(CACHE / f"{name}.delta.bin")]
             for name in summary["areas"]}
 
@@ -1447,6 +1492,7 @@ def main(argv: list[str] | None = None) -> int:
                         f"machine, so the areas a `{CARRIES}` line lets that repository hold are not checked")
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--refresh-public", action="store_true")
+    parser.add_argument("--walk", action="store_true", help="the full walk a scan found due (walk_apart)")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--summary", action="store_true")
     args = parser.parse_args(argv)
@@ -1474,6 +1520,17 @@ def main(argv: list[str] | None = None) -> int:
                 with lock_file(wait=True):
                     publish_public(table, ident)
                     _build_locked(areas, full=True)
+        return 0
+    if args.walk:
+        # Started by a scan that found a full walk due, or by hand. Whoever holds the lock is
+        # already at it: this one leaves.
+        try:
+            areas = load_areas()
+        except ValueError:
+            return 2
+        with lock_file(wait=False) as mine:
+            if mine and areas and (CACHE / "summary.json").is_file():
+                _build_locked(areas, full=False)
         return 0
     try:
         areas = load_areas()
