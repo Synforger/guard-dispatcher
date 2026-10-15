@@ -253,7 +253,11 @@ time each document's print was built from are compared with what `stat` gives
 now instead, and only the folders whose modification time moved are listed
 again (creating, removing or renaming a file changes its folder's time) — an
 edited, deleted or created document is caught at once without walking
-everything, and a full walk still comes at least every six hours. Only one process at a
+everything. A full walk still comes at least every six hours, and when more than
+200 documents changed since the last one; a scan that finds one due starts it as a
+process of its own and waits for it up to a minute, then goes on with the tables it
+has just brought up to date while the walk finishes — so a send is judged within its
+time limit however long a walk takes. Only one process at a
 time walks or writes the fingerprints; the rest use what is already on disk
 rather than wait or walk beside it, and every file is written whole (a
 temporary file, then renamed into place) so a reader never opens a half-written
@@ -826,6 +830,7 @@ contract:
 - Tuning the private-document scan: `GUARD_CORPUS_RUN` / `GUARD_CORPUS_LATIN_RUN`
   (run length for prose), `GUARD_CORPUS_CODE_LINES` (how many consecutive whole
   lines of an area's code a sent file must hold to be a hit),
+  `GUARD_CORPUS_WALK_WAIT` (seconds a scan waits for a full walk it started, default 60),
   `GUARD_VISIBILITY_TTL` (seconds a repository's visibility is remembered).
 - An AI agent is held to none of these: the agent entry guard refuses any
   command that carries them (the operator types them, the agent does not).

@@ -731,6 +731,89 @@ sys.exit(0 if os.path.realpath(sys.argv[1]) in index else 1)" "$1"
     [[ "$output" != *"walking the private documents"* ]]
 }
 
+# --- a full walk that is due does not hold up the scan -----------------------------------
+#
+# A full walk runs as a process of its own; the scan waits for it up to GUARD_CORPUS_WALK_WAIT
+# and then goes on with the tables on disk, which catch_up() has just brought up to date. A send
+# is judged within its own time limit however long the walk takes.
+
+# built_at — when the tables on disk were last built (summary.json), as a number.
+built_at() {
+    python3 -c "import json; print(json.load(open('${GUARD_CORPUS_CACHE}/summary.json'))['built'])"
+}
+
+# wait_for_walk <built before> — the walk started apart finishes within ten seconds.
+wait_for_walk() {
+    local k
+    for k in $(seq 100); do
+        if [ -f "${GUARD_CORPUS_CACHE}/summary.json" ] && \
+            python3 -c "import json,sys; sys.exit(0 if json.load(open('${GUARD_CORPUS_CACHE}/summary.json'))['built'] > float(sys.argv[1]) else 1)" "$1"; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
+@test "corpus: a walk past its age goes on apart when it takes longer than the scan waits, and what changed is still caught" {
+    export GUARD_CORPUS_MAX_AGE=0 GUARD_CORPUS_WALK_WAIT=0
+    spotlight_stub ""
+    printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last               # first look: nothing built yet, walked here
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"walking the private documents"* ]]
+    local before
+    before="$(built_at)"
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"goes on apart from this scan"* ]]
+    wait_for_walk "${before}"
+}
+
+@test "corpus: a walk the scan waits for is used as if walked here" {
+    export GUARD_CORPUS_MAX_AGE=0
+    mk_repo other
+    commit_line "nothing private"
+    scan_last
+    [ "$status" -eq 0 ]
+    local before
+    before="$(built_at)"
+    commit_line "expected: ${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"walking the private documents"* ]]
+    [[ "$output" != *"goes on apart"* ]]
+    python3 -c "import json,sys; sys.exit(0 if json.load(open('${GUARD_CORPUS_CACHE}/summary.json'))['built'] > float(sys.argv[1]) else 1)" "${before}"
+}
+
+@test "corpus: more changed documents than the delta holds are still caught, and the walk goes on apart" {
+    export GUARD_CORPUS_MAX_AGE=3600 GUARD_CORPUS_MAX_DELTA=1 GUARD_CORPUS_WALK_WAIT=0
+    spotlight_stub ""
+    printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    local before
+    before="$(built_at)"
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
+    printf 'the loom in bay four is retuned every second tuesday\n' > "${CLIENT}/received/later.md"
+    commit_line "the loom in bay four is retuned every second tuesday"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"goes on apart from this scan"* ]]
+    wait_for_walk "${before}"
+    # the walk folded both into the area's table: still caught, nothing left due
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"walking the private documents"* ]]
+}
+
 # --- the table of public text ---------------------------------------------------------
 #
 # Most of these tests watch the table through a row of a license: whether a whole row is public
@@ -957,6 +1040,9 @@ sys.exit(0 if want and want == have else 1)
 }
 
 @test "corpus: the process that rebuilds the table of public text merges the areas' tables against it" {
+    # The areas' own walk is not due here: a walk the scan started and waited for would run beside
+    # the rebuild of public text, and which of the two wrote the tables last would decide the scan.
+    export GUARD_CORPUS_MAX_AGE=3600
     public_code
     scan_last
     [ "$status" -eq 1 ]
