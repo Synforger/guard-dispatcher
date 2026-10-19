@@ -8,7 +8,7 @@
 
 load helpers
 
-# Japanese counts as copied from 12 characters, text without Japanese from 40
+# Japanese counts as copied from 12 characters (two thirds of them Japanese), any other text from 40
 # (twelve characters of English are two common words).
 CLIENT_TEXT="the calibration table reads seventeen at dawn"
 COMPANY_TEXT="quarterly planning keeps the bench schedule"
@@ -107,6 +107,17 @@ mk_repo_at() {
     commit_line "メモ: 三段目は夜明けに読み"
     scan_last
     [ "$status" -eq 0 ]
+}
+
+@test "corpus: 12 characters count as Japanese from two thirds: six of Japanese around English pass, eight are caught" {
+    printf '%s\n' "接続の状態を見る via Drive api" >> "${CLIENT}/received/notes.md"
+    mk_repo other
+    commit_line "の状態を見る via D"
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "接続の状態を見る via"
+    scan_last
+    [ "$status" -eq 1 ]
 }
 
 @test "corpus: common English shorter than 40 characters passes" {

@@ -43,8 +43,8 @@ Areas are defined on this machine only (never in a repository):
 An area's documents are everything under its paths that holds its words:
 
     prose  Office (.pptx .docx .xlsx, read from their XML), PDF (pdftotext),
-           Markdown -- every run of RUN consecutive characters holding Japanese,
-           or LATIN_RUN without, is a print
+           Markdown -- every run of RUN consecutive characters mostly Japanese
+           (JAPANESE_SHARE), or LATIN_RUN otherwise, is a print
     rows   CSV, TSV, plain text -- every whole row of at least that length is a
            print, and one copied row is a hit
     lines  every other file a git repository there tracks (= its code and its
@@ -158,6 +158,14 @@ LATIN_RUN = int(os.environ.get("GUARD_CORPUS_LATIN_RUN", "40"))
 # How many consecutive whole lines of an area's code or data a sent file has to hold to be a hit.
 CODE_LINES = int(os.environ.get("GUARD_CORPUS_CODE_LINES", "2"))
 JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]")
+# A run counts as Japanese, and so as a copy at RUN characters, when at least this share of it is
+# Japanese (numerator, denominator). At a half, a short phrase of Japanese and an English name
+# ("README の見出し") counted, and a common phrase of six and six stopped a push.
+JAPANESE_SHARE = (2, 3)
+
+
+def mostly_japanese(text: str) -> bool:
+    return len(JAPANESE.findall(text)) * JAPANESE_SHARE[1] >= len(text) * JAPANESE_SHARE[0]
 # A letter or a digit, of any script. What holds none is ruling, not writing.
 WORD = re.compile(r"[^\W_]")
 # A stretch of signs and spaces long enough to hold a whole run that says nothing.
@@ -186,7 +194,7 @@ GENERATED = {".pbxproj", ".xcscheme", ".xcworkspacedata", ".storyboard", ".xib",
 # Folders of a repository that hold someone else's code: public text, not the area's.
 VENDORED = {"vendor", "vendors", "external", "extern", "third_party", "thirdparty", "third-party", "3rdparty"}
 # Raised whenever a change to reading or printing makes the kept prints of an unchanged document wrong.
-PRINT_FORMAT = 3
+PRINT_FORMAT = 4
 DOCS = CACHE / "docs"
 INDEX = DOCS / "index.json"
 # Every folder the last full walk went through, with its modification time: a file created, removed
@@ -424,14 +432,14 @@ def digest(window: str) -> int:
 
 
 def windows(text: str):
-    """Every run that counts as a copy: RUN characters holding Japanese, or LATIN_RUN without.
+    """Every run that counts as a copy: RUN characters mostly Japanese, or LATIN_RUN otherwise.
     A run with no letter and no digit in it is not one (the separator row of a wide table, a rule
     of dashes): it says nothing, and every document that has one holds the same one."""
     text = normalize(text)
     for i in range(len(text) - RUN + 1):
         short = text[i:i + RUN]
         # A particle after a word of English ("README.md を") is still English.
-        if len(JAPANESE.findall(short)) * 2 >= RUN:
+        if mostly_japanese(short):
             yield short
     # The runs that start inside [first, last] lie wholly in a stretch of signs.
     silent = [(m.start(), m.end() - LATIN_RUN) for m in SIGNS.finditer(text)]
@@ -442,7 +450,7 @@ def windows(text: str):
         if at < len(silent) and silent[at][0] <= i:
             continue
         long = text[i:i + LATIN_RUN]
-        if len(JAPANESE.findall(long[:RUN])) * 2 < RUN:
+        if not mostly_japanese(long[:RUN]):
             yield long
 
 
@@ -452,14 +460,14 @@ def fingerprints(text: str) -> set[int]:
 
 def line_print(line: str, kind: str = "line") -> int | None:
     """One print for a whole line of code ("line") or a row of data ("row"), long enough to mean
-    something on its own (the same bar as a run: 12 characters holding Japanese, 40 without).
+    something on its own (the same bar as a run: 12 characters mostly Japanese, 40 otherwise).
     Code is copied line by line, and printing every run of every line would hold hundreds of
     millions of values. The kinds are kept apart: a row is one hit, code takes CODE_LINES.
     A line with no letter and no digit in it (a banner of signs, an empty row) is no print."""
     text = normalize(line)
     if WORD.search(text) is None:
         return None
-    if len(text) >= LATIN_RUN or (len(text) >= RUN and len(JAPANESE.findall(text)) * 2 >= len(text)):
+    if len(text) >= LATIN_RUN or (len(text) >= RUN and mostly_japanese(text)):
         return digest(f"\0{kind}\0" + text)
     return None
 
