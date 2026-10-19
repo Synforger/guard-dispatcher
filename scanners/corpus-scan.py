@@ -1370,8 +1370,18 @@ def repo_rules() -> list[tuple[str, str]]:
     return out
 
 
+#: The areas a `repo:` line of destinations.txt names as the owner of the repository a push goes
+#: to (see destination): their text is the place's own, as the innermost area's is.
+OWNERS: set[str] = set()
+
+
 def destination(slugs: set[str], sender: Path, areas: dict[str, list[Path]]) -> Path | None:
-    """Where the destination lives; None = outside every area."""
+    """Where the destination lives; None = outside every area.
+
+    A `repo:<pattern> <area>` line names the area a repository belongs to. A private one cloned
+    inside that area sits where its clone is, and the declared area is its owner (OWNERS): a
+    client's repository in the company's own GitHub organization takes the client's text and the
+    company's. Otherwise the repository sits in the declared area."""
     if not slugs:
         say("destination could not be told -- checked against every area")
         return None
@@ -1382,24 +1392,34 @@ def destination(slugs: set[str], sender: Path, areas: dict[str, list[Path]]) -> 
             say(f"destination {slug} is declared outside every area -- checked against every area")
             return None
         if target in areas and areas[target]:
+            clone = cloned_place(slugs, sender, areas)
+            if clone is not None and target in holding(clone, areas):
+                OWNERS.add(target)
+                return clone
             return areas[target][0]
+    return cloned_place(slugs, sender, areas, say_why=True)
+
+
+def cloned_place(slugs: set[str], sender: Path, areas: dict[str, list[Path]], say_why: bool = False) -> Path | None:
+    """Where the clones of private repositories sit, when they all agree; None otherwise."""
+    tell = say if say_why else (lambda _line: None)
     places: set[Path] = set()
     for slug in sorted(slugs):
         seen = visibility(slug)
         if seen != "private":
-            say(f"destination {slug} is {seen} on GitHub -- checked against every area")
+            tell(f"destination {slug} is {seen} on GitHub -- checked against every area")
             return None
         if slug in remote_repos(sender):
             places.add(sender)
             continue
         local = [Path(p) for p in clones(areas).get(slug, [])]
         if not local:
-            say(f"destination {slug} has no clone on this machine -- checked against every area")
+            tell(f"destination {slug} has no clone on this machine -- checked against every area")
             return None
         places.update(local)
     # Clones that sit in different areas may carry different things: only agreement decides.
     if len({holding(p, areas) for p in places}) != 1:
-        say(f"destination {', '.join(sorted(slugs))} has clones in different areas -- checked against every area")
+        tell(f"destination {', '.join(sorted(slugs))} has clones in different areas -- checked against every area")
         return None
     return sorted(places)[0]
 
@@ -1653,7 +1673,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     # A place carries its own areas' text; an area holding one of them (the company around a
     # client) is still checked: what goes to a client does not take the company's own text.
-    own = {n for n in held if not any(n != m and outer(n, m, areas) for m in held)}
+    own = {n for n in held if not any(n != m and outer(n, m, areas) for m in held)} | (OWNERS & held)
     checked = [n for n in areas if n not in UNSCANNED and n not in own]
     # A commit stays on this machine. Where areas.txt lets a repository of this area hold other
     # areas' text, those are not checked -- while the repository has no remote to send it to.

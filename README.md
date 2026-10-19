@@ -507,7 +507,14 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   *slack*                   block       # sending refused outright; reading still works
   *chat*                    company order   # each send needs the operator's order
   repo:my-account/*         outside     # a push or gh call to these GitHub repositories, private or not
+  repo:my-company/*         company     # the company's organization: its repositories belong to the company
   ```
+
+  A `repo:` line naming an area says who owns the repositories. A private one
+  cloned inside that area sits where its clone is, and the owner's text is its
+  own too: a client's repository in the company's organization, cloned in the
+  client's folder, takes the client's text and the company's, and still not
+  another client's. One cloned elsewhere sits in the declared area.
 
   The pattern is a glob over the tool name, over `host:<name>` for a
   network command, over `repo:<owner>/<name>` for a GitHub repository a push

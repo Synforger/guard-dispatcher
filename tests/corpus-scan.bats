@@ -1561,3 +1561,47 @@ commit_lines() {
     scan_last
     [ "$status" -eq 1 ]
 }
+
+# --- a repository's owner, declared --------------------------------------------------------
+
+@test "corpus: a private repo of the company's organization cloned in the client takes the client's text and the company's" {
+    seed_visibility acme/pipeline private
+    printf 'repo:acme/* company\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    commit_line "${CLIENT_TEXT}"
+    commit_line "${COMPANY_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~2..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: the declared owner lets in its own text only: another client's text is still refused" {
+    mkdir -p "${WORK}/clients/beta"
+    printf '%s\n' "the beta fixture lists eleven sensors along the north wall" > "${WORK}/clients/beta/plan.md"
+    printf 'beta %s\n' "${WORK}/clients/beta" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    seed_visibility acme/pipeline private
+    printf 'repo:acme/* company\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    commit_line "the beta fixture lists eleven sensors along the north wall"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"beta text"* ]]
+}
+
+@test "corpus: without the owner declared, company text into a client's repo is still refused" {
+    seed_visibility acme/pipeline private
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    commit_line "${COMPANY_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a declared area with no clone inside it is where the repository sits, as before" {
+    seed_visibility acme/pipeline private
+    printf 'repo:acme/* client\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    mk_clone_at "${WORK}/repos/pipeline" acme/pipeline
+    commit_line "${COMPANY_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
