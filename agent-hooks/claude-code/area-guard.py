@@ -47,7 +47,10 @@ What the guard judges from is the operator's to write as well: the agent writes 
 guard's settings folder (`$GUARD_CONFIG_DIR`: where the areas are, what is public, what is fine
 to send, where a destination sits, what counts as an order), nor removes it, nor writes a
 session's transcript (`~/.claude*/projects/**/*.jsonl`), through Edit / Write or the shell.
-Reading the settings, and copying them out, pass.
+Reading the settings, and copying them out, pass. The operator may hand some of the settings to
+the agent (`agent-writes.txt`, one name per line, `*` for all): a session that has read inside no
+area, counting the call itself, writes those. The grant itself, `orders.txt` and `agent-off`
+stay the operator's whatever the grant says.
 
 A message relayed from a session on another machine holds the session it came into, on every
 machine (`order.py`, the `>>` lines of `orders.txt`): until the operator types a message of their
@@ -88,6 +91,11 @@ STATE = Path(os.environ.get("AREA_GUARD_STATE", Path.home() / ".cache/area-guard
 # The operator's switch: while this file exists the entry guard passes every call. Installing or
 # updating the guard leaves it as it is, so switching off holds until the operator removes it.
 OFF = CONFIG / "agent-off"
+# The operator's grant: the settings an agent that has read inside no area may write, one name per
+# line (a file, a folder, a glob; `*` for all). Never the grant itself, what orders a send, or the
+# switch: an agent that wrote those would grant itself, order its own sends, or switch the guard off.
+GRANT = CONFIG / "agent-writes.txt"
+OPERATOR_ONLY = (GRANT.name, "orders.txt", OFF.name)
 CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus-scan.py"
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/send-scan.py"
 EXEMPT = "_exempt"
@@ -741,9 +749,42 @@ def in_settings(path: Path) -> bool:
     return False
 
 
-def kept(path: Path, transcript: str | None) -> tuple[str, str] | None:
-    """(what a path is, why the agent may not write it), or None."""
+def settings_name(path: Path) -> str | None:
+    """The path inside the settings folder (`patterns/client.txt`), folded to lower case, or None."""
+    for folder in {str(CONFIG), str(real(CONFIG))}:
+        for spelled in {str(path), str(real(path))}:
+            if spelled.casefold().startswith(folder.casefold() + os.sep):
+                return spelled[len(folder) + 1:].casefold()
+    return None
+
+
+def granted(path: Path, marks: set[str]) -> bool:
+    """Whether the operator's grant lets an agent with these marks write this path of the settings."""
+    import fnmatch   # loaded where it is used: most calls write no setting
+    name = settings_name(path)
+    if marks or not name or name.split(os.sep)[0] in {n.casefold() for n in OPERATOR_ONLY}:
+        return False
+    try:
+        lines = GRANT.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        entry = line.split("#", 1)[0].strip().rstrip("/").casefold()
+        if entry and (entry == "*" or fnmatch.fnmatchcase(name, entry) or name.startswith(entry + os.sep)):
+            return True
+    return False
+
+
+def kept(path: Path, transcript: str | None, marks: set[str] | None = None) -> tuple[str, str] | None:
+    """(what a path is, why the agent may not write it), or None. `marks` = the areas the session
+    has read inside, this call included (None: not known, and no grant applies)."""
     if in_settings(path):
+        if marks is not None and granted(path, marks):
+            return None
+        if marks and settings_name(path) and granted(path, set()):
+            return (f"the guard's settings ({path.name})",
+                    f"{SETTINGS_WHY}, and the operator hands it only to a session that has read inside no area "
+                    f"(this one has read inside {', '.join(sorted(marks))})")
         return f"the guard's settings ({path.name})", SETTINGS_WHY
     if transcript and same_file(path, real(transcript)):
         return "the session's transcript", TRANSCRIPT_WHY
@@ -753,13 +794,14 @@ def kept(path: Path, transcript: str | None) -> tuple[str, str] | None:
     return None
 
 
-def kept_by(command: str, cwd: str, transcript: str | None) -> tuple[str, str] | None:
+def kept_by(command: str, cwd: str, transcript: str | None,
+            marks: set[str] | None = None) -> tuple[str, str] | None:
     """What a Bash command writes or removes that the agent may not (and why), or None. Removing
     a setting counts: with no destinations.txt a destination held to an order is undeclared, and
     with no areas.txt nothing is an area."""
     written, removed = named(command, cwd)
     for path in written + removed:
-        if what := kept(path, transcript):
+        if what := kept(path, transcript, marks):
             return what
     for path in removed:
         if path in real(CONFIG).parents or path in CONFIG.parents:
@@ -1258,7 +1300,8 @@ def ask(argv: list[str]) -> int:
     command that starts a script, never the script, and a relative path it is handed resolves where
     the script runs, not where the session stands. A relative path here resolves from the caller's
     working directory. Exit 0: every path may be written (also with the entry guard off, with no
-    areas, and for a session with no marks). Exit 1: one line per refused path on stderr. Exit 2: usage."""
+    areas, and for a session with no marks, but for the guard's own settings and a transcript, judged as
+    an Edit of them is). Exit 1: one line per refused path on stderr. Exit 2: usage."""
     if len(argv) < 3 or argv[0] != "may-write" or not argv[1]:
         print("usage: area-guard.py may-write <session_id> <path>...", file=sys.stderr)
         return 2
@@ -1266,9 +1309,14 @@ def ask(argv: list[str]) -> int:
         return 0
     areas = load_areas()
     marks = set(load_state(argv[1])["areas"]) if areas else set()
-    if not marks:
-        return 0
     targets = [real(path, os.getcwd()) for path in argv[2:]]
+    # What the guard judges from, as an Edit of it is judged, with marks or none.
+    kept_here = [(t, what) for t in targets if (what := kept(t, None, marks))]
+    for target, (what, why) in kept_here:
+        print(f"area-guard: an agent does not write {what}: {why}", file=sys.stderr)
+    if not marks:
+        return 1 if kept_here else 0
+    targets = [t for t in targets if t not in {k for k, _ in kept_here}]
     refused = [t for t in targets if not may_write(t, marks, areas) and handoff_of(t) is None]
     for target in targets:
         if target not in refused and not may_write(target, marks, areas):
@@ -1277,7 +1325,7 @@ def ask(argv: list[str]) -> int:
     for target in refused:
         print(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
               f"write {target} (areas: {AREAS}). Do it in another session", file=sys.stderr)
-    return 1 if refused else 0
+    return 1 if refused or kept_here else 0
 
 
 def deny(reason: str) -> None:
@@ -1313,10 +1361,16 @@ def main() -> int:
     if tool in WRITES and ".cache/area-guard" in written:
         deny("area-guard: an agent does not rewrite the entry guard's marks")
         return 0
-    # What the guard judges from is the operator's to write, on every machine.
+    # What the guard judges from is the operator's to write, on every machine, but for what the operator
+    # grants a session that has read inside no area. The call's own reading counts: marks are kept after it.
     transcript = event.get("transcript_path")
-    what = kept(Path(written), transcript) if tool in WRITES else \
-        kept_by(args.get("command", ""), cwd, transcript) if tool == "Bash" else None
+    writer = set(marks)
+    if tool == "Bash" and areas and GRANT.is_file():
+        command = args.get("command", "")
+        writer |= {a for a in (area_of(p, areas) for p in bash_marks(command, cwd, areas)) if a and a != EXEMPT}
+        writer |= remote_marks(command, cwd)
+    what = kept(Path(written), transcript, writer) if tool in WRITES else \
+        kept_by(args.get("command", ""), cwd, transcript, writer) if tool == "Bash" else None
     if what:
         deny(f"area-guard: an agent does not write or remove {what[0]}: {what[1]} "
              f"(code written into a command counts as writing every path it names). "

@@ -956,6 +956,63 @@ session_files() {
     bash_in "${H}" "echo 'send it' > ${GUARD_CONFIG_DIR}/Orders.txt"; denied
 }
 
+@test "area-guard: what the operator grants, a session that has read inside no area writes" {
+    session_files
+    local f c g="${GUARD_CONFIG_DIR}"
+    printf '*\n' > "${g}/agent-writes.txt"
+    mkdir -p "${g}/patterns"
+    for f in "${g}/areas.txt" "${g}/destinations.txt" "${g}/allow.txt" "${g}/background.txt" \
+             "${g}/patterns/client.txt" "${g}/notes.txt"; do
+        write_to "${f}"
+        passed || { echo "refused: ${f}"; return 1; }
+        agent Edit file_path "${f}"
+        passed || { echo "refused edit: ${f}"; return 1; }
+    done
+    for c in "echo 'repo:org/* company' >> ${g}/destinations.txt" "touch ${g}/background.txt" \
+             "sed -i '' '/client/d' ${g}/areas.txt" "echo 'QX[0-9]+' > ${g}/patterns/client.txt"; do
+        bash_in "${H}" "${c}"
+        passed || { echo "refused: ${c}"; return 1; }
+    done
+    # the grant itself, what orders a send, and the switch stay the operator's whatever the grant says
+    for f in "${g}/agent-writes.txt" "${g}/AGENT-WRITES.TXT" "${g}/orders.txt" "${g}/agent-off"; do
+        write_to "${f}"
+        denied || { echo "written: ${f}"; return 1; }
+    done
+    for c in "echo 'send it' >> ${g}/orders.txt" "echo x >> ${g}/agent-writes.txt" "rm -rf ${g}" \
+             "mv ${g} ${H}/old" "rm -rf ~/.config"; do
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+    done
+    # a session that has read inside an area writes none of them
+    read_case s2
+    write_to "${g}/destinations.txt" s2; denied
+    [[ "${output}" == *"has read inside no area (this one has read inside client)"* ]]
+    bash_in "${H}" "echo x >> ${g}/allow.txt" s2; denied
+    # nor does a call that reads inside an area on its way: the marks are kept after the call
+    bash_in "${H}" "cat ${CASE}/received/memo.md >> ${g}/allow.txt" s3; denied
+    write_to "${g}/allow.txt" s3; passed
+}
+
+@test "area-guard: the grant names the settings it hands over, and none means none" {
+    session_files
+    local g="${GUARD_CONFIG_DIR}"
+    printf '# what the agent keeps up to date\ndestinations.txt\npatterns/\n' > "${g}/agent-writes.txt"
+    mkdir -p "${g}/patterns"
+    write_to "${g}/destinations.txt"; passed
+    write_to "${g}/Destinations.TXT"; passed
+    write_to "${g}/patterns/client.txt"; passed
+    write_to "${g}/areas.txt"; denied
+    [[ "${output}" == *"what the guard lets through is judged from it"* ]]
+    bash_in "${H}" "echo x >> ${g}/allow.txt"; denied
+    # may-write answers as an Edit of the path is judged
+    run python3 "${HOOK}" may-write s1 "${g}/destinations.txt"; [ "${status}" -eq 0 ]
+    run python3 "${HOOK}" may-write s1 "${g}/areas.txt" "${H}/repos/public-tool/a.md"
+    [ "${status}" -eq 1 ] && [[ "${output}" == *"areas.txt"* ]] && [[ "${output}" != *"public-tool"* ]]
+    rm "${g}/agent-writes.txt"
+    write_to "${g}/destinations.txt"; denied
+    run python3 "${HOOK}" may-write s1 "${g}/destinations.txt"; [ "${status}" -eq 1 ]
+}
+
 @test "area-guard: a transcript kept anywhere else is still the session's: the call names it" {
     session_files
     TRANSCRIPT="${H}/elsewhere/s1.jsonl"
