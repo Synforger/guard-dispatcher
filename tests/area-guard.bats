@@ -1173,3 +1173,23 @@ write_text() {
     [[ "${output}" == *"is in a handoff folder"* ]]
     may_write s1 "${TEAM_REPO}/rules.md"; [ "${status}" -eq 1 ]
 }
+
+# --- folders on another machine mark a session that names them ----------------------------------
+
+@test "area-guard remote: naming the client's folder on another machine marks the session" {
+    printf 'client host:build1:/srv/work/acme\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    bash_in "${H}" "ssh build1 ls /srv/shared"; passed
+    [ ! -e "${AREA_GUARD_STATE}/s1.json" ] || ! grep -q client "${AREA_GUARD_STATE}/s1.json"
+    bash_in "${H}" "ssh build1 'ls -la /srv/work/acme/runs'"; passed
+    grep -q '"client"' "${AREA_GUARD_STATE}/s1.json"
+    write_to "${COMPANY_REPO}/a.md"; denied
+    bash_in "${H}" "scp build1:/srv/work/acme/out.txt ." "s2"; passed
+    grep -q '"client"' "${AREA_GUARD_STATE}/s2.json"
+}
+
+@test "area-guard remote: a root on another machine leaves the folders here as they were" {
+    printf 'client host:build1:/srv/work/acme\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    read_case
+    write_to "${CASE_REPO}/a.py"; passed
+    write_to "${COMPANY_REPO}/a.md"; denied
+}

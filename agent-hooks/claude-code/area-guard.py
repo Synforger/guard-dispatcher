@@ -11,7 +11,8 @@ them.
            standing by itself -- a word of the command line, a string of inline code, a line of
            what a program is fed; inside a sentence it is text, which nothing opens (see said) --
            unless the command only checks it: a lone test / [ / stat / realpath / readlink /
-           ls -d with every argument literal
+           ls -d with every argument literal; and a folder on another machine (a `host:<host>:<path>`
+           root) that an ssh / scp / rsync names
 - Refused: Edit / Write / NotebookEdit on a file inside a git repository outside the marks, and
            a Bash command that names one as written (see named);
            a Bash `git commit` / `git push` / sending `gh` call (reads pass) whose destination is
@@ -773,6 +774,19 @@ def bash_marks(command: str, cwd: str, areas) -> list[Path]:
     return [*named, real(cwd)]
 
 
+def remote_marks(command: str, cwd: str) -> set[str]:
+    """The areas of the folders on other machines a command names (scp / rsync / ssh): naming one
+    marks the session as naming a folder here does."""
+    try:
+        roots = corpus_module().load_remote_areas(AREAS)
+    except Exception:  # noqa: BLE001 — a broken line refuses every send in send-scan; here it marks nothing
+        return set()
+    if not roots:
+        return set()
+    found = outgoing_module().remote_paths(command, cwd, SEND_SCAN)
+    return {a for host, path in found if (a := corpus_module().remote_area(host, path, roots))}
+
+
 def upto_break(words: list[str]) -> list[str]:
     breaks = outgoing_module().SHELL_BREAK
     return words[:next((i for i, w in enumerate(words) if w in breaks), len(words))]
@@ -1325,6 +1339,7 @@ def main() -> int:
     if not areas:
         return 0
     touched: list[Path] = []
+    remote: set[str] = set()
 
     if tool in READS:
         for key in ("file_path", "path", "notebook_path"):
@@ -1333,6 +1348,7 @@ def main() -> int:
     elif tool == "Bash":
         command = args.get("command", "")
         touched += bash_marks(command, cwd, areas)
+        remote = remote_marks(command, cwd)
         for target in write_targets(command, cwd) if marks else []:
             if not may_write(target, marks, areas):
                 deny(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
@@ -1376,7 +1392,7 @@ def main() -> int:
                  f"write {target} (areas: {AREAS}). Do it in another session")
             return 0
 
-    new = {a for a in (area_of(p, areas) for p in touched) if a and a != EXEMPT}
+    new = {a for a in (area_of(p, areas) for p in touched) if a and a != EXEMPT} | remote
     if new - marks:
         state["areas"] = sorted(marks | new)
         save_state(session, state)

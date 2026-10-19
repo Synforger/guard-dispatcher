@@ -1114,3 +1114,44 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
     run python3 "${GUARD_ROOT}/scanners/send-scan.py" --where WebSearch
     [ "${output}" = "outside" ]
 }
+
+# --- folders on another machine (`host:<host>:<path>` roots in areas.txt) ------------------------
+
+# remote_roots — the client also has a folder on build1, and build1 as a whole is the company's.
+remote_roots() {
+    printf 'client host:build1:/srv/work/acme\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    destinations 'host:build1 company'
+    body_files
+}
+
+@test "outgoing remote: a copy into the client's folder on another machine is a send into the client" {
+    remote_roots
+    bash_call "scp body.txt build1:/srv/work/acme/in/"
+    passed
+    bash_call "rsync -av body.txt me@build1:/srv/work/acme/in/body.txt"
+    passed
+    bash_call "scp body.txt build1:/srv/shared/"          # in no root: the machine's line (company)
+    denied
+    [[ "${output}" == *"host:build1"* ]]
+    bash_call "scp body.txt build1:in/"                   # relative to the remote home: the machine's line
+    denied
+}
+
+@test "outgoing remote: an ssh command that writes into the client's folder there is judged as sent into it" {
+    remote_roots
+    bash_call "ssh build1 'cat > /srv/work/acme/in/body.txt' < body.txt"
+    passed
+    bash_call "ssh build1 'cat > /tmp/body.txt' < body.txt"
+    denied
+    bash_call "ssh build1 bash -s < clean.txt"
+    passed
+}
+
+@test "outgoing remote: a root on another machine for an area with no folder here stops every send" {
+    printf 'nowhere host:build1:/srv/nowhere\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    destinations 'host:build1 company'
+    body_files
+    bash_call "scp clean.txt build1:/srv/nowhere/"
+    denied
+    [[ "${output}" == *"none here"* ]]
+}

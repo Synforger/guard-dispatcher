@@ -15,6 +15,11 @@ Areas are defined on this machine only (never in a repository):
                                        tomorrow is an area from the moment it exists)
         <name> <path>/* ...            every sub-folder of <path> joins <name>, one
                                        made tomorrow too (hidden folders do not)
+        <name> host:<host>:<path> ...  a folder on another machine (`host:build1:/srv/x`)
+                                       joins <name>: what is sent there is judged as sent
+                                       into <name>, and naming it marks an agent session
+                                       (the agent hooks). Its text is not on this machine,
+                                       so it is not scanned; <name> needs a folder here too
         _outside <path> ...            folders in no area, whatever holds them
                                        (a personal folder on the company's machine)
         _exempt <path> ...             repositories that are never scanned
@@ -170,6 +175,8 @@ NO_AREA = "_outside"
 UNSCANNED = {EXEMPT, NO_AREA}
 #: Not an area: a line of areas.txt that says which other areas' text an area's repositories may hold.
 CARRIES = "_carries"
+#: A root on another machine: `host:<host>:<absolute path>` (read by load_remote_areas, not load_areas).
+REMOTE = "host:"
 OFFICE = {".pptx", ".docx", ".xlsx", ".pptm", ".docm", ".xlsm"}
 TEXT = {".md", ".csv", ".tsv", ".txt"}
 LOCKFILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock", "uv.lock",
@@ -305,8 +312,11 @@ def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
             continue
         # A relative path would resolve against wherever the scan runs -- an `_exempt .` would
         # exempt every folder. A line that is not a definition is a broken file, not a pass.
-        if bad := [p for p in parts[1:] if not p.startswith(("/", "~", "$"))]:
+        if bad := [p for p in parts[1:] if not p.startswith(("/", "~", "$", REMOTE))]:
             raise ValueError(f"areas.txt: {line!r} names {bad[0]!r}, not an absolute or ~ path")
+        parts = [parts[0], *(p for p in parts[1:] if not p.startswith(REMOTE))]
+        if len(parts) < 2:
+            continue
         if "*" in parts[0]:
             templates.append((parts[0], [expand(p[:-2]) for p in parts[1:] if p.endswith("/*")]))
         else:
@@ -326,6 +336,39 @@ def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
                 if child not in named:
                     areas.setdefault(template.replace("*", child.name), []).append(child)
     return areas
+
+
+def load_remote_areas(source: Path | None = None) -> list[tuple[str, str, str]]:
+    """The roots on other machines, (area, host, absolute path), the longest path first so the
+    innermost wins. A root is `host:<host>:<absolute path>`, on the line of an area that also has a
+    folder on this machine: its text is scanned there, and what is sent into it is judged against
+    the areas it is outside of. A malformed root, a glob, or an area with no folder here is a broken
+    file, not a pass."""
+    source = source or CONFIG / "areas.txt"
+    local = load_areas(source)
+    out = []
+    for line in read_lines(source):
+        parts = shlex.split(line, comments=True)
+        for part in parts[1:]:
+            if not part.startswith(REMOTE):
+                continue
+            host, _, path = part[len(REMOTE):].partition(":")
+            if parts[0] in UNSCANNED or parts[0] == CARRIES or "*" in parts[0] + path \
+                    or not host or not path.startswith("/"):
+                raise ValueError(f"areas.txt: {part!r} is not `{REMOTE}<host>:<absolute path>` on an area's line")
+            if not local.get(parts[0]):
+                raise ValueError(f"areas.txt: {parts[0]!r} has a folder on another machine and none here")
+            out.append((parts[0], host.lower(), path.rstrip("/") or "/"))
+    return sorted(out, key=lambda r: len(r[2]), reverse=True)
+
+
+def remote_area(host: str, path: str, remote: list[tuple[str, str, str]]) -> str | None:
+    """The innermost area holding `path` on `host` (a root on another machine), or None."""
+    host = host.lower()
+    for name, h, root in remote:
+        if h == host and (path == root or path.startswith(root.rstrip("/") + "/")):
+            return name
+    return None
 
 
 def load_carries(areas: dict[str, list[Path]], source: Path | None = None) -> dict[str, list[str]]:
