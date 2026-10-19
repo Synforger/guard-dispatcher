@@ -491,6 +491,54 @@ def remote_host(arg: str) -> str | None:
     return head.rsplit("@", 1)[-1] or None
 
 
+def remote_path(arg: str) -> str | None:
+    """The absolute path a remote argument names on its host (`host:/srv/x`, `scp://host/srv/x`), or
+    None (a path relative to the remote home, an rsync module, a local path)."""
+    if "://" in arg:
+        path = urlsplit(arg).path
+    elif "::" in arg or remote_host(arg) is None:
+        return None
+    else:
+        path = arg.partition(":")[2]
+    return path if path.startswith("/") else None
+
+
+# An absolute path standing in a remote command or the script fed to it.
+ABS_PATH = re.compile(r"(?<![\w.~$/-])/[^\s'\"`;|&<>(){}]+")
+
+
+def remote_roots(send_scan: Path) -> list[tuple[str, str, str]]:
+    """The roots on other machines areas.txt names (corpus-scan's load_remote_areas). A file that
+    cannot be read gives none: the send is then judged by its machine's line, and the scan that
+    reads the same file refuses."""
+    try:
+        return corpus_module(send_scan).load_remote_areas()
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def remote_paths(command: str, cwd: str, send_scan: Path) -> list[tuple[str, str]]:
+    """(host, absolute path) for every path on another machine a command names: the remote
+    arguments of scp / rsync, and the absolute paths of an ssh command and of what it is fed."""
+    try:
+        commands = simple_commands(command)
+    except ValueError:
+        return []
+    found = []
+    for words, stdin in commands:
+        tool, args = os.path.basename(words[0]), words[1:]
+        if tool in ("scp", "rsync"):
+            _, paths = split_options(args, VALUED[tool], RSYNC_VALUED if tool == "rsync" else frozenset())
+            found += [(h, p) for a in paths if (h := remote_host(a)) and (p := remote_path(a))]
+        elif tool == "ssh":
+            _, positional = split_options(args, VALUED["ssh"])
+            if positional:
+                text = stdin_payload(stdin, cwd, send_scan)[0]
+                host = positional[0].rsplit("@", 1)[-1]
+                found += [(host, p) for p in ABS_PATH.findall("\n".join([*positional[1:], text]))]
+    return found
+
+
 def local_payload(ref: str, cwd: str, send_scan: Path) -> tuple[str, list[tuple[Path, str]]]:
     """What sending a local path carries: a file's text, or the path itself when it cannot be
     scanned (a folder, or a file whose text cannot be taken out). A path that does not exist
@@ -529,7 +577,9 @@ def copy_sends(tool: str, words: list[str], cwd: str, send_scan: Path) -> list[S
             text, files = local_payload(source, cwd, send_scan)
             texts.append(text)
             unreadable += files
-    return [Send(f"host:{host}", "\n".join(texts), unreadable)]
+    # The path it lands at decides where it sits when a root on that machine holds it (send-scan)
+    landing = remote_path(paths[-1])
+    return [Send(f"host:{host}:{landing}" if landing else f"host:{host}", "\n".join(texts), unreadable)]
 
 
 def shell_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
@@ -547,7 +597,14 @@ def shell_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) -
         unknown = unknown or "a substitution or a variable"
     if not (carried or stdin):
         return []
-    return [Send(f"host:{host}", "\n".join([*carried, text]), unreadable, unknown)]
+    payload = "\n".join([*carried, text])
+    # A command that names folders of areas on that machine is judged as sent into them; one that
+    # names none, by the machine's own line.
+    roots = remote_roots(send_scan) if tool == "ssh" else []
+    corpus = corpus_module(send_scan) if roots else None
+    places = sorted({f"host:{host}:{p}" for p in ABS_PATH.findall(payload)
+                     if corpus and corpus.remote_area(host, p, roots)}) or [f"host:{host}"]
+    return [Send(place, payload, unreadable, unknown) for place in places]
 
 
 def mail_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
@@ -779,7 +836,9 @@ def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
         elif tool == "sftp":
             hosts = [p.rsplit("@", 1)[-1].split(":", 1)[0] for p in split_options(args, VALUED["scp"])[1]]
             out += [Send(f"host:{h}", "", [], "sftp takes its commands as it runs") for h in hosts[:1]]
-    return [s for s in out if s.dest.split(":", 1)[-1] not in LOOPBACK]
+    # `host:<host>` or `host:<host>:<path>`: the host is what is checked
+    return [s for s in out
+            if (s.dest.split(":", 2)[1] if s.dest.startswith("host:") else s.dest.split(":", 1)[-1]) not in LOOPBACK]
 
 
 # A message to another agent session: named `session:<receiver>`, judged by where that session

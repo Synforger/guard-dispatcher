@@ -170,6 +170,7 @@ documents themselves. Everything it reads is configured on this machine only:
 ~/.config/guard/areas.txt               <name> <path> [<path> ...]   one area per line
                                         <prefix>* <path>/* ...       one area per sub-folder
                                         <name> <path>/* ...          every sub-folder joins <name>
+                                        <name> host:<host>:<path>    a folder on another machine joins <name>
                                         _outside <path> ...          in no area
                                         _exempt <path> ...           never scanned
                                         _carries <area> <other> ...  what a repository in <area> may hold
@@ -457,6 +458,13 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   `aws s3` / `gcloud storage` / `gsutil` / `rclone` (local sources copied to
   `s3:<bucket>`, `gs:<bucket>` or `rclone:<remote>`). `socat` and `sftp` to
   another host are refused, since what they send is only known as they run.
+  A folder on another machine joins an area with a `host:<host>:<path>` root
+  on the area's line in `areas.txt` (`client host:build1:/srv/work/acme`; the
+  area needs a folder on this machine too, which holds the text scanned). A
+  `scp` / `rsync` landing in it, or an `ssh` command whose command or standard
+  input names a path in it, is a send into that area; a path in no root is
+  judged by the machine's own `host:<host>` line. Naming such a path marks an
+  agent session as naming a folder here does.
   Code written into the command — `python -c`, `node -e`, a heredoc fed to an
   interpreter — sends to each host a URL in it names, carrying the code; a
   shell's `-c` string is read as a command line of its own. A script in a file

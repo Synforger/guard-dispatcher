@@ -121,8 +121,30 @@ def rules() -> list[tuple[str, str, bool]]:
     return out
 
 
+def remote_place(name: str) -> tuple[str, str | None]:
+    """For `host:<host>:<path>` (a send to a path on another machine): (`host:<host>`, the area of
+    the innermost root on that machine holding the path, or None). Anything else: (name, None)."""
+    if not name.lower().startswith("host:") or name.count(":") < 2:
+        return name, None
+    host, _, path = name[len("host:"):].partition(":")
+    spec = importlib.util.spec_from_file_location("corpus_scan", CORPUS)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    areas = CONFIG / "areas.txt"
+    try:
+        remote = module.load_remote_areas(areas) if areas.is_file() else []
+    except ValueError as error:
+        raise Broken(str(error)) from error
+    return f"host:{host}", module.remote_area(host, path, remote)
+
+
 def find(name: str) -> tuple[str, bool]:
-    """(where name sits, whether its sends need the operator's order): the first line that matches."""
+    """(where name sits, whether its sends need the operator's order): the first line that matches.
+    A path on another machine sits in the area of the root holding it; its order, and where a path
+    in no root sits, come from the machine's own line (`host:<host>`)."""
+    name, area = remote_place(name)
+    if area is not None:
+        return area, find(name)[1]
     kind = next((k for k in ON_THIS_MACHINE if name.lower().startswith(k)), None)
     for pattern, target, ordered in rules() + DEFAULTS:
         if kind and not pattern.lower().startswith(kind):
