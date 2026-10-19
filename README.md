@@ -201,7 +201,9 @@ A place's own areas are the innermost ones holding it. An area around them — t
 company around one of its clients — is still one a send there is checked against:
 what goes to a client does not take the company's own text. Text the company's
 templates also hold (the kit a client repository starts from, the deck template)
-is no area's: list the template folders in `background.txt`.
+is no area's: list the template folders in `background.txt`. A git repository
+there gives every file it tracks, those in hidden folders (`.github/`) too, as
+an area's repository counts them; elsewhere hidden folders are passed over.
 
 An area that gathers what others hold — the notes of someone who reads the
 company's meetings and every client's mail — writes down text of each of them.

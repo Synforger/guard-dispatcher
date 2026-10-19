@@ -171,6 +171,31 @@ mk_repo_at() {
     [ "$status" -eq 0 ]
 }
 
+@test "corpus: a template repository's tracked files in hidden folders are public too" {
+    mkdir -p "${BATS_TEST_TMPDIR}/templates/starter/.notes"
+    git -C "${BATS_TEST_TMPDIR}/templates/starter" init -q
+    printf '%s\n' "${COMPANY_TEXT}" > "${BATS_TEST_TMPDIR}/templates/starter/.notes/README.md"
+    git -C "${BATS_TEST_TMPDIR}/templates/starter" add .notes/README.md
+    printf '%s\n' "${BATS_TEST_TMPDIR}/templates" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a hidden folder outside a repository, or untracked in one, stays out of what is public" {
+    mkdir -p "${BATS_TEST_TMPDIR}/templates/.loose" "${BATS_TEST_TMPDIR}/templates/starter/.scratch"
+    printf '%s\n' "${COMPANY_TEXT}" > "${BATS_TEST_TMPDIR}/templates/.loose/README.md"
+    git -C "${BATS_TEST_TMPDIR}/templates/starter" init -q
+    printf '%s\n' "${COMPANY_TEXT}" > "${BATS_TEST_TMPDIR}/templates/starter/.scratch/README.md"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/templates" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
 @test "corpus: a repository declared outside is outside every area, even private and cloned inside" {
     seed_visibility acme/pipeline private
     printf 'repo:acme/* outside\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
