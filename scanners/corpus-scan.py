@@ -640,28 +640,47 @@ def published_files(parent: Path):
 
 def walked_files(root: Path):
     """(key, stamp, name, read) for every file under a folder of public text: the stamp is its
-    size and modification time, and read() gives its text (None when it is not text)."""
+    size and modification time, and read() gives its text (None when it is not text).
+
+    Inside a git repository the files it tracks are read, those in hidden folders too: an area's
+    repository counts what it tracks the same way, so a template's `.github/` or notes folder
+    would otherwise be an area's text and never public. Elsewhere hidden folders are passed over."""
     for folder, dirs, files in os.walk(root):
+        if ".git" in dirs or ".git" in files:
+            dirs[:] = []
+            yield from filter(None, map(walked_file, tracked_paths(Path(folder))))
+            continue
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
-        for name in files:
-            path = Path(folder, name)
-            try:
-                if path.is_symlink():
-                    continue
-                status = path.stat()
-            except OSError:
-                continue
-            if status.st_size > MAX_FILE:
-                continue
+        yield from filter(None, (walked_file(Path(folder, name)) for name in files))
 
-            def read(path: Path = path) -> str | None:
-                try:
-                    data = path.read_bytes()
-                except OSError:
-                    return None
-                return None if b"\0" in data[:8192] else data.decode("utf-8", "replace")
 
-            yield str(path), f"{status.st_size}:{status.st_mtime_ns}", name, read
+def tracked_paths(repo: Path) -> list[Path]:
+    """The files a repository tracks, less those under a folder SKIP_DIRS names."""
+    r = subprocess.run(["git", "-C", str(repo), "ls-files", "-z"], capture_output=True)
+    if r.returncode != 0:
+        return []
+    names = [n for n in r.stdout.decode("utf-8", "replace").split("\0") if n]
+    return [repo / n for n in names if not SKIP_DIRS & set(Path(n).parts[:-1])]
+
+
+def walked_file(path: Path):
+    try:
+        if path.is_symlink():
+            return None
+        status = path.stat()
+    except OSError:
+        return None
+    if status.st_size > MAX_FILE:
+        return None
+
+    def read(path: Path = path) -> str | None:
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return None
+        return None if b"\0" in data[:8192] else data.decode("utf-8", "replace")
+
+    return str(path), f"{status.st_size}:{status.st_mtime_ns}", path.name, read
 
 
 def public_files(source: Path):
