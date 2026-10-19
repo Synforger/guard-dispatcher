@@ -22,6 +22,14 @@ them.
            where its local clone is, and an unknown one is outside
 - Several marks allow writing only inside all of them (company > client means inside the client)
 - `_exempt` is never refused (the operator's own notes; their commits are scanned by the hooks)
+- A handoff folder (`$GUARD_CONFIG_DIR/handoff.txt`) is where a session leaves notes for the next
+  one, whatever it read: an Edit / Write there passes when what it writes holds no copy of a private
+  document of an area the folder is outside of (`corpus-scan.py --dest-area`, as a send into the
+  folder's area is judged), and a commit in its repository passes when every change there lies in a
+  handoff folder and passes the same scan. One line per folder; `~` and `$VARIABLE` / `${VARIABLE}`
+  expand from the session's environment, and a line naming a variable the session does not have
+  gives no folder (so each session gets its own: `~/notes/$TEAM/journal`). Everything else in the
+  area stays refused as above
 - `_outside` folders are in no area, whatever holds them: reading there marks nothing, and a
   marked session may not write a repository there
 
@@ -74,6 +82,7 @@ from pathlib import Path
 
 CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
 AREAS = CONFIG / "areas.txt"
+HANDOFF = CONFIG / "handoff.txt"
 STATE = Path(os.environ.get("AREA_GUARD_STATE", Path.home() / ".cache/area-guard"))
 # The operator's switch: while this file exists the entry guard passes every call. Installing or
 # updating the guard leaves it as it is, so switching off holds until the operator removes it.
@@ -968,6 +977,113 @@ def allowed(target: Path, marks: set[str], areas, held_here: list[str] | tuple =
             and all(h in marks or any(outer(h, m, areas) for m in marks) for h in held))
 
 
+HANDOFF_VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+WRITTEN_TEXT = {"Write": ("content",), "Edit": ("new_string",), "NotebookEdit": ("new_source",)}
+
+
+@functools.cache
+def handoff_folders() -> tuple[Path, ...]:
+    """This session's handoff folders: the lines of handoff.txt, `~` and variables expanded from the
+    session's environment. A line naming an unset or empty variable, or climbing with `..`, gives none."""
+    try:
+        lines = HANDOFF.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ()
+    out = []
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        values = [os.environ.get(a or b, "") for a, b in HANDOFF_VARIABLE.findall(line)]
+        if not all(values) or any(".." in Path(v).parts for v in values):
+            continue
+        path = HANDOFF_VARIABLE.sub(lambda m: os.environ[m.group(1) or m.group(2)], line)
+        out.append(real(os.path.expanduser(path)))
+    return tuple(out)
+
+
+def handoff_of(target: Path) -> Path | None:
+    return next((f for f in handoff_folders() if target == f or f in target.parents), None)
+
+
+def handoff_refusal(folder: Path, text: str, areas) -> str | None:
+    """Why this text may not go into the handoff folder (a copy of a private document of an area the
+    folder is outside of), or None. Judged as a send into the folder's innermost areas."""
+    held = {n for n, _ in areas if n not in (EXEMPT, NO_AREA) and inside(folder, n, areas)}
+    own = sorted(n for n in held if not any(n != m and outer(n, m, areas) for m in held))
+    if not own or not text.strip():
+        return None
+    import subprocess
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8",
+                                     dir=os.environ.get("TMPDIR") or None) as fh:
+        fh.write(text)
+    try:
+        r = subprocess.run(["python3", str(CORPUS), "--dest-area", ",".join(own), "--text", fh.name],
+                           capture_output=True, text=True, timeout=180)
+    except (subprocess.TimeoutExpired, OSError):
+        return "the private-document scan could not run, so what it holds could not be judged"
+    finally:
+        os.unlink(fh.name)
+    if r.returncode == 0:
+        return None
+    lines = r.stderr.strip().splitlines() or r.stdout.strip().splitlines() or ["the private-document scan refused it"]
+    return lines[-1].removeprefix("corpus-scan: ") + "".join(f"\n  {x.strip()}" for x in lines if x.startswith("    "))
+
+
+def written_text(tool: str, args: dict) -> str:
+    if tool == "MultiEdit":
+        return "\n".join(str(e.get("new_string") or "") for e in args.get("edits") or [] if isinstance(e, dict))
+    return "\n".join(str(args.get(k) or "") for k in WRITTEN_TEXT.get(tool, ()))
+
+
+def has_head(repo: Path) -> bool:
+    import subprocess
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "-q", "HEAD"],
+                          capture_output=True).returncode == 0
+
+
+def handoff_commit_refusal(repo: Path, areas) -> str | None:
+    """Why a commit in this repository is not a handoff (a change outside every handoff folder, or a
+    changed text the scan refuses), or None. Every change the commit could take is read: staged,
+    unstaged and untracked."""
+    import subprocess
+    top = repo_root(repo)
+    if top is None:
+        return "it is not a repository"
+    r = subprocess.run(["git", "-C", str(top), "status", "--porcelain", "-z", "--untracked-files=all"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return "git status failed"
+    entries = [e for e in r.stdout.split("\0") if e]
+    paths, i = [], 0
+    while i < len(entries):
+        code, name = entries[i][:2], entries[i][3:]
+        paths.append(top / name)
+        if "R" in code or "C" in code:   # a rename or copy names its source next
+            i += 1
+            paths.append(top / entries[i])
+        i += 1
+    folders: dict[Path, list[Path]] = {}
+    for path in paths:
+        folder = handoff_of(real(path))
+        if folder is None:
+            return f"{path} is outside every handoff folder"
+        folders.setdefault(folder, []).append(path)
+    for folder, changed in folders.items():
+        diff = subprocess.run(["git", "-C", str(top), "diff", "HEAD", "--", *map(str, changed)],
+                              capture_output=True, text=True).stdout if has_head(top) else ""
+        text = "\n".join(line[1:] for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++"))
+        for path in changed:
+            tracked = subprocess.run(["git", "-C", str(top), "ls-files", "--error-unmatch", str(path)],
+                                     capture_output=True).returncode == 0
+            if path.is_file() and not tracked:
+                text += "\n" + path.read_text(encoding="utf-8", errors="replace")
+        if why := handoff_refusal(folder, text, areas):
+            return why
+    return None
+
+
 def may_write(target: Path, marks: set[str], areas) -> bool:
     """A marked session may write a file inside a git repository when the repository is allowed
     where it sits, and -- for one in no area -- when what it pushes to is not outside every area
@@ -1138,8 +1254,12 @@ def ask(argv: list[str]) -> int:
     marks = set(load_state(argv[1])["areas"]) if areas else set()
     if not marks:
         return 0
-    refused = [target for target in (real(path, os.getcwd()) for path in argv[2:])
-               if not may_write(target, marks, areas)]
+    targets = [real(path, os.getcwd()) for path in argv[2:]]
+    refused = [t for t in targets if not may_write(t, marks, areas) and handoff_of(t) is None]
+    for target in targets:
+        if target not in refused and not may_write(target, marks, areas):
+            print(f"area-guard: {target} is in a handoff folder: it may be written, and what is written "
+                  f"there is scanned for copies of private documents of other areas", file=sys.stderr)
     for target in refused:
         print(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
               f"write {target} (areas: {AREAS}). Do it in another session", file=sys.stderr)
@@ -1226,6 +1346,14 @@ def main() -> int:
                 # A commit lands in its repository: judged as writing a file there.
                 place, guess_why = target, None
                 refused = not may_write(target, marks, areas)
+                if refused and handoff_folders():
+                    why = handoff_commit_refusal(target, areas)
+                    if why is None:
+                        refused = False
+                    elif repo_root(target) in {repo_root(f) for f in handoff_folders()}:
+                        deny(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so a commit in "
+                             f"{repo_root(target)} passes only as a handoff, and it is not one: {why}")
+                        return 0
             else:
                 place, guess_why = destination(target, dest_args)
                 refused = place is None or not allowed(place, marks, areas)
@@ -1238,6 +1366,11 @@ def main() -> int:
                 return 0
     elif tool in WRITES:
         target = real(args.get("file_path") or args.get("notebook_path") or "", cwd)
+        if marks and not may_write(target, marks, areas) and (folder := handoff_of(target)):
+            if why := handoff_refusal(folder, written_text(tool, args), areas):
+                deny(f"area-guard: {target} is in a handoff folder, but what is written there may not hold "
+                     f"a copy of another area's private documents: {why}")
+            return 0
         if marks and not may_write(target, marks, areas):
             deny(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
                  f"write {target} (areas: {AREAS}). Do it in another session")

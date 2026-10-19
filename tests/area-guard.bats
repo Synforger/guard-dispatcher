@@ -1088,3 +1088,88 @@ may_write() { run bash -c 'cd "$1" && shift && python3 "$@"' _ "${H}" "${HOOK}" 
     run python3 "${HOOK}" may-write "" "${COMPANY_REPO}/a.md"
     [ "${status}" -eq 2 ]
 }
+
+# --- a handoff folder: the notes a marked session leaves for the next one -----------------------
+
+BETA_TEXT="the beta fixture lists eleven sensors along the north wall"
+
+# handoff_setup — a sibling client (beta) with a document of its own, a team folder inside the acme
+# client that is a git repository with a journal, and handoff.txt naming that journal through $TEAM.
+# The session then reads both clients: it may write nowhere inside either.
+handoff_setup() {
+    TEAM_REPO="${CASE}/team"
+    JOURNAL="${TEAM_REPO}/journal"
+    mkdir -p "${H}/org/clients/beta" "${JOURNAL}"
+    printf '%s\n' "${BETA_TEXT}" > "${H}/org/clients/beta/plan.md"
+    printf 'beta ~/org/clients/beta\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    git init -q "${TEAM_REPO}"
+    printf 'rules\n' > "${TEAM_REPO}/rules.md"
+    git -C "${TEAM_REPO}" add rules.md
+    git -C "${TEAM_REPO}" -c user.name=t -c user.email=t@example.invalid commit -qm init
+    printf '%s\n' '~/org/clients/$TEAM/team/journal' > "${GUARD_CONFIG_DIR}/handoff.txt"
+    export TEAM=acme GUARD_CORPUS_MAX_AGE=0
+    read_case
+    agent Read file_path "${H}/org/clients/beta/plan.md"
+    passed
+}
+
+# write_text <path> <text> — a Write call with its content.
+write_text() {
+    local event
+    event="$(jq -n --arg p "$1" --arg c "$2" --arg cwd "${H}" \
+        '{session_id: "s1", tool_name: "Write", tool_input: {file_path: $p, content: $c}, cwd: $cwd,
+          hook_event_name: "PreToolUse"}')"
+    run python3 "${HOOK}" <<< "${event}"
+}
+
+@test "area-guard handoff: a session marked by two clients writes its own words into its handoff folder" {
+    handoff_setup
+    write_to "${TEAM_REPO}/rules.md"; denied
+    write_text "${JOURNAL}/2026-10-19/session-01.md" "I read the sibling client's notes by mistake; the next session redoes the fix."
+    passed
+}
+
+@test "area-guard handoff: a copy of another client's document is refused there, and an Edit is judged the same" {
+    handoff_setup
+    write_text "${JOURNAL}/s.md" "notes: ${BETA_TEXT}"
+    denied
+    [[ "${output}" == *"handoff folder"* ]]
+    local event
+    event="$(jq -n --arg p "${JOURNAL}/s.md" --arg n "notes: ${BETA_TEXT}" --arg cwd "${H}" \
+        '{session_id: "s1", tool_name: "Edit", tool_input: {file_path: $p, old_string: "a", new_string: $n},
+          cwd: $cwd, hook_event_name: "PreToolUse"}')"
+    run python3 "${HOOK}" <<< "${event}"
+    denied
+}
+
+@test "area-guard handoff: the rest of the repository, a session without the variable, and .. stay refused" {
+    handoff_setup
+    write_text "${TEAM_REPO}/rules.md" "my own words"; denied
+    write_text "${TEAM_REPO}/plans/next.md" "my own words"; denied
+    unset TEAM
+    write_text "${JOURNAL}/s.md" "my own words"; denied
+    export TEAM=../clients/acme
+    write_text "${JOURNAL}/s.md" "my own words"; denied
+}
+
+@test "area-guard handoff: a commit passes when every change lies in the handoff folder and passes the scan" {
+    handoff_setup
+    mkdir -p "${JOURNAL}/2026-10-19"
+    printf 'my own words about the session\n' > "${JOURNAL}/2026-10-19/session-01.md"
+    bash_in "${TEAM_REPO}" "git add -A && git commit -m journal"; passed
+    printf 'more rules\n' >> "${TEAM_REPO}/rules.md"
+    bash_in "${TEAM_REPO}" "git add -A && git commit -m journal"
+    denied
+    [[ "${output}" == *"passes only as a handoff"* ]]
+    git -C "${TEAM_REPO}" checkout -q rules.md
+    printf 'notes: %s\n' "${BETA_TEXT}" > "${JOURNAL}/2026-10-19/session-02.md"
+    bash_in "${TEAM_REPO}" "git add -A && git commit -m journal"; denied
+}
+
+@test "area-guard handoff: may-write counts the handoff folder as writable and says its text is scanned" {
+    handoff_setup
+    may_write s1 "${JOURNAL}/a.md"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"is in a handoff folder"* ]]
+    may_write s1 "${TEAM_REPO}/rules.md"; [ "${status}" -eq 1 ]
+}
