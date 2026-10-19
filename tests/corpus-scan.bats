@@ -287,6 +287,22 @@ gh_shim() {
     [ ! -f "${BATS_TEST_TMPDIR}/ran" ]
 }
 
+@test "gh-guard: a scan that breaks refuses the call as not judged, not as private text" {
+    seed_visibility someone/public-tool public
+    gh_shim
+    mk_repo other
+    PATH="${GH_PATH}" run gh pr create -R someone/public-tool --title t --body "nothing private here"
+    [ "$status" -eq 0 ]
+    rm -f "${BATS_TEST_TMPDIR}/ran"
+    export GUARD_CORPUS_MAX_AGE=3600
+    echo '[' > "${GUARD_CORPUS_CACHE}/docs/index.json"
+    PATH="${GH_PATH}" run gh pr create -R someone/public-tool --title t --body "still nothing private"
+    [ "$status" -ne 0 ]
+    [ ! -f "${BATS_TEST_TMPDIR}/ran" ]
+    [[ "$output" == *"could not judge this command"* ]]
+    [[ "$output" != *"carries text from a private area"* ]]
+}
+
 @test "gh-guard: an api call naming a public repo is judged by that repo" {
     seed_visibility someone/public-tool public
     gh_shim
@@ -650,6 +666,41 @@ import json, os, sys
 with open('${GUARD_CORPUS_CACHE}/docs/index.json') as fh:
     index = json.load(fh)
 sys.exit(0 if os.path.realpath(sys.argv[1]) in index else 1)" "$1"
+}
+
+@test "corpus: a nested area's root folder among the changes is passed over, and the documents beside it are still caught" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    # Asked under the company's root, Spotlight also lists folders whose content moved: the
+    # client's root folder is one when a file is made right inside it.
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/late.md"
+    SPOTLIGHT_REPORTS="$(python3 -c 'import os,sys;print("\n".join(os.path.realpath(p) for p in sys.argv[1:]))' \
+        "${CLIENT}" "${CLIENT}/late.md")"
+    export SPOTLIGHT_REPORTS
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"Traceback"* ]]
+    [[ "$output" != *"walking the private documents"* ]]
+}
+
+@test "corpus: a scan that breaks says it could not judge (exit 2), not that it found text" {
+    mk_repo other
+    commit_line "nothing private"
+    scan_last
+    [ "$status" -eq 0 ]
+    export GUARD_CORPUS_MAX_AGE=3600
+    echo '[' > "${GUARD_CORPUS_CACHE}/docs/index.json"
+    commit_line "still nothing private"
+    scan_last
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"could not judge"* ]]
+    [[ "$output" != *"Traceback"* ]]
+    [ "$(printf '%s\n' "$output" | grep -c '^    ')" -eq 0 ]
 }
 
 @test "corpus: when Spotlight cannot answer, an edited document is caught without a full rebuild" {
