@@ -11,7 +11,9 @@
 # Configuration (operator-private, never committed) at:
 #   $HOME/.config/guard-dispatcher/weekly-audit.conf
 #
-#   REPOS_GLOB="<glob of repos to audit>"          # required
+#   REPOS_GLOB="<glob of repos to audit>"          # repositories outside every area
+#   AREA_REPOS=0                                   # optional — leave out the repositories
+#                                                  # found inside the areas (see below)
 #   MESSAGE_DIR="<dir to drop a report into>"      # optional — when set and
 #                                                  # findings exist, a markdown
 #                                                  # report lands there
@@ -62,8 +64,47 @@ fi
 # shellcheck source=/dev/null
 source "${CONF}"
 
-if [ -z "${REPOS_GLOB:-}" ]; then
-    echo "error: REPOS_GLOB not set in ${CONF}" >&2
+# Every repository inside an area is audited as well, found from areas.txt: one put in an area
+# tomorrow is in the next audit without anyone listing it. A listed glob covers only what someone
+# remembered to list, and a client's repository outside it went unaudited for weeks.
+area_repos() {
+    python3 - "${GUARD_ROOT}/scanners/corpus-scan.py" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("corpus_scan", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    areas = module.load_areas()
+except ValueError:
+    sys.exit(0)
+for name, roots in areas.items():
+    if name in module.UNSCANNED:
+        continue
+    for root in roots:
+        for here, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in ("node_modules", ".build", "DerivedData", "Pods")]
+            if ".git" in dirs or ".git" in files:
+                print(here)
+                dirs.remove(".git") if ".git" in dirs else None
+PY
+}
+
+repos=()
+seen=" "
+add_repo() {
+    local real
+    real="$(cd "$1" 2>/dev/null && pwd -P)" || return 0
+    case "${seen}" in *" ${real} "*) return 0 ;; esac
+    seen="${seen}${real} "
+    repos+=("$1")
+}
+# shellcheck disable=SC2086 — the glob is the point
+for repo in ${REPOS_GLOB:-}; do add_repo "${repo}"; done
+if [ "${AREA_REPOS:-1}" != 0 ]; then
+    while IFS= read -r repo; do add_repo "${repo}"; done < <(area_repos)
+fi
+if [ "${#repos[@]}" -eq 0 ]; then
+    echo "error: no repository to audit: set REPOS_GLOB in ${CONF}, or define areas" >&2
     exit 2
 fi
 
@@ -86,8 +127,7 @@ summary=""
 
 {
     echo "=== weekly anon audit: ${stamp} ($(date '+%H:%M:%S')) ==="
-    # shellcheck disable=SC2086 — the glob is the point
-    for repo in ${REPOS_GLOB}; do
+    for repo in "${repos[@]}"; do
         [ -d "${repo}" ] || continue
         git -C "${repo}" rev-parse --git-dir >/dev/null 2>&1 || continue
 

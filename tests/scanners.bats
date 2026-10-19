@@ -464,3 +464,29 @@ leak_in_history() {
     run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
     [ "$status" -ne 0 ]
 }
+
+@test "weekly audit: a repository inside an area is audited though no glob lists it" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    leak_in_history old
+    local repo
+    repo="$(pwd)"
+    mkdir -p "${GUARD_CONFIG_DIR}"
+    printf 'client %s\n' "$(dirname "${repo}")" > "${GUARD_CONFIG_DIR}/areas.txt"
+    export HOME="${BATS_TEST_TMPDIR}/home"
+    mkdir -p "${HOME}/.config/guard-dispatcher"
+    printf '# the repository is listed nowhere: the area holds it\n' > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -ne 0 ]
+    grep -q "$(basename "${repo}"): FINDINGS" "${HOME}"/.local/state/guard-dispatcher/weekly-audit-*.log
+    # listed by a glob as well, it is audited once
+    printf 'REPOS_GLOB="%s"\n' "${repo}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    rm "${HOME}"/.local/state/guard-dispatcher/weekly-audit-*.log
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$(cat "${HOME}"/.local/state/guard-dispatcher/weekly-audit-*.log | grep -c "=== source 1/11")" -eq 1 ]
+    # left out on purpose, nothing is left to audit
+    printf 'AREA_REPOS=0\n' > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -eq 2 ]
+}
