@@ -724,6 +724,10 @@ contract:
 - **A word list that does not compile refuses to scan** (exit 2,
   configuration error) — a broken fragment can never silently disarm a
   boundary. Pinned in `tests/scanners.bats`.
+- **A private-document scan that breaks refuses as not judged** (exit 2)
+  — an error inside the scan is never taken for a finding, and the
+  refusal says the call could not be judged, not that it carried private
+  text. Pinned in `tests/corpus-scan.bats`.
 - On identity-enforced repositories (enforced org / no-remote /
   `guard.scope enforced`), additionally: the committer and every author
   in the outgoing range must be on the identity allow-list, and direct

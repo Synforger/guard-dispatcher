@@ -822,11 +822,12 @@ def inner_roots(areas: dict[str, list[Path]], name: str) -> list[Path]:
             if any(r != root and root in r.parents for root in areas[name])]
 
 
-def area_of_path(areas: dict[str, list[Path]], path: Path) -> str | None:
-    """The innermost area holding path (= the one whose root is longest); None inside `_outside`."""
-    best = max(((len(r.parts), n) for n, rs in areas.items() for r in rs if path == r or r in path.parents),
+def area_root(areas: dict[str, list[Path]], path: Path) -> tuple[str, Path] | None:
+    """(area, root) of the innermost area holding path (= the one whose root is longest), the root
+    itself included; None inside `_outside`."""
+    best = max(((len(r.parts), n, r) for n, rs in areas.items() for r in rs if path == r or r in path.parents),
                default=None)
-    return best[1] if best and best[1] != NO_AREA else None
+    return (best[1], best[2]) if best and best[1] != NO_AREA else None
 
 
 def document_prints(path: Path, stamp: str, read, known: dict, index: dict, area: str) -> tuple[bool, str | None]:
@@ -1111,10 +1112,14 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
                 (DOCS / f"{stale[1]}.bin").unlink(missing_ok=True)
         for path in changed:
             path = expand(str(path))
-            area = area_of_path(areas, path)
-            if area in (None, EXEMPT) or any(path == i or i in path.parents for i in ignored):
+            found = area_root(areas, path)
+            if found is None or found[0] == EXEMPT or any(path == i or i in path.parents for i in ignored):
                 continue
-            root = max((r for r in areas[area] if r in path.parents), key=lambda r: len(r.parts))
+            area, root = found
+            if path == root:
+                # An area's root folder: Spotlight lists folders whose content moved, and asked
+                # under an outer area it lists a nested area's root among them. It is no document.
+                continue
             if any(p in SKIP_DIRS or p.startswith(".") for p in path.relative_to(root).parts[:-1]):
                 continue
             found = document(path, repos, root=root)
@@ -1663,4 +1668,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as error:   # a scan that breaks has judged nothing: never read as a hit (= exit 1)
+        where = error.__traceback__
+        while where.tb_next:
+            where = where.tb_next
+        say(f"could not judge: {type(error).__name__} in {where.tb_frame.f_code.co_name}() at line "
+            f"{where.tb_lineno}: {error}")
+        sys.exit(2)

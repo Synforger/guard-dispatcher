@@ -227,7 +227,12 @@ if [ "${GUARD_CORPUS_SKIP:-0}" != "1" ]; then
     argv_file="$(mktemp)"
     trap 'cleanup; rm -f "${argv_file}"' EXIT
     printf '%s\0' "$@" > "${argv_file}"
-    if ! python3 "${CORPUS}" --text "${payload}" --gh-argv "${argv_file}"; then
+    corpus_status=0
+    python3 "${CORPUS}" --text "${payload}" --gh-argv "${argv_file}" || corpus_status=$?
+    if [ "${corpus_status}" -eq 2 ]; then
+        printf '\n[gh-guard] refusing to send: the private-document scan could not judge this command.\n' >&2
+        exit 1
+    elif [ "${corpus_status}" -ne 0 ]; then
         printf '\n[gh-guard] refusing to send: this command carries text from a private area.\n' >&2
         exit 1
     fi
