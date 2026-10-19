@@ -317,16 +317,67 @@ def read_lines(path: Path) -> list[str]:
             if line.strip() and not line.lstrip().startswith("#")]
 
 
-def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
-    """Areas by name. A line whose name holds `*` and whose paths end in `/*` makes one
-    area per sub-folder (`client-* /srv/company/clients/*` -> `client-acme` for `clients/acme`);
-    on a line whose name does not, every sub-folder of such a path joins the line's area
-    (`company ~/*`). Either way a folder created tomorrow is guarded from the moment it exists.
-    A path already named on an explicit line keeps that line's name, so `_outside ~/personal`
-    keeps `~/personal` out of `company ~/*`."""
+# Settings an area keeps for itself (`areas/<area>/` beside the machine's own files), written by
+# the session the operator hands them to (`agent-writes.txt`): areas.txt, destinations.txt,
+# allow.txt, ignore.txt and patterns/. A line there works inside the area only: a sub-area within
+# its folders, a destination placed in it or blocked, a phrase fine to send of its text, a shape
+# of its identifiers, a folder of it that holds none of its documents. A line that would reach
+# outside the area is skipped and named (`--settings`), so a slip of the area's keeper stops
+# nothing else. The machine's own files come first and win.
+AREA_SETTINGS = CONFIG / "areas"
+#: "<file>: <line> -- <why>" for every line of an area's settings this process skipped.
+SKIPPED: list[str] = []
+
+
+def area_folders() -> list[tuple[str, Path]]:
+    """(area, folder) for each area that keeps settings of its own."""
+    if not AREA_SETTINGS.is_dir():
+        return []
+    return [(f.name, f) for f in sorted(AREA_SETTINGS.iterdir())
+            if f.is_dir() and not f.name.startswith((".", "_"))]
+
+
+def skip(path: Path, line: str, why: str) -> None:
+    note = f"{path}: {line!r} -- {why}"
+    if note not in SKIPPED:
+        SKIPPED.append(note)
+
+
+def inside(path: Path, roots: list[Path]) -> bool:
+    """Strictly inside one of the roots: a folder of the area, not the area itself."""
+    return any(root in path.parents for root in roots)
+
+
+def within(name: str, owner: str, areas: dict[str, list[Path]]) -> bool:
+    """The owner itself, or an area all of whose folders here lie inside the owner's."""
+    if name == owner:
+        return True
+    roots, outer = areas.get(name) or [], areas.get(owner) or []
+    return bool(roots and outer) and all(inside(r, outer) for r in roots)
+
+
+def kept_lines(name: str, areas: dict[str, list[Path]], of: str | None = None) -> list[tuple[str, Path, str]]:
+    """(owner, file, line) of `name` (a file of an area's settings) in every area's folder that is
+    an area here, or in the folders of the areas `of` lies within when it is given."""
+    out = []
+    for owner, folder in area_folders():
+        path = folder / name
+        lines = read_lines(path)
+        if not lines:
+            continue
+        if owner not in areas or owner in UNSCANNED:
+            for line in lines:
+                skip(path, line, f"{owner} is no area")
+            continue
+        if of is None or within(of, owner, areas):
+            out += [(owner, path, line) for line in lines]
+    return out
+
+
+def _areas_of(lines: list[str]) -> dict[str, list[Path]]:
     explicit: dict[str, list[Path]] = {}
     templates: list[tuple[str, list[Path]]] = []
-    for line in read_lines(source or CONFIG / "areas.txt"):
+    for line in lines:
         parts = shlex.split(line, comments=True)
         if len(parts) < 2 or parts[0] == CARRIES:       # `_carries` names areas, not paths: load_carries
             continue
@@ -358,6 +409,58 @@ def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
     return areas
 
 
+def area_lines(source: Path | None = None) -> list[str]:
+    """The lines of areas.txt, then each area's own lines that stay inside it: a sub-area whose
+    folders here lie inside the area's (and its roots on other machines), or a `_carries` line
+    between areas within it. A line that sets a folder apart from every area (`_exempt`,
+    `_outside`), reaches an area defined elsewhere, or names a folder outside is skipped."""
+    path = source or CONFIG / "areas.txt"
+    lines = read_lines(path)
+    if path != CONFIG / "areas.txt" or not area_folders():
+        return lines
+    top = _areas_of(lines)
+    carries: list[tuple[str, Path, list[str], str]] = []
+    for owner, own, line in kept_lines("areas.txt", top):
+        try:
+            parts = shlex.split(line, comments=True)
+        except ValueError:
+            skip(own, line, "is not a line of areas.txt")
+            continue
+        if len(parts) < 2:
+            skip(own, line, "is not a line of areas.txt")
+        elif parts[0] == CARRIES:
+            carries.append((owner, own, parts, line))
+        elif parts[0].startswith("_"):
+            skip(own, line, "only the machine's own areas.txt sets a folder apart from every area")
+        elif parts[0] in top and not within(parts[0], owner, top):
+            skip(own, line, f"{parts[0]} is an area of the machine's own areas.txt, outside {owner}")
+        elif bad := [p for p in parts[1:] if not p.startswith(REMOTE)
+                     and not (p.startswith(("/", "~", "$")) and inside(expand(p[:-2] if p.endswith("/*") else p),
+                                                                    top[owner]))]:
+            skip(own, line, f"{bad[0]} is not a folder inside {owner}")
+        else:
+            lines.append(line)
+    if carries:
+        areas = _areas_of(lines)
+        for owner, own, parts, line in carries:
+            named = parts[1:]
+            if len(named) < 2 or any(any(c in n for c in "*?[") or not within(n, owner, areas) for n in named):
+                skip(own, line, f"a {CARRIES} line here names areas within {owner} only, without globs")
+            else:
+                lines.append(line)
+    return lines
+
+
+def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
+    """Areas by name. A line whose name holds `*` and whose paths end in `/*` makes one
+    area per sub-folder (`client-* /srv/company/clients/*` -> `client-acme` for `clients/acme`);
+    on a line whose name does not, every sub-folder of such a path joins the line's area
+    (`company ~/*`). Either way a folder created tomorrow is guarded from the moment it exists.
+    A path already named on an explicit line keeps that line's name, so `_outside ~/personal`
+    keeps `~/personal` out of `company ~/*`. Each area's own lines join them (`area_lines`)."""
+    return _areas_of(area_lines(source))
+
+
 def load_remote_areas(source: Path | None = None) -> list[tuple[str, str, str]]:
     """The roots on other machines, (area, host, path), the longest path first so the innermost
     wins. A root is `host:<host>:<absolute path>`, or `host:<host>:~/<path>` under that machine's home
@@ -368,7 +471,7 @@ def load_remote_areas(source: Path | None = None) -> list[tuple[str, str, str]]:
     source = source or CONFIG / "areas.txt"
     local = load_areas(source)
     out = []
-    for line in read_lines(source):
+    for line in area_lines(source):
         parts = shlex.split(line, comments=True)
         for part in parts[1:]:
             if not part.startswith(REMOTE):
@@ -405,7 +508,7 @@ def load_carries(areas: dict[str, list[Path]], source: Path | None = None) -> di
     judged as before. A line that is not `_carries <an area> <a name or glob> ...` is a broken
     file, not a pass."""
     carries: dict[str, list[str]] = {}
-    for line in read_lines(source or CONFIG / "areas.txt"):
+    for line in area_lines(source):
         parts = shlex.split(line, comments=True)
         if not parts or parts[0] != CARRIES:
             continue
