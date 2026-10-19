@@ -180,6 +180,8 @@ documents themselves. Everything it reads is configured on this machine only:
                                         documents (an external corpus, build logs)
 ~/.config/guard/background.txt          folders of public text and code, and `published <dir>`
                                         for your own repositories as their remote has them
+~/.config/guard/handoff.txt             <path> per line, `~` and `$VAR` expanded from the session:
+                                        where a marked session may still leave notes (see below)
 ```
 
 `client-* /srv/company/clients/*` makes every sub-folder of `clients/` its own area
@@ -380,7 +382,7 @@ step earlier, before each tool call, from the same `areas.txt`:
   those; the agent does not.
 - On every machine too, the agent writes nothing in the guard's settings folder
   (`~/.config/guard/`: `areas.txt`, `allow.txt`, `background.txt`, `ignore.txt`,
-  `patterns/`, `destinations.txt`, `orders.txt`, and a file put there tomorrow),
+  `patterns/`, `destinations.txt`, `orders.txt`, `handoff.txt`, and a file put there tomorrow),
   nor removes it, nor writes a session's transcript
   (`~/.claude*/projects/**/*.jsonl`), through Edit / Write or the shell: what the
   guard lets through is judged from the settings, and an order for a send from
@@ -394,6 +396,17 @@ step earlier, before each tool call, from the same `areas.txt`:
   removed; `doctor.sh` reports it.
   A commit in a repository with no remote is the one send let through there:
   it stays in the repository and has nowhere to go. Its push is still refused.
+- **A handoff folder lets a marked session close.** A session that read in two
+  areas that do not overlap may write inside neither, so it cannot even leave a
+  note for the session that redoes its work. `handoff.txt` names, one per line,
+  the folders where it still may: `~` and `$VAR` / `${VAR}` expand from the
+  session's environment, so a line like `~/notes/$TEAM/journal` gives each
+  session its own folder, and a session without the variable (or with a `..` in
+  it) gets none. An Edit / Write there passes when what it writes holds no copy
+  of a private document of an area the folder is outside of (the scan a send
+  into the folder's area gets), and a commit in its repository passes when
+  every change there lies in a handoff folder and passes the same scan. Every
+  other file in the area stays refused, and a push is judged as before.
 - **A script asks before it writes where its arguments say.** The guard reads
   the command that starts a script, never the script, and a relative path
   handed to a script resolves where the script runs, not where the session
