@@ -183,6 +183,9 @@ documents themselves. Everything it reads is configured on this machine only:
                                         for your own repositories as their remote has them
 ~/.config/guard/handoff.txt             <path> per line, `~` and `$VAR` expanded from the session:
                                         where a marked session may still leave notes (see below)
+~/.config/guard/agent-writes.txt        <name> per line (a file, a folder, a glob; `*` for all):
+                                        the settings an agent that has read inside no area may
+                                        keep up to date (see *Agent entry guard*)
 ```
 
 `client-* /srv/company/clients/*` makes every sub-folder of `clients/` its own area
@@ -393,6 +396,16 @@ step earlier, before each tool call, from the same `areas.txt`:
   write them would draw an area around what it wants to send, call a phrase fine
   to send, or make an order itself. Reading them and copying them out pass; a
   change is the operator's to make, on the agent's telling why.
+- **The operator may hand the upkeep of some settings to the agent**, when the
+  settings grow with every area and every false alarm: `agent-writes.txt` names
+  them, one per line (`destinations.txt`, `patterns/`, `*` for all). A session
+  writes a named setting only while it has read inside no area, counting the
+  call itself (`cat <area file> >> allow.txt` is refused: the mark is kept after
+  the call). Drawing an area around a send needs reading inside the area first,
+  and a session that has done so writes none of them. The grant itself,
+  `orders.txt` and `agent-off` stay the operator's whatever the grant says: an
+  agent that wrote those would grant itself, order its own sends, or switch the
+  guard off. `may-write` answers for the settings as an Edit of them is judged.
 - **The operator's switch** is one file: while `$GUARD_CONFIG_DIR/agent-off`
   exists, the entry guard passes every call. Installing or updating the guard
   leaves it alone, so a guard switched off stays off until the file is
