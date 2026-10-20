@@ -300,6 +300,49 @@ setup() {
     [ -z "$(git for-each-ref refs/guard-dest)" ]
 }
 
+# rewrite_under_colleague — a colleague's commit that carries a word of the list in a file, in its
+# text and in its author's name, already on the destination; then the history under it rewritten
+# (the seed reworded), so the colleague's commit comes back with a new hash and nothing else new.
+# Sets dest, old (the destination's tip) and new (the rewritten tip).
+rewrite_under_colleague() {
+    mk_repo synforger
+    dest="${BATS_TEST_TMPDIR}/dest.git"
+    git init -q --bare "${dest}"
+    export GIT_AUTHOR_NAME="colleague ${SENTINEL}" GIT_AUTHOR_EMAIL=12345+colleague@users.noreply.github.com
+    export GIT_COMMITTER_NAME="${GIT_AUTHOR_NAME}" GIT_COMMITTER_EMAIL="${GIT_AUTHOR_EMAIL}"
+    echo "the colleague wrote ${SENTINEL}" > theirs.txt && git add theirs.txt
+    commit_bypassing_hooks "feat: ${SENTINEL} support"
+    git -c core.hooksPath=/dev/null push -q "${dest}" HEAD:refs/heads/develop
+    old="$(git rev-parse HEAD)"
+    local seed
+    seed="$(GIT_AUTHOR_NAME=Fixture GIT_AUTHOR_EMAIL="${ALLOWED_EMAIL}" GIT_COMMITTER_NAME=Fixture \
+        GIT_COMMITTER_EMAIL="${ALLOWED_EMAIL}" git commit-tree "HEAD~1^{tree}" -m "seed, reworded")"
+    new="$(git commit-tree "HEAD^{tree}" -p "${seed}" -m "feat: ${SENTINEL} support")"
+    unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+}
+
+@test "pre-push: a rewritten history is not word-scanned again for what its destination already holds" {
+    rewrite_under_colleague
+    run bash -c "printf '%s\n' 'refs/heads/develop ${new} refs/heads/develop ${old}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${dest}'"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"hit(s)"* ]]
+    [ -z "$(git for-each-ref refs/guard-dest)" ]
+}
+
+@test "pre-push: what a rewrite made new is word-scanned (a file, a commit text, an author's name)" {
+    rewrite_under_colleague
+    echo "fresh ${SENTINEL}" > fresh.txt && git add fresh.txt
+    blob="$(git commit-tree "$(git write-tree)" -p "${new}" -m "feat: a fresh file")"
+    text="$(git commit-tree "${new}^{tree}" -p "${new}" -m "fix: ${SENTINEL} again")"
+    name="$(GIT_AUTHOR_NAME="someone ${SENTINEL}" git commit-tree "${new}^{tree}" -p "${new}" -m "fix: renamed")"
+    for tip in "${blob}:git history blob" "${text}:commit messages" "${name}:author/committer"; do
+        run bash -c "printf '%s\n' 'refs/heads/develop ${tip%%:*} refs/heads/develop ${old}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${dest}'"
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"${tip#*:}: 1 hit(s)"* ]]
+        [ "$(printf '%s\n' "$output" | grep -c 'hit(s)')" -eq 1 ]
+    done
+}
+
 @test "pre-push: empty stdin passes" {
     mk_repo synforger
     run_pre_push ""

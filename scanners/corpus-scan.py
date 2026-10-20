@@ -119,6 +119,7 @@ import contextlib
 import fcntl
 import fnmatch
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -1544,10 +1545,29 @@ def sending_repo() -> str:
     return git("rev-parse", "--absolute-git-dir").strip()
 
 
-def outgoing(span: str, known: frozenset[str] = frozenset()) -> list[tuple[str, str]]:
+def destination_holds():
+    """What the destination of a rewritten push already holds (scanners/dest-known.py), or None.
+
+    pre-push names the folder in GUARD_DEST_KNOWN; a copy of this scanner without dest-known.py
+    beside it compares the whole range, as before."""
+    folder, tool = os.environ.get("GUARD_DEST_KNOWN"), Path(__file__).resolve().with_name("dest-known.py")
+    if not folder or not tool.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("dest_known", tool)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module, Path(folder)
+
+
+def outgoing(span: str) -> list[tuple[str, str]]:
     """(where, line) for every added line and message line in a push range
     (`<from>..<to>`, or `<to> ^<from> [^<from>...]` when it has several bases). A file whose blob
-    is in `known` (objects the destination already holds) adds nothing that is not there already."""
+    or a commit whose text the destination already holds adds nothing that is not there already."""
+    holds = destination_holds()
+    known, texts = frozenset(), frozenset()
+    if holds:
+        tool, folder = holds
+        known, texts = frozenset(tool.held(folder, tool.OBJECTS)), frozenset(tool.held(folder, tool.MESSAGES))
     # One git call for the whole range: each commit comes as \0<sha>\0<message>\0<patch>.
     # --cc gives a merge the same patch `git show` would; --full-index names each blob in full.
     log = git("log", "--format=%x00%H%x00%B%x00", "-p", "--cc", "--full-index", "--no-color", "--no-ext-diff",
@@ -1555,8 +1575,9 @@ def outgoing(span: str, known: frozenset[str] = frozenset()) -> list[tuple[str, 
     parts = log.split("\0")
     lines = []
     for sha, message, patch in zip(parts[1::3], parts[2::3], parts[3::3]):
-        for line in (message + "\n").splitlines():
-            lines.append((f"{sha[:7]} message", line))
+        if not (texts and tool.text_id(message) in texts):
+            for line in (message + "\n").splitlines():
+                lines.append((f"{sha[:7]} message", line))
         current, held = "?", False
         for line in patch.splitlines():
             if line.startswith("diff "):
@@ -1634,9 +1655,6 @@ def main(argv: list[str] | None = None) -> int:
     started = time.time()
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--range", dest="span")
-    parser.add_argument("--known-blobs", type=Path,
-                        help="a file listing the objects the destination already holds, one id a line: "
-                             "a file of the range whose blob is among them is not compared")
     parser.add_argument("--text", type=Path)
     parser.add_argument("--repo", type=Path, help="where the sending repository lives (default: here)")
     parser.add_argument("--dest", help="the remote URL (or owner/repo) the text is sent to")
@@ -1787,8 +1805,7 @@ def main(argv: list[str] | None = None) -> int:
         lines = [(args.text.name, f"{args.text.name}:{n}", line) for n, line in enumerate(
             args.text.read_text(encoding="utf-8", errors="replace").splitlines(), start=1)]
     else:
-        known = frozenset(args.known_blobs.read_text().split()) if args.known_blobs else frozenset()
-        lines = [(where, where, line) for where, line in outgoing(args.span, known)]
+        lines = [(where, where, line) for where, line in outgoing(args.span)]
 
     prints = load(areas, refresh=False)
     allowed = [normalize(p) for p in read_lines(CONFIG / "allow.txt")]

@@ -8,7 +8,8 @@ that decides what the destination already holds; every check of a push compares 
 
   a file          by its blob (the same bytes are already there)
   a commit text   by the text itself
-  an author       by the address (author and committer alike)
+  an author       by the address for the identity check, by name and address for the word scan
+                  (a rewrite that changed only the name sends the new name)
 
 What is new after a rewrite (a blob, a text, an address) is checked as before.
 
@@ -30,6 +31,7 @@ from pathlib import Path
 OBJECTS = "objects.txt"
 MESSAGES = "messages.txt"
 ADDRESSES = "addresses.txt"
+IDENTITIES = "identities.txt"
 
 
 def git(*args: str) -> str:
@@ -66,6 +68,8 @@ def build(folder: Path, refs: list[str]) -> None:
     rows = commits(*refs)
     (folder / MESSAGES).write_text("\n".join(sorted({text_id(r[1]) for r in rows})) + "\n")
     (folder / ADDRESSES).write_text("\n".join(sorted({a for r in rows for a in (r[3], r[5])})) + "\n")
+    (folder / IDENTITIES).write_text("\n".join(sorted({f"{n} <{a}>" for r in rows
+                                                        for n, a in ((r[2], r[3]), (r[4], r[5]))})) + "\n")
 
 
 def patch(folder: Path) -> None:
@@ -76,7 +80,8 @@ def patch(folder: Path) -> None:
             keep = True
         elif line.startswith("index ") and ".." in line:
             keep = line.split("..", 1)[1].split()[0] not in known
-        if keep or not line.startswith("+"):
+        # the new path (`+++ b/<path>`) is sent with the push whatever the blob holds
+        if keep or not line.startswith("+") or line.startswith("+++ "):
             sys.stdout.write(line)
 
 
@@ -89,9 +94,9 @@ def messages(folder: Path, revs: list[str]) -> None:
 
 
 def authors(folder: Path, revs: list[str]) -> None:
-    known = held(folder, ADDRESSES)
+    known = held(folder, IDENTITIES)
     for _, _, an, ae, cn, ce in commits(*revs):
-        if ae not in known or ce not in known:
+        if f"{an} <{ae}>" not in known or f"{cn} <{ce}>" not in known:
             sys.stdout.write(f"{an} <{ae}> / {cn} <{ce}>\n")
 
 
