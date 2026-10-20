@@ -1299,6 +1299,20 @@ write_text() {
     agent Read file_path "${COMPANY_REPO}/notes.md"; denied
 }
 
+@test "area-guard: a name in guard-reads.txt written as a glob reads every area it matches, one made later too" {
+    mkdir -p "${H}/org/clients/beta" "${H}/org/clients/gamma"
+    printf 'beta\n' > "${H}/org/clients/beta/memo.md"
+    printf 'gamma\n' > "${H}/org/clients/gamma/memo.md"
+    printf 'client-beta ~/org/clients/beta\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    export GUARD_WORK_FOLDER="${PERSONAL}"
+    printf 'client-*\n' > "${PERSONAL}/guard-reads.txt"
+    agent Read file_path "${H}/org/clients/beta/memo.md"; passed
+    agent Read file_path "${COMPANY_REPO}/notes.md"; denied
+    # an area added after the file was written
+    printf 'client-gamma ~/org/clients/gamma\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    agent Read file_path "${H}/org/clients/gamma/memo.md"; passed
+}
+
 @test "area-guard: a session does not write the guard-reads.txt of the folder it works in" {
     export GUARD_WORK_FOLDER="${PERSONAL}"
     write_to "${PERSONAL}/guard-reads.txt"; denied
