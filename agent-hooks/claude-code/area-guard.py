@@ -1345,7 +1345,7 @@ def reach(areas) -> set[str] | None:
     if home is None:
         return None
     held = {n for n, r in areas if n not in (EXEMPT, NO_AREA) and (home == r or r in home.parents)}
-    around = {n for n, _ in areas if any(outer(n, h, areas) for h in held)}
+    around = {n for n, _ in areas if n not in (EXEMPT, NO_AREA) and any(outer(n, h, areas) for h in held)}
     try:
         lines = (home / READS_FILE).read_text(encoding="utf-8").splitlines()
     except OSError:
