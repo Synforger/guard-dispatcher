@@ -77,12 +77,16 @@ try:
     areas = module.load_areas()
 except ValueError:
     sys.exit(0)
+SKIP = {"node_modules", ".build", "DerivedData", "Pods",
+        "third_party", "third-party", "_deps", ".fetchcontent-cache"}
 for name, roots in areas.items():
     if name in module.UNSCANNED:
         continue
     for root in roots:
         for here, dirs, files in os.walk(root):
-            dirs[:] = [d for d in dirs if d not in ("node_modules", ".build", "DerivedData", "Pods")]
+            # Someone else's code cloned in (third_party, CMake's fetched sources) is not text the
+            # agent wrote, and its history holds other people's words: it is left out
+            dirs[:] = [d for d in dirs if d not in SKIP]
             if ".git" in dirs or ".git" in files:
                 print(here)
                 dirs.remove(".git") if ".git" in dirs else None
