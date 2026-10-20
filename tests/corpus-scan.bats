@@ -516,6 +516,14 @@ client_code() {
     [ "$status" -eq 1 ]
 }
 
+@test "corpus: a command called with its options is how the tool is used, not the area's text" {
+    printf 'Before a run, check the board is free:\n\n    boardctl -d 0 --list-jobs=owner,mem_used --output=tsv,bare\n' > "${CLIENT}/received/runbook.md"
+    mk_repo other
+    commit_line 'busy="$(boardctl -d 2 --list-jobs=owner,mem_used --output=tsv,bare)"'
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
 @test "corpus: the text of a PDF is caught" {
     command -v pdftotext >/dev/null || skip "pdftotext is not installed"
     mk_pdf "${CLIENT}/received/report.pdf" "the sleeve seam drifts four millimetres per wash cycle"
