@@ -500,6 +500,22 @@ client_code() {
     [ "$status" -eq 1 ]
 }
 
+@test "corpus: the head of a link that every link to the site shares is not the area's" {
+    printf 'The weights sit in https://drive.google.com/drive/folders/1Qz9XkLmNoPqRsTuVwXyZaBcDeFgHiJk for every run.\n' > "${CLIENT}/received/notes.md"
+    mk_repo other
+    commit_line 'WEIGHTS_URL="https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz01234"'
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a sentence copied with its link is still caught" {
+    printf 'The weights sit in https://drive.google.com/drive/folders/1Qz9XkLmNoPqRsTuVwXyZaBcDeFgHiJk for every run.\n' > "${CLIENT}/received/notes.md"
+    mk_repo other
+    commit_line "The weights sit in https://drive.google.com/drive/folders/1Qz9XkLmNoPqRsTuVwXyZaBcDeFgHiJk for every run."
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
 @test "corpus: the text of a PDF is caught" {
     command -v pdftotext >/dev/null || skip "pdftotext is not installed"
     mk_pdf "${CLIENT}/received/report.pdf" "the sleeve seam drifts four millimetres per wash cycle"
