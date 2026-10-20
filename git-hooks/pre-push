@@ -79,23 +79,31 @@ default_branch="$(dispatcher::default_branch)"
 allowed_emails="$(dispatcher::allowed_emails)"
 any_leak=0
 
-# The authors and committers the destination's history already holds, fetched only when the
-# identity check finds someone it does not know. A history rewritten to take a word out gives
-# every commit a new hash, colleagues' too: they are no longer on any remote, yet their authors
-# are the ones the destination has carried all along. A word of the list in an author is still
-# caught by the deep scan of the same push.
-dest_ids=""
-dest_ids_loaded=0
-load_dest_ids() {
-    [ "${dest_ids_loaded}" = 1 ] && return 0
-    dest_ids_loaded=1
-    local ns="refs/guard-dest/$$" refs
-    if git fetch -q --no-tags "${push_url:-${remote_name}}" \
+# What the destination's history already holds, fetched once and only when a check needs it.
+# A history rewritten to take a word out gives every commit a new hash, colleagues' too: they are
+# no longer on any remote, so the identity check takes them for commits made here, and the whole
+# history is scanned as if all of it were leaving. scanners/dest-known.py writes what the
+# destination holds into one folder, and every check of a rewritten push leaves out the same
+# things: authors and committers it already carries, files whose blob it already holds, commit
+# texts it already has. What the rewrite made new is checked as before.
+dest_known=""
+dest_loaded=0
+trap '[ -z "${dest_known}" ] || rm -rf "${dest_known}"' EXIT
+load_dest() {
+    [ "${dest_loaded}" = 1 ] && return 0
+    dest_loaded=1
+    local ns="refs/guard-dest/$$" refs tool
+    tool="$(dispatcher::locate_scanner "dest-known.py" || true)"
+    if [ -n "${tool}" ] && git fetch -q --no-tags "${push_url:-${remote_name}}" \
             "+refs/heads/*:${ns}/heads/*" "+refs/tags/*:${ns}/tags/*" 2>/dev/null; then
         refs="$(git for-each-ref --format='%(refname)' "${ns}")"
         if [ -n "${refs}" ]; then
+            dest_known="$(mktemp -d)"
             # shellcheck disable=SC2086 — one ref per word
-            dest_ids="$(git log --format='%ae%n%ce' ${refs} 2>/dev/null | sort -u)"
+            if ! python3 "${tool}" build "${dest_known}" ${refs}; then
+                rm -rf "${dest_known}"
+                dest_known=""
+            fi
         fi
     fi
     git for-each-ref --format='%(refname)' "${ns}" | while read -r ref; do git update-ref -d "${ref}"; done
@@ -193,6 +201,24 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         fi
     fi
 
+    # A rewritten history goes out whole (nothing the destination holds is known here) or over a
+    # tip it does not descend from (a force push): what the destination already holds is not
+    # checked again (= GUARD_DEST_KNOWN for the scans below).
+    rewritten=0
+    case "${revspec}" in
+        *..*|*^*) ;;
+        *) rewritten=1 ;;
+    esac
+    if [ "${remote_sha}" != "${zero}" ] && git rev-parse --verify -q "${remote_sha}^{commit}" >/dev/null \
+            && ! git merge-base --is-ancestor "${remote_sha}" "${local_sha}" 2>/dev/null; then
+        rewritten=1
+    fi
+    dest_env=""
+    if [ "${rewritten}" = 1 ]; then
+        load_dest
+        dest_env="${dest_known}"
+    fi
+
     # Identity check over the outgoing commits: every author and committer
     # must be the expected public identity for this machine's enforced org.
     # Only enforced-identity scopes — `other` repos keep their own authors.
@@ -211,9 +237,9 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             | grep -Fxvf <(printf '%s\n' "${allowed_emails}") \
             | grep -Ev "$(dispatcher::history_identity_exempt_re)" || true)"
         if [ -n "${bad_ids}" ]; then
-            load_dest_ids
-            if [ -n "${dest_ids}" ]; then
-                bad_ids="$(printf '%s\n' "${bad_ids}" | grep -Fxvf <(printf '%s\n' "${dest_ids}") || true)"
+            load_dest
+            if [ -n "${dest_known}" ]; then
+                bad_ids="$(printf '%s\n' "${bad_ids}" | grep -Fxvf "${dest_known}/addresses.txt" || true)"
             fi
         fi
         if [ -n "${bad_ids}" ]; then
@@ -238,7 +264,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             printf '[pre-push] corpus-scan.py could not be resolved — re-run install.sh from a healthy checkout\n' >&2
             exit 1
         fi
-        if ! python3 "${corpus}" --range "${revspec}" --dest "${push_url}"; then
+        if ! GUARD_DEST_KNOWN="${dest_env}" python3 "${corpus}" --range "${revspec}" --dest "${push_url}"; then
             any_leak=1
             continue
         fi
@@ -250,7 +276,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
 
     printf '[pre-push] anon-audit-deep --range %s (ref %s)\n' "${revspec}" "${local_ref}" >&2
-    if ! bash "${scanner}" --range "${revspec}"; then
+    if ! GUARD_DEST_KNOWN="${dest_env}" bash "${scanner}" --range "${revspec}"; then
         # Try to self-heal only when the operator opted in — a silent
         # filter-repo pass on every push would be too surprising, and it
         # can't undo a mis-scoped rewrite.

@@ -119,6 +119,7 @@ import contextlib
 import fcntl
 import fnmatch
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -1544,22 +1545,48 @@ def sending_repo() -> str:
     return git("rev-parse", "--absolute-git-dir").strip()
 
 
+def destination_holds():
+    """What the destination of a rewritten push already holds (scanners/dest-known.py), or None.
+
+    pre-push names the folder in GUARD_DEST_KNOWN; a copy of this scanner without dest-known.py
+    beside it compares the whole range, as before."""
+    folder, tool = os.environ.get("GUARD_DEST_KNOWN"), Path(__file__).resolve().with_name("dest-known.py")
+    if not folder or not tool.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("dest_known", tool)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module, Path(folder)
+
+
 def outgoing(span: str) -> list[tuple[str, str]]:
     """(where, line) for every added line and message line in a push range
-    (`<from>..<to>`, or `<to> ^<from> [^<from>...]` when it has several bases)."""
+    (`<from>..<to>`, or `<to> ^<from> [^<from>...]` when it has several bases). A file whose blob
+    or a commit whose text the destination already holds adds nothing that is not there already."""
+    holds = destination_holds()
+    known, texts = frozenset(), frozenset()
+    if holds:
+        tool, folder = holds
+        known, texts = frozenset(tool.held(folder, tool.OBJECTS)), frozenset(tool.held(folder, tool.MESSAGES))
     # One git call for the whole range: each commit comes as \0<sha>\0<message>\0<patch>.
-    # --cc gives a merge the same patch `git show` would.
-    log = git("log", "--format=%x00%H%x00%B%x00", "-p", "--cc", "--no-color", "--no-ext-diff", *span.split())
+    # --cc gives a merge the same patch `git show` would; --full-index names each blob in full.
+    log = git("log", "--format=%x00%H%x00%B%x00", "-p", "--cc", "--full-index", "--no-color", "--no-ext-diff",
+              *span.split())
     parts = log.split("\0")
     lines = []
     for sha, message, patch in zip(parts[1::3], parts[2::3], parts[3::3]):
-        for line in (message + "\n").splitlines():
-            lines.append((f"{sha[:7]} message", line))
-        current = "?"
+        if not (texts and tool.text_id(message) in texts):
+            for line in (message + "\n").splitlines():
+                lines.append((f"{sha[:7]} message", line))
+        current, held = "?", False
         for line in patch.splitlines():
-            if line.startswith("+++ "):
+            if line.startswith("diff "):
+                held = False
+            elif line.startswith("index ") and ".." in line:
+                held = line.split("..", 1)[1].split()[0] in known
+            elif line.startswith("+++ "):
                 current = line[6:] if line.startswith("+++ b/") else line[4:]
-            elif line.startswith("+"):
+            elif line.startswith("+") and not held:
                 lines.append((f"{sha[:7]} {current}", line[1:]))
     return lines
 

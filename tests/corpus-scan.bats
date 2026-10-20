@@ -1311,6 +1311,52 @@ time.sleep(float(sys.argv[2]))
     [[ "$output" == *"private area"* ]]
 }
 
+@test "pre-push: a rewritten history does not compare again the files its destination already holds" {
+    mk_repo other
+    dest="${BATS_TEST_TMPDIR}/dest.git"
+    git init -q --bare "${dest}"
+    # the destination has carried this file all along (it went there before the areas were set)
+    printf '%s\n' "${CLIENT_TEXT}" > held.txt && git add held.txt
+    commit_bypassing_hooks "add a file the destination holds"
+    git -c core.hooksPath=/dev/null push -q "${dest}" HEAD:refs/heads/develop
+    old="$(git rev-parse HEAD)"
+    # a rewrite: same tree, a new message, a new hash; the old tip is not known here any more
+    new="$(git commit-tree "HEAD^{tree}" -p HEAD~1 -m "add the file, reworded")"
+    git update-ref refs/heads/develop "${new}"
+    git reflog expire --expire=now --all && git gc -q --prune=now
+    run bash -c "printf '%s\n' 'refs/heads/develop ${new} refs/heads/develop ${old}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${dest}'"
+    [[ "$output" != *"private area"* ]]
+    # a file the destination does not hold is still compared
+    printf 'notes\n%s\n' "${CLIENT_TEXT}" > fresh.txt && git add fresh.txt
+    newer="$(git commit-tree "$(git write-tree)" -p "${new}" -m "add a fresh file")"
+    run bash -c "printf '%s\n' 'refs/heads/develop ${newer} refs/heads/develop ${old}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${dest}'"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"private area"* ]]
+    [[ "$output" == *"fresh.txt"* ]]
+}
+
+@test "pre-push: a rewritten history does not compare again the commit texts its destination already holds" {
+    mk_repo other
+    dest="${BATS_TEST_TMPDIR}/dest.git"
+    git init -q --bare "${dest}"
+    echo "theirs" > theirs.txt && git add theirs.txt
+    commit_bypassing_hooks "notes: ${CLIENT_TEXT}"
+    git -c core.hooksPath=/dev/null push -q "${dest}" HEAD:refs/heads/develop
+    old="$(git rev-parse HEAD)"
+    # the seed reworded: the commit above it comes back with a new hash and the same text
+    seed="$(git commit-tree "HEAD~1^{tree}" -m "seed, reworded")"
+    new="$(git commit-tree "HEAD^{tree}" -p "${seed}" -m "notes: ${CLIENT_TEXT}")"
+    run bash -c "printf '%s\n' 'refs/heads/develop ${new} refs/heads/develop ${old}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${dest}'"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"private area"* ]]
+    # a text the destination does not hold is still compared
+    newer="$(git commit-tree "HEAD^{tree}" -p "${new}" -m "again: ${CLIENT_TEXT}")"
+    run bash -c "printf '%s\n' 'refs/heads/develop ${newer} refs/heads/develop ${old}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${dest}'"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"private area"* ]]
+    [[ "$output" == *"${newer:0:7} message"* ]]
+}
+
 # --- an area whose repositories may hold other areas' text ---------------------------------------
 
 # hub_records [<names>] — an area inside the company for someone's gathered notes, a repository

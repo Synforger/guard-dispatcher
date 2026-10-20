@@ -6,6 +6,10 @@
 
 GUARD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# What the session running the tests was handed (the folder its launcher works in, the
+# destination a push of it fetched) is not the fixtures': a test sets them itself.
+unset GUARD_WORK_FOLDER GUARD_DEST_KNOWN
+
 # The sentinel the fixture word list flags. Deliberately gibberish so it
 # can never collide with legitimate repo content.
 SENTINEL="XLEAKX7q3z"
