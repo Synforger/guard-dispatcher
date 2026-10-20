@@ -494,6 +494,10 @@ session read (`scanners/send-scan.py`, which any other entry point can call:
   A folder on another machine joins an area with a `host:<host>:<path>` root
   on the area's line in `areas.txt` (`client host:build1:/srv/work/acme`; the
   area needs a folder on this machine too, which holds the text scanned). A
+  root under that machine's home is written as a command names it
+  (`client host:build1:~/acme-link`): it is matched as written, so a link in
+  the home that leads into the folder takes a root of its own, and `scp
+  build1:acme-link/x` (a path the home holds) counts as `~/acme-link/x`. A
   `scp` / `rsync` landing in it, or an `ssh` command whose command or standard
   input names a path in it, is a send into that area; a path in no root is
   judged by the machine's own `host:<host>` line. Naming such a path marks an

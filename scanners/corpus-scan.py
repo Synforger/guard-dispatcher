@@ -352,8 +352,9 @@ def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
 
 
 def load_remote_areas(source: Path | None = None) -> list[tuple[str, str, str]]:
-    """The roots on other machines, (area, host, absolute path), the longest path first so the
-    innermost wins. A root is `host:<host>:<absolute path>`, on the line of an area that also has a
+    """The roots on other machines, (area, host, path), the longest path first so the innermost
+    wins. A root is `host:<host>:<absolute path>`, or `host:<host>:~/<path>` under that machine's home
+    (matched as written: a command names it the same way), on the line of an area that also has a
     folder on this machine: its text is scanned there, and what is sent into it is judged against
     the areas it is outside of. A malformed root, a glob, or an area with no folder here is a broken
     file, not a pass."""
@@ -367,8 +368,9 @@ def load_remote_areas(source: Path | None = None) -> list[tuple[str, str, str]]:
                 continue
             host, _, path = part[len(REMOTE):].partition(":")
             if parts[0] in UNSCANNED or parts[0] == CARRIES or "*" in parts[0] + path \
-                    or not host or not path.startswith("/"):
-                raise ValueError(f"areas.txt: {part!r} is not `{REMOTE}<host>:<absolute path>` on an area's line")
+                    or not host or not (path.startswith("/") or path.startswith("~/")):
+                raise ValueError(f"areas.txt: {part!r} is not `{REMOTE}<host>:<absolute path or ~/path>` "
+                                 f"on an area's line")
             if not local.get(parts[0]):
                 raise ValueError(f"areas.txt: {parts[0]!r} has a folder on another machine and none here")
             out.append((parts[0], host.lower(), path.rstrip("/") or "/"))
