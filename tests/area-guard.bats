@@ -1250,3 +1250,59 @@ write_text() {
     write_to "${CASE_REPO}/a.py"; passed
     write_to "${COMPANY_REPO}/a.md"; denied
 }
+
+# --- a session that names the folder it works in reads only inside its own areas --------------
+
+@test "area-guard: a session working in a client's folder reads the client and the company around it, not another client" {
+    mkdir -p "${H}/org/clients/beta"
+    printf 'beta value\n' > "${H}/org/clients/beta/memo.md"
+    printf 'beta ~/org/clients/beta\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    export GUARD_WORK_FOLDER="${CASE}"
+    agent Read file_path "${CASE}/received/memo.md"; passed
+    agent Read file_path "${COMPANY_REPO}/notes.md"; passed
+    agent Read file_path "${H}/org/clients/beta/memo.md"; denied
+    [[ "${output}" == *"reads inside beta"* ]]
+    bash_in "${H}" "cat ${H}/org/clients/beta/memo.md"; denied
+}
+
+@test "area-guard: a session working outside every area reads inside none, and a refused read leaves no mark" {
+    export GUARD_WORK_FOLDER="${PERSONAL}"
+    agent Read file_path "${CASE}/received/memo.md"; denied
+    [[ "${output}" == *"reads only inside no area"* ]]
+    agent Grep path "${H}/org"; denied
+    bash_in "${H}" "git -C ${COMPANY_REPO} log"; denied
+    # nothing was read: the session still writes its own repository
+    write_to "${PERSONAL}/a.py"; passed
+    agent Read file_path "${PERSONAL}/README.md"; passed
+    agent Read file_path "${NOTES}/today.md"; passed
+}
+
+@test "area-guard: the areas a work folder's guard-reads.txt names are read too" {
+    export GUARD_WORK_FOLDER="${PERSONAL}"
+    printf 'client   # the client this tool is built for\n' > "${PERSONAL}/guard-reads.txt"
+    agent Read file_path "${CASE}/received/memo.md"; passed
+    agent Read file_path "${COMPANY_REPO}/notes.md"; denied
+}
+
+@test "area-guard: a session does not write the guard-reads.txt of the folder it works in" {
+    export GUARD_WORK_FOLDER="${PERSONAL}"
+    write_to "${PERSONAL}/guard-reads.txt"; denied
+    agent Edit file_path "${PERSONAL}/guard-reads.txt"; denied
+    bash_in "${PERSONAL}" "echo company >> guard-reads.txt"; denied
+    # another folder's is another session's to keep
+    write_to "${CASE}/guard-reads.txt"; passed
+}
+
+@test "area-guard: with no work folder named, a read marks the session as before" {
+    unset GUARD_WORK_FOLDER
+    read_case
+    write_to "${PERSONAL}/a.py"; denied
+}
+
+@test "area-guard: a session working in a client's folder still sends to the client's own private repository" {
+    export GUARD_WORK_FOLDER="${CASE}"
+    read_case
+    origin "${CASE_REPO}" acme/pipeline
+    seed_visibility acme/pipeline private
+    bash_in "${CASE_REPO}" "git push"; passed
+}

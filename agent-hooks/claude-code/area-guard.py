@@ -101,6 +101,12 @@ SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/send-scan.py"
 EXEMPT = "_exempt"
 NO_AREA = "_outside"
 READS = {"Read", "Grep", "Glob"}
+# The folder a session works in, named by whatever started it. When it is set, the session reads only
+# inside the areas that hold that folder, the areas around them, and the areas the folder's READS_FILE
+# names; a call that reads inside any other area is refused before it runs, instead of marking the
+# session after. Unset, the session marks what it reads, as before.
+WORK_FOLDER = "GUARD_WORK_FOLDER"
+READS_FILE = "guard-reads.txt"
 # What still runs while a message from another machine holds the session: reading, and asking
 # the operator.
 HELD_RUNS = READS | {"AskUserQuestion"}
@@ -1328,6 +1334,26 @@ def ask(argv: list[str]) -> int:
     return 1 if refused or kept_here else 0
 
 
+def work_folder() -> Path | None:
+    folder = os.environ.get(WORK_FOLDER)
+    return real(folder) if folder else None
+
+
+def reach(areas) -> set[str] | None:
+    """The areas this session may read inside, or None when no work folder is named."""
+    home = work_folder()
+    if home is None:
+        return None
+    held = {n for n, r in areas if n not in (EXEMPT, NO_AREA) and (home == r or r in home.parents)}
+    around = {n for n, _ in areas if any(outer(n, h, areas) for h in held)}
+    try:
+        lines = (home / READS_FILE).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    named = {w for line in lines for w in line.split("#", 1)[0].split()}
+    return held | around | named
+
+
 def deny(reason: str) -> None:
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "deny",
@@ -1361,6 +1387,14 @@ def main() -> int:
     if tool in WRITES and ".cache/area-guard" in written:
         deny("area-guard: an agent does not rewrite the entry guard's marks")
         return 0
+    if (home := work_folder()) is not None:
+        own = home / READS_FILE
+        targets = [Path(written)] if tool in WRITES else \
+            write_targets(args.get("command", ""), cwd) if tool == "Bash" else []
+        if any(same_file(t, own) or t == own for t in targets):
+            deny(f"area-guard: a session does not widen what it may read: {own} is the operator's, "
+                 f"or another session's to write")
+            return 0
     # What the guard judges from is the operator's to write, on every machine, but for what the operator
     # grants a session that has read inside no area. The call's own reading counts: marks are kept after it.
     transcript = event.get("transcript_path")
@@ -1447,6 +1481,11 @@ def main() -> int:
             return 0
 
     new = {a for a in (area_of(p, areas) for p in touched) if a and a != EXEMPT} | remote
+    if (reachable := reach(areas)) is not None and (beyond := new - reachable):
+        deny(f"area-guard: this session reads only inside {', '.join(sorted(reachable)) or 'no area'} "
+             f"(it works in {work_folder()}), and this call reads inside {', '.join(sorted(beyond))}. "
+             f"Ask a session that works there")
+        return 0
     if new - marks:
         state["areas"] = sorted(marks | new)
         save_state(session, state)

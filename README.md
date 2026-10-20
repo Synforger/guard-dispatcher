@@ -34,7 +34,7 @@ purpose, and a gap is counted against it (see *Scan guarantee*).
 | push (refs) | `pre-push` | branch/tag names scanned; direct pushes to main/develop refused (initial branch-creating push exempt; `GUARD_ALLOW_PROTECTED_PUSH=1` overrides once) |
 | PR | `scripts/pr-create.sh` | PR title/body scanned before `gh pr create` |
 | any `gh` send | `gh-shim/gh-guard.sh` (PATH shim) | argument vector, body/notes/template files and stdin payloads scanned before the CLI runs; read-only subcommands pass through |
-| AI agent tool call | `agent-hooks/claude-code/area-guard.py` (Claude Code PreToolUse hook) | a session that read inside a private area cannot write a repository outside it, nor commit, push or send through `gh` there; no session can switch the guards off or around |
+| AI agent tool call | `agent-hooks/claude-code/area-guard.py` (Claude Code PreToolUse hook) | a session that names the folder it works in reads only inside the areas that hold it; a session that read inside a private area cannot write a repository outside it, nor commit, push or send through `gh` there; no session can switch the guards off or around |
 | AI agent send (tool, network) | `agent-hooks/claude-code/outgoing.py` (called by the same hook) finds the send, `scanners/send-scan.py` judges it | what a tool sends to a service (MCP tools, Artifact) or a `curl` / `wget` sends with a body is scanned like a push, against the areas its declared destination is outside of; a destination can be blocked for sending outright |
 | AI agent message to another session | `agent-hooks/claude-code/peers.py` (called by the same hook, and by a client that relays messages) | a message is judged by where the receiving session has read: text of an area it has not read inside is refused, words of the sender's own pass, in every direction |
 | repair | `scanners/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
@@ -319,6 +319,16 @@ The push-time scan catches copies. An AI agent can carry what it read without
 copying a single line, so `agent-hooks/claude-code/area-guard.py` stops it one
 step earlier, before each tool call, from the same `areas.txt`:
 
+- **A session that names the folder it works in reads only inside its own
+  areas.** Whatever starts the agent sets `GUARD_WORK_FOLDER` to that folder;
+  the session may then read inside the areas that hold the folder, the areas
+  around them (the company around its client), and the areas the folder's
+  `guard-reads.txt` names, one or more per line (`#` starts a comment). A call
+  that reads inside any other area — found the same way marks are, below — is
+  refused before it runs, so the session never holds that area's text, and
+  nothing is marked. A folder in no area reads inside none. The session does
+  not write the `guard-reads.txt` of its own folder: what it may read is kept
+  by the operator, or by another session.
 - A session that reads inside an area (a `Read` / `Grep` / `Glob` target, an
   area path a `Bash` command names, a `Bash` working directory) is marked
   with the name of the area the path is in. A command names a path where the
