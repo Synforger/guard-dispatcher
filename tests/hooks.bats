@@ -277,6 +277,29 @@ setup() {
     [ "$status" -eq 0 ]
 }
 
+@test "pre-push: a history rewritten to take a word out keeps the authors its destination already holds" {
+    mk_repo synforger
+    dest="${BATS_TEST_TMPDIR}/dest.git"
+    git init -q --bare "${dest}"
+    echo "theirs" > theirs.txt && git add theirs.txt
+    git -c core.hooksPath=/dev/null -c user.email=12345+colleague@users.noreply.github.com commit -q -m "feat: a colleague's work"
+    git -c core.hooksPath=/dev/null push -q "${dest}" HEAD:refs/heads/develop
+    old="$(git rev-parse HEAD)"
+    # the rewrite: same author and tree, a new message, so a new hash; no remote holds it
+    new="$(git -c user.email=12345+colleague@users.noreply.github.com commit-tree "HEAD^{tree}" -p HEAD~1 -m "feat: the colleague's work, reworded")"
+    git update-ref refs/heads/develop "${new}"
+    run bash -c "printf '%s\n' 'refs/heads/develop ${new} refs/heads/develop ${old}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${dest}'"
+    [ "$status" -eq 0 ]
+    # someone the destination has never carried is still stopped
+    other="$(git -c user.email=intruder@example.com -c user.name=x commit-tree "HEAD^{tree}" -p "${new}" -m "feat: wrong identity")"
+    run bash -c "printf '%s\n' 'refs/heads/develop ${other} refs/heads/develop ${old}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${dest}'"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"intruder@example.com"* ]]
+    [[ "$output" != *"colleague"* ]]
+    # the fetched refs are not left behind
+    [ -z "$(git for-each-ref refs/guard-dest)" ]
+}
+
 @test "pre-push: empty stdin passes" {
     mk_repo synforger
     run_pre_push ""
