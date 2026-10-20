@@ -215,7 +215,8 @@ dispatcher::allowed_emails() {
 # Deliberately NOT part of dispatcher::allowed_emails: pre-commit uses that
 # list to check who *you* are committing as, and the operator is never a bot.
 dispatcher::history_identity_exempt_re() {
-    printf '%s' '^[0-9]+\+[A-Za-z0-9._-]+\[bot\]@users\.noreply\.github\.com$'
+    # The id in front is there for an app's bot and missing for GitHub's own (github-actions[bot]).
+    printf '%s' '^([0-9]+\+)?[A-Za-z0-9._-]+\[bot\]@users\.noreply\.github\.com$'
 }
 
 # Branches that must never receive a direct push from this machine.

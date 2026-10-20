@@ -179,9 +179,12 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # puts one into the history, and promoting that history would otherwise
     # fail a check with nothing left to protect). See
     # dispatcher::history_identity_exempt_re for why it is matched, not listed.
+    #
+    # Only commits no remote holds yet were made here: a colleague's commit or a workflow's, fetched
+    # from the org and now pushed on to another remote (a machine over ssh), has its own right author.
     if [ "${enforce_identity}" = "1" ]; then
         read -ra revs <<< "${revspec}"
-        bad_ids="$(git log "${revs[@]}" --pretty='format:%ae%n%ce' 2>/dev/null \
+        bad_ids="$(git log "${revs[@]}" --not --remotes --pretty='format:%ae%n%ce' 2>/dev/null \
             | sort -u \
             | grep -Fxvf <(printf '%s\n' "${allowed_emails}") \
             | grep -Ev "$(dispatcher::history_identity_exempt_re)" || true)"
