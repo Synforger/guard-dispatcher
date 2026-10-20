@@ -15,6 +15,14 @@ most when AI agents drive the development loop: agents commit and push
 far more often than humans, and a single unscanned path leaks an
 identity permanently into public history.
 
+## What it watches
+
+The text an agent writes — names, words on your list, and copies of a private
+area's documents — on its way into a commit, a PR, a message, a search or a
+document; and a session that read inside an area is kept from writing outside
+it. What a program does on its own, images, data and numbers lie outside that
+purpose, and a gap is counted against it (see *Scan guarantee*).
+
 ## What it does
 
 | boundary | hook | check |
@@ -815,7 +823,27 @@ contract:
   used to collapse into empty output, which a scan reports as clean, leaving
   a whole organisation green forever. Pinned in `tests/scanners.bats`.
 
-### Not covered — know your gaps
+### Outside the purpose — not watched
+
+What the guard is for is in *What it watches*; these lie outside it.
+
+
+- What a program does on its own after the call: a script or a program that
+  posts over the network by itself is not read.
+- A file that is not text (an image, an archive) is not compared.
+- Numbers are not compared at all — short numbers are not specific to
+  anything.
+- What a person types or pastes: text the operator pastes into the
+  conversation marks nothing, and other tools and hands are not held to the
+  entry guard.
+- Words of the agent's own pass by design: the private-document scan catches
+  copies, and a sentence restated in the agent's own words carries no run of
+  the original. Restating is how an agent tells another area what it needs to
+  know without carrying the documents across.
+- Someone else's code cloned into an area (`third_party`, fetched sources) is
+  left out of the weekly audit: its history holds words strangers wrote.
+
+### Not covered — gaps inside the purpose
 
 - The hold a message from another machine puts on a session is read from the
   session's transcript, and only a tool call is refused: the agent still
@@ -843,10 +871,7 @@ contract:
 - The scan folds case and Unicode width (NFKC) before matching, but is
   otherwise literal PCRE against your word list — it cannot flag an
   identifier whose base form the list does not contain.
-- The send guard sees the call, not what runs after it: a script or a
-  program that posts over the network on its own is not read, a file that is
-  not text (an image, an archive) is not compared, and a tool whose name says
-  it reads is trusted to only read.
+- A tool whose name says it reads is trusted to only read.
 - An order is read from what the machine keeps, not from the operator's
   hand: the phrases are matched as written (a wording no tail covers is taken
   as an order), a message typed while the agent works may not be in the
@@ -859,13 +884,8 @@ contract:
   closed to the commands the guard reads (above), not to a script run from a
   file; and a machine's own name other than the loopback host is a `host:`
   name, so an endpoint reachable under it needs its own line.
-- The agent entry guard sees tool calls only: text the operator pastes into
-  the conversation marks nothing, other tools and hands are not held to it,
-  and a program that runs git for the agent (a script in another language)
-  is left to the git hooks.
-- The private-document scan catches copies, not paraphrase: a value retyped
-  on its own, or a sentence reworded, carries no run of the original. Numbers
-  are not compared at all — short numbers are not specific to anything.
+- The agent entry guard sees tool calls only: a program that runs git for
+  the agent (a script in another language) is left to the git hooks.
 
 ## Escape hatches
 
