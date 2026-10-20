@@ -717,6 +717,44 @@ SH
     [[ "$output" != *"walking the private documents"* ]]
 }
 
+@test "corpus: a sentence taken out of a document is no longer the area's text once the change is seen" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/draft.md"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    # the draft is rewritten: the sentence leaves it
+    printf 'the order is settled with the mill in the north by friday\n' > "${CLIENT}/received/draft.md"
+    SPOTLIGHT_REPORTS="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "${CLIENT}/received/draft.md")"
+    export SPOTLIGHT_REPORTS
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    # what the draft says now is the area's text
+    commit_line "the order is settled with the mill in the north by friday"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: a rewritten document of a large area starts a walk the scan does not wait for" {
+    export GUARD_CORPUS_MAX_AGE=3600 GUARD_CORPUS_SMALL_AREA=0
+    spotlight_stub ""
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/draft.md"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    printf 'the order is settled with the mill in the north by friday\n' > "${CLIENT}/received/draft.md"
+    SPOTLIGHT_REPORTS="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "${CLIENT}/received/draft.md")"
+    export SPOTLIGHT_REPORTS
+    commit_line "nothing private either"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"takes longer than 0s: it goes on apart"* ]]
+}
+
 # index_has <path> — the index (docs/index.json) still names <path> as a document. The index
 # names real paths (macOS's temp folder sits behind a symlink); a deleted file's folder still
 # resolves, so the path is resolved before the lookup.
@@ -794,7 +832,7 @@ sys.exit(0 if os.path.realpath(sys.argv[1]) in index else 1)" "$1"
     [[ "$output" != *"walking the private documents"* ]]
 }
 
-@test "corpus: when Spotlight cannot answer, a deleted document drops from the index (its prints stay the safe side)" {
+@test "corpus: when Spotlight cannot answer, a deleted document drops from the index and its text with it" {
     export GUARD_CORPUS_MAX_AGE=3600
     spotlight_stub ""
     printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
@@ -808,14 +846,13 @@ sys.exit(0 if os.path.realpath(sys.argv[1]) in index else 1)" "$1"
     commit_line "the file is gone now"
     PATH="${STUB}:${PATH}" scan_last
     [ "$status" -eq 0 ]
-    [[ "$output" != *"walking the private documents"* ]]
     run index_has "${CLIENT}/received/notes.md"
     [ "$status" -ne 0 ]
-    # the safe side: the area's merged table is not rebuilt until the next full walk, so the
-    # text the deleted document held is still caught
+    # the area's text is what its folder holds now: the walk the deletion made due merged the
+    # table anew, and the text the deleted document held is no longer the area's
     commit_line "expected: ${CLIENT_TEXT}"
     PATH="${STUB}:${PATH}" scan_last
-    [ "$status" -eq 1 ]
+    [ "$status" -eq 0 ]
 }
 
 @test "corpus: when Spotlight cannot answer, a new document and a new folder are caught without a full walk" {
