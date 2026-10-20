@@ -170,6 +170,11 @@ def mostly_japanese(text: str) -> bool:
 WORD = re.compile(r"[^\W_]")
 # A stretch of signs and spaces long enough to hold a whole run that says nothing.
 SIGNS = re.compile(r"[\W_]{%d,}" % LATIN_RUN)
+# The head of a link (scheme, host and the folders named in words) is shared by every link to that
+# site: "https://drive.google.com/drive/folders/" plus one character is a whole run, and any document
+# holding any folder link holds it. The head ends at the first folder with a digit in it: an id names
+# a thing, and a run over it is still a copy.
+URL_HEAD = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/]+(?:/[A-Za-z._~-]*)*/", re.IGNORECASE)
 MAX_AGE = int(os.environ.get("GUARD_CORPUS_MAX_AGE", str(6 * 3600)))
 BACKGROUND_MAX_AGE = int(os.environ.get("GUARD_CORPUS_PUBLIC_MAX_AGE", str(7 * 24 * 3600)))
 # How many prints of public text are held as one set while the table is put together.
@@ -194,7 +199,7 @@ GENERATED = {".pbxproj", ".xcscheme", ".xcworkspacedata", ".storyboard", ".xib",
 # Folders of a repository that hold someone else's code: public text, not the area's.
 VENDORED = {"vendor", "vendors", "external", "extern", "third_party", "thirdparty", "third-party", "3rdparty"}
 # Raised whenever a change to reading or printing makes the kept prints of an unchanged document wrong.
-PRINT_FORMAT = 4
+PRINT_FORMAT = 5
 DOCS = CACHE / "docs"
 INDEX = DOCS / "index.json"
 # Every folder the last full walk went through, with its modification time: a file created, removed
@@ -441,8 +446,10 @@ def windows(text: str):
         # A particle after a word of English ("README.md を") is still English.
         if mostly_japanese(short):
             yield short
-    # The runs that start inside [first, last] lie wholly in a stretch of signs.
-    silent = [(m.start(), m.end() - LATIN_RUN) for m in SIGNS.finditer(text)]
+    # The runs that start inside [first, last] lie wholly in a stretch of signs, or start in the
+    # head of a link.
+    silent = sorted([(m.start(), m.end() - LATIN_RUN) for m in SIGNS.finditer(text)]
+                    + [(m.start(), m.end() - 1) for m in URL_HEAD.finditer(text)])
     at = 0
     for i in range(len(text) - LATIN_RUN + 1):
         while at < len(silent) and silent[at][1] < i:

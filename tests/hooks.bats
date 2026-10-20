@@ -246,6 +246,37 @@ setup() {
     [[ "$output" == *"unexpected author"* ]]
 }
 
+@test "pre-push: a colleague's commit another remote already holds passes on to a new remote" {
+    mk_repo synforger
+    base="$(git rev-parse HEAD)"
+    echo "theirs" > theirs.txt && git add theirs.txt
+    git -c core.hooksPath=/dev/null -c user.email=12345+colleague@users.noreply.github.com commit -q -m "feat: a colleague's work"
+    # fetched from the org: a tracking ref of another remote holds it
+    git update-ref refs/remotes/upstream/develop HEAD
+    head="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/develop ${head} refs/heads/feature/x ${base}"
+    [ "$status" -eq 0 ]
+    # a commit made here on top of it is still checked
+    echo "mine" > mine.txt && git add mine.txt
+    git -c core.hooksPath=/dev/null -c user.email=intruder@example.com commit -q -m "feat: wrong identity"
+    head="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/develop ${head} refs/heads/feature/x ${base}"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"intruder@example.com"* ]]
+    [[ "$output" != *"colleague"* ]]
+}
+
+@test "pre-push: GitHub's own workflow bot, with no id in front, is a bot account" {
+    mk_repo synforger
+    base="$(git rev-parse HEAD)"
+    echo "1.2.3" > VERSION && git add VERSION
+    git -c core.hooksPath=/dev/null -c user.name='github-actions[bot]' \
+        -c user.email='github-actions[bot]@users.noreply.github.com' commit -q -m "chore: bump the version"
+    head="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/feature/x ${head} refs/heads/feature/x ${base}"
+    [ "$status" -eq 0 ]
+}
+
 @test "pre-push: empty stdin passes" {
     mk_repo synforger
     run_pre_push ""
