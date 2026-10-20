@@ -216,6 +216,9 @@ MAX_DELTA = int(os.environ.get("GUARD_CORPUS_MAX_DELTA", "200"))
 # tables on disk and the walk finishes apart. send-scan.py gives the whole scan 120s; this leaves room
 # for Spotlight's answer (up to 30s, spotlight_changes) and the scan itself.
 WALK_WAIT = int(os.environ.get("GUARD_CORPUS_WALK_WAIT", "60"))
+# An area this small has its table merged anew within the scan that sees one of its documents
+# rewritten or deleted (well under a second); a larger one gets a full walk started apart.
+SMALL_AREA = int(os.environ.get("GUARD_CORPUS_SMALL_AREA", "1000"))
 # One PDF's extractor gets far less than the judgement's own budget (send-scan.py's 120s for the
 # whole scan): a single huge attachment must not eat that budget, so it is marked unreadable
 # instead, on its own, well before the outer timeout could fire.
@@ -1170,9 +1173,13 @@ def folder_changes(index: dict) -> list[Path] | None:
 def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
     """Add the documents changed since the last look to per-area delta tables. Past MAX_DELTA of
     them the summary says a full walk is due (`walk_due`). None = a full walk is needed first
-    (Spotlight could not answer and there is no folder list yet to fall back to). A deleted document Spotlight reports stays in the tables until the next full
-    walk (= the safe side); one the stat fallback finds gone is dropped from the index at once (it
-    can name no folder to have missed a new document in, so there is nothing more to catch there).
+    (Spotlight could not answer and there is no folder list yet to fall back to). A document whose
+    prints are in an area's table and that was rewritten or deleted since leaves its old prints in
+    that table, and a sentence taken out of a draft went on being the area's text for hours: a small
+    area's table is merged anew here from the prints kept per document (no document is read again),
+    and a larger one gets a full walk started apart (`walk_soon`) that this scan does not wait for.
+    One the stat fallback finds gone is also dropped from the index at once (it can name no folder
+    to have missed a new document in).
 
     Skipped, unchanged, when another process already holds the build lock: its own update (or
     the fuller one under way) is used instead of two processes walking or writing together."""
@@ -1194,11 +1201,15 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
         repos = Repos()
         touched: set[str] = set()
         dropped = False
+        # The areas a document whose old prints are in their table was rewritten or deleted in.
+        replaced: set[str] = set()
         for path in removed:
             stale = index.pop(str(path), None)
             if stale is None:
                 continue
             dropped = True
+            if stale[-1] != "delta":
+                replaced.add(stale[2])
             if not any(v[1] == stale[1] for v in index.values()):
                 (DOCS / f"{stale[1]}.bin").unlink(missing_ok=True)
         for path in changed:
@@ -1213,23 +1224,41 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
                 continue
             if any(p in SKIP_DIRS or p.startswith(".") for p in path.relative_to(root).parts[:-1]):
                 continue
+            # Its prints are in the area's table when the last walk read it (no delta mark).
+            before = index.get(str(path))
+            in_table = before is not None and before[-1] != "delta"
             found = document(path, repos, root=root)
             ok = found and document_prints(path, *found, index, index, area)[0]
             if ok:
                 index[str(path)].append("delta")
                 touched.add(area)
+            if in_table and (not path.exists() or index[str(path)][0] != before[0]):
+                replaced.add(area)
         deltas = {n: [v[1] for v in index.values() if v[2] == n and v[-1] == "delta"] for n in touched}
         if sum(len(f) for f in deltas.values()) > MAX_DELTA:
             # The delta is written all the same (= what changed is seen now); the full walk that
             # folds it into the area's table is due, and kept due until a walk writes a new summary.
             summary["walk_due"] = True
-        if touched:
+        if touched or replaced:
             allowed: set[int] = set()
             for phrase in read_lines(CONFIG / "allow.txt"):
                 allowed |= fingerprints(phrase)
             public = background_prints()
             for name, fids in deltas.items():
                 atomic_write(CACHE / f"{name}.delta.bin", merged(fids, allowed, public).tobytes())
+            for name in replaced:
+                fids = [v[1] for v in index.values() if v[2] == name]
+                if len(fids) > SMALL_AREA:
+                    summary["walk_soon"] = True
+                    continue
+                table = merged(fids, allowed, public)
+                atomic_write(CACHE / f"{name}.bin", table.tobytes())
+                (CACHE / f"{name}.delta.bin").unlink(missing_ok=True)
+                for entry in index.values():
+                    if entry[2] == name and entry[-1] == "delta":
+                        entry.pop()
+                summary["areas"][name] = {"documents": len(fids), "fingerprints": len(table)}
+                dropped = True
         if touched or dropped:
             atomic_write(INDEX, json.dumps(index))
         summary["checked"] = started
@@ -1245,7 +1274,7 @@ def say_built(summary: dict) -> None:
         say(unreadable_line(summary["unreadable"]))
 
 
-def walk_apart(summary: dict) -> dict:
+def walk_apart(summary: dict, wait: float = WALK_WAIT) -> dict:
     """A full walk is due (the tables are past MAX_AGE, or the delta past MAX_DELTA). Start it as a
     process of its own -- unless one is at it -- and wait for it up to WALK_WAIT: a walk done by then
     is used as if walked here. Past that, this scan goes on with the tables on disk, which catch_up()
@@ -1259,9 +1288,9 @@ def walk_apart(summary: dict) -> dict:
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=True)
     try:
-        code = walk.wait(timeout=WALK_WAIT)
+        code = walk.wait(timeout=wait)
     except subprocess.TimeoutExpired:
-        say(f"the walk takes longer than {WALK_WAIT}s: it goes on apart from this scan, which uses the "
+        say(f"the walk takes longer than {wait:g}s: it goes on apart from this scan, which uses the "
             "tables brought up to date just now")
         return summary
     built = built_summary()
@@ -1295,6 +1324,10 @@ def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
             summary = catch_up(areas, summary)
             if summary is not None and (summary.get("walk_due") or time.time() - summary["built"] >= MAX_AGE):
                 summary = walk_apart(summary)
+            elif summary is not None and summary.get("walk_soon"):
+                # A large area's document was rewritten: its old prints go with a walk this scan
+                # does not wait for.
+                summary = walk_apart(summary, wait=0)
     if summary is None:
         say("walking the private documents (unchanged ones are reused)...")
         summary = build(areas, full=full)
