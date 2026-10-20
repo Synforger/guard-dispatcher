@@ -492,19 +492,25 @@ def remote_host(arg: str) -> str | None:
 
 
 def remote_path(arg: str) -> str | None:
-    """The absolute path a remote argument names on its host (`host:/srv/x`, `scp://host/srv/x`), or
-    None (a path relative to the remote home, an rsync module, a local path)."""
+    """The path a remote argument names on its host: absolute (`host:/srv/x`, `scp://host/srv/x`), or
+    under the remote home as `~/…` (`host:~/x`, and `host:x`, which scp and rsync read from the home),
+    or None (an rsync module, a local path)."""
     if "://" in arg:
         path = urlsplit(arg).path
     elif "::" in arg or remote_host(arg) is None:
         return None
     else:
         path = arg.partition(":")[2]
-    return path if path.startswith("/") else None
+        if not path.startswith(("/", "~")):
+            path = "~/" + path if path else "~"
+    return path if path.startswith("/") or path == "~" or path.startswith("~/") else None
 
 
 # An absolute path standing in a remote command or the script fed to it.
 ABS_PATH = re.compile(r"(?<![\w.~$/-])/[^\s'\"`;|&<>(){}]+")
+# A path under the home of the machine a command runs on (`~/data`): an ssh command's home is the
+# remote one, and areas.txt names roots there the same way.
+HOME_PATH = re.compile(r"(?<![\w.~$/-])~(?:/[^\s'\"`;|&<>(){}]*)?(?![\w.-])")
 
 
 def remote_roots(send_scan: Path) -> list[tuple[str, str, str]]:
@@ -535,7 +541,8 @@ def remote_paths(command: str, cwd: str, send_scan: Path) -> list[tuple[str, str
             if positional:
                 text = stdin_payload(stdin, cwd, send_scan)[0]
                 host = positional[0].rsplit("@", 1)[-1]
-                found += [(host, p) for p in ABS_PATH.findall("\n".join([*positional[1:], text]))]
+                said = "\n".join([*positional[1:], text])
+                found += [(host, p) for p in ABS_PATH.findall(said) + HOME_PATH.findall(said)]
     return found
 
 

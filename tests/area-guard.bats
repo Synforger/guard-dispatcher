@@ -1251,6 +1251,21 @@ write_text() {
     write_to "${COMPANY_REPO}/a.md"; denied
 }
 
+@test "area-guard remote: a root under the other machine's home is named the way a command names it" {
+    printf 'client host:build1:~/acme-link\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    bash_in "${H}" "ssh build1 'ls ~/shared'"; passed
+    [ ! -e "${AREA_GUARD_STATE}/s1.json" ] || ! grep -q client "${AREA_GUARD_STATE}/s1.json"
+    bash_in "${H}" "ssh build1 'cat ~/acme-link/runs/a.log'"; passed
+    grep -q '"client"' "${AREA_GUARD_STATE}/s1.json"
+    # scp and rsync read a path with no slash in front from the home
+    bash_in "${H}" "scp build1:acme-link/out.txt ." "s2"; passed
+    grep -q '"client"' "${AREA_GUARD_STATE}/s2.json"
+    bash_in "${H}" "rsync -a build1:~/acme-link/runs/ ./runs/" "s3"; passed
+    grep -q '"client"' "${AREA_GUARD_STATE}/s3.json"
+    # a session working outside every area is refused before it reads there
+    GUARD_WORK_FOLDER="${PERSONAL}" bash_in "${H}" "ssh build1 'cat ~/acme-link/runs/a.log'" "s4"; denied
+}
+
 # --- a session that names the folder it works in reads only inside its own areas --------------
 
 @test "area-guard: a session working in a client's folder reads the client and the company around it, not another client" {
