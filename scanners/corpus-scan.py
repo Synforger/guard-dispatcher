@@ -1544,22 +1544,28 @@ def sending_repo() -> str:
     return git("rev-parse", "--absolute-git-dir").strip()
 
 
-def outgoing(span: str) -> list[tuple[str, str]]:
+def outgoing(span: str, known: frozenset[str] = frozenset()) -> list[tuple[str, str]]:
     """(where, line) for every added line and message line in a push range
-    (`<from>..<to>`, or `<to> ^<from> [^<from>...]` when it has several bases)."""
+    (`<from>..<to>`, or `<to> ^<from> [^<from>...]` when it has several bases). A file whose blob
+    is in `known` (objects the destination already holds) adds nothing that is not there already."""
     # One git call for the whole range: each commit comes as \0<sha>\0<message>\0<patch>.
-    # --cc gives a merge the same patch `git show` would.
-    log = git("log", "--format=%x00%H%x00%B%x00", "-p", "--cc", "--no-color", "--no-ext-diff", *span.split())
+    # --cc gives a merge the same patch `git show` would; --full-index names each blob in full.
+    log = git("log", "--format=%x00%H%x00%B%x00", "-p", "--cc", "--full-index", "--no-color", "--no-ext-diff",
+              *span.split())
     parts = log.split("\0")
     lines = []
     for sha, message, patch in zip(parts[1::3], parts[2::3], parts[3::3]):
         for line in (message + "\n").splitlines():
             lines.append((f"{sha[:7]} message", line))
-        current = "?"
+        current, held = "?", False
         for line in patch.splitlines():
-            if line.startswith("+++ "):
+            if line.startswith("diff "):
+                held = False
+            elif line.startswith("index ") and ".." in line:
+                held = line.split("..", 1)[1].split()[0] in known
+            elif line.startswith("+++ "):
                 current = line[6:] if line.startswith("+++ b/") else line[4:]
-            elif line.startswith("+"):
+            elif line.startswith("+") and not held:
                 lines.append((f"{sha[:7]} {current}", line[1:]))
     return lines
 
@@ -1628,6 +1634,9 @@ def main(argv: list[str] | None = None) -> int:
     started = time.time()
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--range", dest="span")
+    parser.add_argument("--known-blobs", type=Path,
+                        help="a file listing the objects the destination already holds, one id a line: "
+                             "a file of the range whose blob is among them is not compared")
     parser.add_argument("--text", type=Path)
     parser.add_argument("--repo", type=Path, help="where the sending repository lives (default: here)")
     parser.add_argument("--dest", help="the remote URL (or owner/repo) the text is sent to")
@@ -1778,7 +1787,8 @@ def main(argv: list[str] | None = None) -> int:
         lines = [(args.text.name, f"{args.text.name}:{n}", line) for n, line in enumerate(
             args.text.read_text(encoding="utf-8", errors="replace").splitlines(), start=1)]
     else:
-        lines = [(where, where, line) for where, line in outgoing(args.span)]
+        known = frozenset(args.known_blobs.read_text().split()) if args.known_blobs else frozenset()
+        lines = [(where, where, line) for where, line in outgoing(args.span, known)]
 
     prints = load(areas, refresh=False)
     allowed = [normalize(p) for p in read_lines(CONFIG / "allow.txt")]

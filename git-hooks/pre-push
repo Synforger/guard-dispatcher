@@ -79,16 +79,20 @@ default_branch="$(dispatcher::default_branch)"
 allowed_emails="$(dispatcher::allowed_emails)"
 any_leak=0
 
-# The authors and committers the destination's history already holds, fetched only when the
-# identity check finds someone it does not know. A history rewritten to take a word out gives
-# every commit a new hash, colleagues' too: they are no longer on any remote, yet their authors
-# are the ones the destination has carried all along. A word of the list in an author is still
-# caught by the deep scan of the same push.
+# What the destination's history already holds, fetched once and only when a check needs it.
+# A history rewritten to take a word out gives every commit a new hash, colleagues' too: they are
+# no longer on any remote, so the identity check takes them for commits made here, and the whole
+# history is scanned as if all of it were leaving. Authors and committers the destination already
+# carries pass the identity check; files whose blob it already holds are not compared with the
+# private documents (no character of them leaves). A word of the list is still caught by the deep
+# scan of the same push.
 dest_ids=""
-dest_ids_loaded=0
-load_dest_ids() {
-    [ "${dest_ids_loaded}" = 1 ] && return 0
-    dest_ids_loaded=1
+dest_objects=""
+dest_loaded=0
+trap '[ -z "${dest_objects}" ] || rm -f "${dest_objects}"' EXIT
+load_dest() {
+    [ "${dest_loaded}" = 1 ] && return 0
+    dest_loaded=1
     local ns="refs/guard-dest/$$" refs
     if git fetch -q --no-tags "${push_url:-${remote_name}}" \
             "+refs/heads/*:${ns}/heads/*" "+refs/tags/*:${ns}/tags/*" 2>/dev/null; then
@@ -96,6 +100,9 @@ load_dest_ids() {
         if [ -n "${refs}" ]; then
             # shellcheck disable=SC2086 — one ref per word
             dest_ids="$(git log --format='%ae%n%ce' ${refs} 2>/dev/null | sort -u)"
+            dest_objects="$(mktemp)"
+            # shellcheck disable=SC2086
+            git rev-list --objects ${refs} 2>/dev/null | cut -d' ' -f1 > "${dest_objects}"
         fi
     fi
     git for-each-ref --format='%(refname)' "${ns}" | while read -r ref; do git update-ref -d "${ref}"; done
@@ -211,7 +218,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             | grep -Fxvf <(printf '%s\n' "${allowed_emails}") \
             | grep -Ev "$(dispatcher::history_identity_exempt_re)" || true)"
         if [ -n "${bad_ids}" ]; then
-            load_dest_ids
+            load_dest
             if [ -n "${dest_ids}" ]; then
                 bad_ids="$(printf '%s\n' "${bad_ids}" | grep -Fxvf <(printf '%s\n' "${dest_ids}") || true)"
             fi
@@ -238,7 +245,24 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             printf '[pre-push] corpus-scan.py could not be resolved — re-run install.sh from a healthy checkout\n' >&2
             exit 1
         fi
-        if ! python3 "${corpus}" --range "${revspec}" --dest "${push_url}"; then
+        # A rewritten history goes out whole (nothing the destination holds is known here) or over
+        # a tip it does not descend from (a force push): what the destination already holds is
+        # not compared again.
+        known=()
+        rewritten=0
+        case "${revspec}" in
+            *..*|*^*) ;;
+            *) rewritten=1 ;;
+        esac
+        if [ "${remote_sha}" != "${zero}" ] && git rev-parse --verify -q "${remote_sha}^{commit}" >/dev/null \
+                && ! git merge-base --is-ancestor "${remote_sha}" "${local_sha}" 2>/dev/null; then
+            rewritten=1
+        fi
+        if [ "${rewritten}" = 1 ]; then
+            load_dest
+            [ -z "${dest_objects}" ] || known=(--known-blobs "${dest_objects}")
+        fi
+        if ! python3 "${corpus}" --range "${revspec}" --dest "${push_url}" ${known[@]+"${known[@]}"}; then
             any_leak=1
             continue
         fi
