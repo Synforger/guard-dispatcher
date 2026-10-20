@@ -323,7 +323,9 @@ step earlier, before each tool call, from the same `areas.txt`:
   areas.** Whatever starts the agent sets `GUARD_WORK_FOLDER` to that folder;
   the session may then read inside the areas that hold the folder, the areas
   around them (the company around its client), and the areas the folder's
-  `guard-reads.txt` names, one or more per line (`#` starts a comment). A call
+  `guard-reads.txt` names, one or more per line (`#` starts a comment; a name
+  written as a glob, `client-*`, reaches every area it matches, one added
+  later too). A call
   that reads inside any other area — found the same way marks are, below — is
   refused before it runs, so the session never holds that area's text, and
   nothing is marked. A folder in no area reads inside none. The session does

@@ -73,6 +73,7 @@ nothing.
 
 from __future__ import annotations
 
+import fnmatch
 import functools
 import glob
 import importlib.util
@@ -1351,7 +1352,10 @@ def reach(areas) -> set[str] | None:
     except OSError:
         lines = []
     named = {w for line in lines for w in line.split("#", 1)[0].split()}
-    return held | around | named
+    # A name written as a glob (`client-*`) reaches every area it matches when the call is judged,
+    # so an area made later is read without a line of its own
+    globbed = {n for n, _ in areas if n not in (EXEMPT, NO_AREA) and any(fnmatch.fnmatchcase(n, w) for w in named)}
+    return held | around | named | globbed
 
 
 def deny(reason: str) -> None:
