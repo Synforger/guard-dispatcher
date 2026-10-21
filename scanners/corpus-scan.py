@@ -416,7 +416,9 @@ def area_lines(source: Path | None = None) -> list[str]:
     `_outside`), reaches an area defined elsewhere, or names a folder outside is skipped."""
     path = source or CONFIG / "areas.txt"
     lines = read_lines(path)
-    if path != CONFIG / "areas.txt" or not area_folders():
+    # The machine's own file, however its path is spelled (a symlink, a relative config folder):
+    # an area's own lines missed here would drop the sub-areas they draw, a boundary gone silent.
+    if path.resolve() != (CONFIG / "areas.txt").resolve() or not area_folders():
         return lines
     top = _areas_of(lines)
     carries: list[tuple[str, Path, list[str], str]] = []

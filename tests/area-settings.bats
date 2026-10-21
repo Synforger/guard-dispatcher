@@ -126,3 +126,15 @@ EOF
     corpus --settings
     [[ "$output" == *"repo:acme/*"*"outside every area"* ]]
 }
+
+@test "area settings: the machine's areas.txt named through a symlink still takes the areas' own lines" {
+    printf 'lab    %s\n' "${WORK}/lab" > "${OWN}/areas.txt"
+    ln -s "${GUARD_CONFIG_DIR}" "${BATS_TEST_TMPDIR}/config-link"
+    run python3 -c "
+import importlib.util
+from pathlib import Path
+s = importlib.util.spec_from_file_location('c', '${GUARD_ROOT}/scanners/corpus-scan.py')
+m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
+print(' '.join(sorted(m.load_areas(Path('${BATS_TEST_TMPDIR}/config-link/areas.txt')))))"
+    [[ "$output" == *"lab"* ]]
+}
