@@ -131,6 +131,9 @@ from array import array
 from collections import Counter
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import guard_places  # noqa: E402
+
 
 class later:
     """A standard-library module that is loaded when something of it is first used.
@@ -185,8 +188,7 @@ BACKGROUND_MAX_AGE = int(os.environ.get("GUARD_CORPUS_PUBLIC_MAX_AGE", str(7 * 2
 # How many prints of public text are held as one set while the table is put together.
 PUBLIC_RUN = 2_000_000
 BUILD_LOCK, PUBLIC_LOCK = "build.lock", "background.lock"
-CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
-CACHE = Path(os.environ.get("GUARD_CORPUS_CACHE", Path.home() / ".cache/guard-corpus"))
+CACHE = guard_places.corpus_folder()
 EXEMPT = "_exempt"
 NO_AREA = "_outside"
 # Names on areas.txt that hold no documents of their own.
@@ -325,7 +327,7 @@ def read_lines(path: Path) -> list[str]:
 # of its identifiers, a folder of it that holds none of its documents. A line that would reach
 # outside the area is skipped and named (`--settings`), so a slip of the area's keeper stops
 # nothing else. The machine's own files come first and win.
-AREA_SETTINGS = CONFIG / "areas"
+AREA_SETTINGS = guard_places.setting("areas")
 #: "<file>: <line> -- <why>" for every line of an area's settings this process skipped.
 SKIPPED: list[str] = []
 
@@ -415,11 +417,11 @@ def area_lines(source: Path | None = None) -> list[str]:
     folders here lie inside the area's (and its roots on other machines), or a `_carries` line
     between areas within it. A line that sets a folder apart from every area (`_exempt`,
     `_outside`), reaches an area defined elsewhere, or names a folder outside is skipped."""
-    path = source or CONFIG / "areas.txt"
+    path = source or guard_places.setting("areas.txt")
     lines = read_lines(path)
     # The machine's own file, however its path is spelled (a symlink, a relative config folder):
     # an area's own lines missed here would drop the sub-areas they draw, a boundary gone silent.
-    if path.resolve() != (CONFIG / "areas.txt").resolve() or not area_folders():
+    if path.resolve() != (guard_places.setting("areas.txt")).resolve() or not area_folders():
         return lines
     top = _areas_of(lines)
     carries: list[tuple[str, Path, list[str], str]] = []
@@ -474,7 +476,7 @@ def kept_ignored(areas: dict[str, list[Path]]) -> list[Path]:
 
 
 def ignored_folders(areas: dict[str, list[Path]]) -> list[Path]:
-    return [expand(p) for p in read_lines(CONFIG / "ignore.txt")] + kept_ignored(areas)
+    return [expand(p) for p in read_lines(guard_places.setting("ignore.txt"))] + kept_ignored(areas)
 
 
 def kept_patterns(name: str, areas: dict[str, list[Path]]) -> list[tuple[Path, str]]:
@@ -588,7 +590,7 @@ def load_remote_areas(source: Path | None = None) -> list[tuple[str, str, str]]:
     folder on this machine: its text is scanned there, and what is sent into it is judged against
     the areas it is outside of. A malformed root, a glob, or an area with no folder here is a broken
     file, not a pass."""
-    source = source or CONFIG / "areas.txt"
+    source = source or guard_places.setting("areas.txt")
     local = load_areas(source)
     out = []
     for line in area_lines(source):
@@ -1032,7 +1034,7 @@ def public_is_edited(cached: Path, source: Path) -> bool:
 def public_is_old(cached: Path) -> bool:
     """Past its week, or behind what the published repositories carry now (= `public_is_behind`)."""
     return (time.time() - cached.stat().st_mtime >= BACKGROUND_MAX_AGE
-            or public_is_behind(CONFIG / "background.txt"))
+            or public_is_behind(guard_places.setting("background.txt")))
 
 
 def build_public(source: Path) -> tuple[array, str]:
@@ -1139,7 +1141,7 @@ def current_public(wait: bool = False) -> tuple[array, str]:
     next scan to know -- and so is one that does not exist yet, or any that is not current when
     the caller asks to wait (`--refresh`). One process builds at a time; another that needs the
     table waits for it rather than build beside it."""
-    cached, source = public_table(), CONFIG / "background.txt"
+    cached, source = public_table(), guard_places.setting("background.txt")
     if not source.is_file():
         return array("Q"), ""
     if cached.is_file() and not public_is_edited(cached, source):
@@ -1256,7 +1258,7 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
     started = time.time()
     public = background_prints()
     allowed: set[int] = set()
-    for phrase in read_lines(CONFIG / "allow.txt"):
+    for phrase in read_lines(guard_places.setting("allow.txt")):
         allowed |= fingerprints(phrase)
     DOCS.mkdir(parents=True, exist_ok=True)
     old = json.loads(INDEX.read_text()) if INDEX.is_file() else {}
@@ -1507,7 +1509,7 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
             summary["walk_due"] = True
         if touched or replaced:
             allowed: set[int] = set()
-            for phrase in read_lines(CONFIG / "allow.txt"):
+            for phrase in read_lines(guard_places.setting("allow.txt")):
                 allowed |= fingerprints(phrase)
             public = background_prints()
             for name, fids in deltas.items():
@@ -1708,7 +1710,7 @@ def repo_rules() -> list[tuple[str, str]]:
     every area even for a private repository, which its owner may publish tomorrow). A line with
     a third word keeps the place it declares here: send-scan.py refuses the line as written, and a
     push is not let through meanwhile."""
-    path = CONFIG / "destinations.txt"
+    path = guard_places.setting("destinations.txt")
     out = []
     for line in read_lines(path):
         words = line.split("#", 1)[0].split()
@@ -1888,7 +1890,7 @@ def patterns(name: str, areas: dict[str, list[Path]] | None = None) -> list[re.P
     """The identifier shapes of the area `name`: the machine's patterns/<name>.txt, then the ones
     the areas it lies within keep (a shape there that does not compile is skipped and named)."""
     compiled = []
-    for line in read_lines(CONFIG / "patterns" / f"{name}.txt"):
+    for line in read_lines(guard_places.setting("patterns") / f"{name}.txt"):
         try:
             compiled.append(re.compile(line, re.IGNORECASE))
         except re.error as error:
@@ -1929,7 +1931,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.refresh_public:
         # Started by a scan that found the table past its week, or by hand. Whoever holds the lock
         # is already at it: this one leaves.
-        cached, source = public_table(), CONFIG / "background.txt"
+        cached, source = public_table(), guard_places.setting("background.txt")
         with lock_file(wait=False, name=PUBLIC_LOCK) as mine:
             if mine and source.is_file() and not (cached.is_file() and not public_is_edited(cached, source)
                                                    and not public_is_old(cached)):
@@ -1966,10 +1968,10 @@ def main(argv: list[str] | None = None) -> int:
         areas = load_areas()
         carries = load_carries(areas)
     except ValueError as error:
-        say(f"REFUSED — {error} (fix {CONFIG / 'areas.txt'})")
+        say(f"REFUSED — {error} (fix {guard_places.setting('areas.txt')})")
         return 2
     if not areas:
-        say(f"NOT CHECKED — no areas defined in {CONFIG / 'areas.txt'} on this machine")
+        say(f"NOT CHECKED — no areas defined in {guard_places.setting('areas.txt')} on this machine")
         return 0
     if args.settings:
         skipped = skipped_settings()
@@ -2056,7 +2058,7 @@ def main(argv: list[str] | None = None) -> int:
     if not checked:
         if holds:
             say(f"not checked: this repository may hold the text of the {areas_count(holds)} it is outside of "
-                f"({CARRIES} in {CONFIG / 'areas.txt'})")
+                f"({CARRIES} in {guard_places.setting('areas.txt')})")
         return 0
 
     # (group, where, line): a group is one file of one commit, or one payload -- a block of copied
@@ -2068,7 +2070,7 @@ def main(argv: list[str] | None = None) -> int:
         lines = [(where, where, line) for where, line in outgoing(args.span)]
 
     prints = load(areas, refresh=False)
-    allowed = [normalize(p) for p in read_lines(CONFIG / "allow.txt")]
+    allowed = [normalize(p) for p in read_lines(guard_places.setting("allow.txt"))]
     public = background_prints()
     found = []
     for name in checked:
@@ -2091,7 +2093,7 @@ def main(argv: list[str] | None = None) -> int:
         if could_hold:
             say(f"areas.txt lets a repository here hold the text of {', '.join(could_hold)}, but only one with no "
                 "remote: this one has somewhere to send it")
-        say(f"replace it with made-up text, or add a phrase that is fine to {CONFIG / 'allow.txt'}"
+        say(f"replace it with made-up text, or add a phrase that is fine to {guard_places.setting('allow.txt')}"
             f" (scanned in {time.time() - started:.1f}s)")
         return 1
     also_held = f"; it may hold the text of {areas_count(holds)} more" if holds else ""
