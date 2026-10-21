@@ -36,7 +36,8 @@ Areas are defined on this machine only (never in a repository):
     ~/.config/guard/background.txt     folders of public text and code; whatever
                                        also appears there is not specific to an
                                        area and is dropped (a table of it keeps for a
-                                       week; past that a scan uses the old table while
+                                       week, or until a published repository's remote
+                                       moves; past that a scan uses the old table while
                                        it is rebuilt apart, and a rebuild reads only
                                        the files that changed)
 
@@ -977,12 +978,50 @@ def read_public_id() -> str:
         return ""
 
 
-def publish_public(table: array, ident: str) -> None:
-    """Put a built table in place, then its name beside it. Stopped between the two, the old name
-    stays beside the new table: the areas' tables are then not merged again until the next
-    rebuild, which only leaves flagged what the new table would have cleared."""
+def publish_public(table: array, ident: str, heads: dict[str, str] | None = None) -> None:
+    """Put a built table in place, then its name beside it, then the heads it was read at. Stopped
+    between the two, the old name stays beside the new table: the areas' tables are then not merged
+    again until the next rebuild, which only leaves flagged what the new table would have cleared."""
     atomic_write(public_table(), table.tobytes())
     atomic_write(public_id_path(), ident)
+    if heads is not None:
+        atomic_write(public_heads_path(), json.dumps(heads, sort_keys=True))
+
+
+def public_heads_path() -> Path:
+    return CACHE / f"background-{PRINT_FORMAT}.heads"
+
+
+def published_heads(source: Path) -> dict[str, str]:
+    """The commit each published repository's remote default branch is at (= what `published_files`
+    reads), by repository. A head that moved since the table was built is text made public since."""
+    heads: dict[str, str] = {}
+    for entry in read_lines(source):
+        if not entry.startswith("published "):
+            continue
+        parent = expand(entry.split(None, 1)[1])
+        for gitdir in sorted(parent.glob("*/.git")) + sorted(parent.glob("*/*/.git")):
+            repo = str(gitdir.parent)
+            head = subprocess.run(["git", "-C", repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+                                  capture_output=True, text=True).stdout.strip()
+            if head:
+                heads[repo] = subprocess.run(["git", "-C", repo, "rev-parse", head],
+                                             capture_output=True, text=True).stdout.strip()
+    return heads
+
+
+def public_is_behind(source: Path) -> bool:
+    """A published repository moved since the table was built (= its words are public and the table
+    does not hold them yet). Waiting out the week, an area that took up such words stopped the very
+    repository that had published them."""
+    heads = published_heads(source)
+    if not heads:
+        return False
+    try:
+        kept = json.loads(public_heads_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    return kept != heads
 
 
 def public_is_edited(cached: Path, source: Path) -> bool:
@@ -991,7 +1030,9 @@ def public_is_edited(cached: Path, source: Path) -> bool:
 
 
 def public_is_old(cached: Path) -> bool:
-    return time.time() - cached.stat().st_mtime >= BACKGROUND_MAX_AGE
+    """Past its week, or behind what the published repositories carry now (= `public_is_behind`)."""
+    return (time.time() - cached.stat().st_mtime >= BACKGROUND_MAX_AGE
+            or public_is_behind(CONFIG / "background.txt"))
 
 
 def build_public(source: Path) -> tuple[array, str]:
@@ -1106,7 +1147,8 @@ def current_public(wait: bool = False) -> tuple[array, str]:
             return read_table(cached), read_public_id()
         if not wait:
             days = int((time.time() - cached.stat().st_mtime) // 86400)
-            say(f"the table of public text is {days} days old: this scan uses it as it is, and it is "
+            why = f"{days} days old" if days * 86400 >= BACKGROUND_MAX_AGE else "behind a published repository"
+            say(f"the table of public text is {why}: this scan uses it as it is, and it is "
                 "being rebuilt apart from the scan (text made public since may still be flagged)")
             rebuild_public_apart()
             return read_table(cached), read_public_id()
@@ -1116,8 +1158,9 @@ def current_public(wait: bool = False) -> tuple[array, str]:
             return read_table(cached), read_public_id()
         say("reading the public text (files unchanged since the last time are not read again)...")
         started = time.time()
+        heads = published_heads(source)
         table, ident = build_public(source)
-        publish_public(table, ident)
+        publish_public(table, ident, heads)
         say(f"table of public text built in {time.time() - started:.1f}s: {len(table)} prints")
         return table, ident
 
@@ -1891,20 +1934,21 @@ def main(argv: list[str] | None = None) -> int:
             if mine and source.is_file() and not (cached.is_file() and not public_is_edited(cached, source)
                                                    and not public_is_old(cached)):
                 before = read_public_id()
+                heads = published_heads(source)
                 table, ident = build_public(source)
                 try:
                     areas = load_areas()
                 except ValueError:
                     areas = {}
                 if ident == before or not areas or not (CACHE / "summary.json").is_file():
-                    publish_public(table, ident)
+                    publish_public(table, ident, heads)
                     return 0
                 # What is public changed, and the areas' tables were merged against the old table.
                 # They are merged anew here, so that no scan has to do it. The build lock is taken
                 # before the new table shows: a scan never finds it beside tables nobody is merging.
                 _PUBLIC[:] = [(table, ident)]
                 with lock_file(wait=True):
-                    publish_public(table, ident)
+                    publish_public(table, ident, heads)
                     _build_locked(areas, full=True)
         return 0
     if args.walk:
