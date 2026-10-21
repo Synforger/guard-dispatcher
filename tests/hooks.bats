@@ -311,10 +311,13 @@ setup() {
     handed="$(grep -F -- '--range "${revspec}"' "${hook}" | grep -v 'fixer' | grep -cF 'GUARD_DEST_KNOWN="${dest_env}"')"
     [ "${checks}" -ge 2 ]
     [ "${handed}" -eq "${checks}" ]
-    # and the checks read a push range only through it
-    run grep -nF 'git log "${RANGE_REVS' "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    # and the checks read a push range only through it, however the git call is spelled (the deep
+    # scan counts the range's commits with rev-list, which judges nothing)
+    run grep -nE 'git +(log|show|diff|diff-tree|cat-file|format-patch)\b.*RANGE' \
+        "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
     [ "$status" -eq 1 ]
-    run grep -nF 'git("log"' "${GUARD_ROOT}/scanners/corpus-scan.py"
+    run grep -nE '(git\(|"git",).*"(log|rev-list|diff|diff-tree|format-patch|cat-file)"' \
+        "${GUARD_ROOT}/scanners/corpus-scan.py"
     [ "$status" -eq 1 ]
 }
 
