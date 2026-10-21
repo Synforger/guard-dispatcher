@@ -540,6 +540,46 @@ def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
     return _areas_of(area_lines(source))
 
 
+def area_words(areas: dict[str, list[Path]], source: Path | None = None) -> dict[str, set[str]]:
+    """The names each area goes by: the names of the folders that make it. A folder a client line
+    makes (`client-* .../clients/*`) is the client's name; a line that joins every sub-folder of a
+    folder (`company /srv/company/*`) goes by that folder's name, not by its sub-folders' (`repos`,
+    `docs`). A Latin name shorter than three letters names nothing (`ai`, `ml`)."""
+    joined: dict[str, set[Path]] = {}
+    for line in area_lines(source):
+        parts = shlex.split(line, comments=True)
+        if len(parts) >= 2 and "*" not in parts[0] and not parts[0].startswith("_"):
+            joined.setdefault(parts[0], set()).update(expand(p[:-2]) for p in parts[1:] if p.endswith("/*"))
+    words: dict[str, set[str]] = {}
+    for name, roots in areas.items():
+        if name in UNSCANNED or name.startswith("_"):
+            continue
+        parents = joined.get(name, set())
+        names = {r.name for r in roots if r.parent not in parents} | {p.name for p in parents}
+        words[name] = {w for w in names if len(w) >= (3 if w.isascii() else 2)}
+    return words
+
+
+def unknown_areas(read_inside: list[str], areas: dict[str, list[Path]]) -> list[str]:
+    """The areas a session that has read inside `read_inside` does not know: neither read inside
+    nor around one it has (the company around its client is where it works)."""
+    return [n for n in areas if n not in UNSCANNED and not n.startswith("_") and n not in read_inside
+            and not any(outer(n, r, areas) for r in read_inside)]
+
+
+def named_areas(text: str, read_inside: list[str]) -> list[tuple[str, str]]:
+    """(area, name) for each name of an area unknown to the session that the text carries."""
+    areas = load_areas()
+    words = area_words(areas)
+    found = []
+    for area in unknown_areas(read_inside, areas):
+        for word in sorted(words.get(area, ())):
+            shape = (rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])" if word.isascii() else re.escape(word))
+            if re.search(shape, text, re.IGNORECASE):
+                found.append((area, word))
+    return found
+
+
 def load_remote_areas(source: Path | None = None) -> list[tuple[str, str, str]]:
     """The roots on other machines, (area, host, path), the longest path first so the innermost
     wins. A root is `host:<host>:<absolute path>`, or `host:<host>:~/<path>` under that machine's home
