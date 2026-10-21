@@ -10,6 +10,12 @@ GUARD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # destination a push of it fetched) is not the fixtures': a test sets them itself.
 unset GUARD_WORK_FOLDER GUARD_DEST_KNOWN
 
+# The fixture remotes are GitHub addresses no test can reach. A push that rewrites history, or
+# carries an author unknown here, fetches its destination; over ssh that waits on GitHub and can
+# hang the suite. git reaches local paths only, so such a fetch fails at once, as an unreachable
+# destination does, and a test that wants a destination gives a local one.
+export GIT_ALLOW_PROTOCOL=file
+
 # The sentinel the fixture word list flags. Deliberately gibberish so it
 # can never collide with legitimate repo content.
 SENTINEL="XLEAKX7q3z"
