@@ -813,14 +813,16 @@ contract:
   deep-scanned — all blobs (full diffs), the message, and the
   author/committer name+email — and the pushed branch or tag name is
   scanned as well (`pre-push`). A new-branch push scans exactly the
-  commits the remote does not already have. A rewritten history (a force
-  push, or a whole history sent again) gets a new hash for every commit,
-  colleagues' too, so it is judged by what the destination already holds
-  instead: `scanners/dest-known.py` fetches the destination once, and every
-  check of the push leaves out the same things — files whose blob it holds,
-  commit texts it holds, authors and committers it carries. What the rewrite
-  made new is checked as before. Pinned in `tests/hooks.bats` and
-  `tests/corpus-scan.bats`.
+  commits the remote does not already have. What a push sends is decided in
+  one place, `scanners/dest-known.py`: which commits go out, whether the push
+  rewrites history, and of a rewrite what the destination already holds. No
+  check reads the history on its own. A rewritten history (a force push, or
+  a whole history sent again) gets a new hash for every commit, colleagues'
+  too, so the destination is fetched once and every check leaves out the
+  same things — files whose blob it holds, commit texts it holds, authors
+  and committers it carries. What the rewrite made new is checked as before.
+  Pinned in `tests/hooks.bats` (a check added without what the destination
+  holds fails it) and `tests/corpus-scan.bats`.
   The scan runs while git holds the connection to the remote open, so a
   push that sends a whole history (a new or recreated repository) can
   outlast an idle SSH connection: set `ServerAliveInterval 30` for the host

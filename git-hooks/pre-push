@@ -72,6 +72,15 @@ MSG
     exit 1
 fi
 
+# What a push sends is decided in scanners/dest-known.py alone: which commits go out, whether the
+# push rewrites history, and what of it the destination already holds. No check below reads the
+# history on its own; each is handed the same range and the same folder.
+dest_tool="$(dispatcher::locate_scanner "dest-known.py" || true)"
+if [ -z "${dest_tool}" ]; then
+    printf '[pre-push] dest-known.py could not be resolved — re-run install.sh from a healthy checkout\n' >&2
+    exit 1
+fi
+
 zero='0000000000000000000000000000000000000000'
 remote_name="${1:-origin}"
 push_url="${2:-}"
@@ -92,15 +101,14 @@ trap '[ -z "${dest_known}" ] || rm -rf "${dest_known}"' EXIT
 load_dest() {
     [ "${dest_loaded}" = 1 ] && return 0
     dest_loaded=1
-    local ns="refs/guard-dest/$$" refs tool
-    tool="$(dispatcher::locate_scanner "dest-known.py" || true)"
-    if [ -n "${tool}" ] && git fetch -q --no-tags "${push_url:-${remote_name}}" \
+    local ns="refs/guard-dest/$$" refs
+    if git fetch -q --no-tags "${push_url:-${remote_name}}" \
             "+refs/heads/*:${ns}/heads/*" "+refs/tags/*:${ns}/tags/*" 2>/dev/null; then
         refs="$(git for-each-ref --format='%(refname)' "${ns}")"
         if [ -n "${refs}" ]; then
             dest_known="$(mktemp -d)"
             # shellcheck disable=SC2086 — one ref per word
-            if ! python3 "${tool}" build "${dest_known}" ${refs}; then
+            if ! python3 "${dest_tool}" build "${dest_known}" ${refs}; then
                 rm -rf "${dest_known}"
                 dest_known=""
             fi
@@ -157,64 +165,18 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         rm -f "${ref_tmp}"
     fi
 
-    if [ "${remote_sha}" = "${zero}" ]; then
-        # New remote branch — scan only the truly-outgoing commits, i.e.
-        # those not already reachable from any tracking ref of the target
-        # remote. Ranging from origin/<default> instead would re-scan
-        # published history forever under a squash-merge flow (commits
-        # between the default branch and a feature tip never become
-        # ancestors of the default branch), tripping the audit on every
-        # new branch even when the actual delta is clean.
-        # Commits an earlier ref of this push already scanned count as public.
-        outgoing_count="$(git rev-list --count "${local_sha}" ${scanned[@]+"${scanned[@]}"} --not --remotes="${remote_name}" 2>/dev/null || echo 0)"
-        if [ "${outgoing_count}" -eq 0 ]; then
-            # Tip is already reachable on the remote (or was scanned with an
-            # earlier ref of this push) — nothing outgoing.
-            continue
-        fi
-        bases="$(git rev-list --boundary "${local_sha}" ${scanned[@]+"${scanned[@]}"} --not --remotes="${remote_name}" 2>/dev/null | sed -n 's/^-//p' | sort -u)"
-        base_count="$(printf '%s' "${bases}" | grep -c . || true)"
-        if [ "${base_count}" -eq 1 ]; then
-            # Exactly one public attachment point — express it as the
-            # two-dot range the scanners (and anon-fix) understand.
-            revspec="${bases}..${local_sha}"
-        elif [ "${base_count}" -eq 0 ]; then
-            # Nothing reachable is public (fresh or disjoint history) —
-            # scan the entire new history (safe side).
-            revspec="${local_sha}"
-        else
-            # Several public attachment points (a merge of published lines,
-            # a squash-merge promotion): no two-dot range expresses the
-            # outgoing set, so name the tip and exclude every base. The
-            # scanners pass these words to git as they are.
-            revspec="${local_sha}$(printf ' ^%s' ${bases})"
-        fi
-    else
-        if git rev-parse --verify "${remote_sha}^{commit}" >/dev/null 2>&1; then
-            revspec="${remote_sha}..${local_sha}"
-        else
-            # Force-push after a history rewrite: the old remote tip no
-            # longer exists locally, so a two-dot range cannot be built.
-            # Scan the entire new history instead (safe side — this is
-            # exactly the moment a scrub is being published).
-            revspec="${local_sha}"
-        fi
+    # Which commits go out, and whether the push rewrites history (= a whole history, or over a tip
+    # it does not descend from): what the destination already holds is then left out of every
+    # check (= GUARD_DEST_KNOWN). Commits an earlier ref of this push already scanned count as
+    # published.
+    if ! plan="$(python3 "${dest_tool}" range "${remote_name}" "${local_sha}" "${remote_sha}" ${scanned[@]+"${scanned[@]}"})"; then
+        printf '[pre-push] dest-known.py could not decide what %s sends — refusing the push\n' "${local_ref}" >&2
+        exit 1
     fi
-
-    # A rewritten history goes out whole (nothing the destination holds is known here) or over a
-    # tip it does not descend from (a force push): what the destination already holds is not
-    # checked again (= GUARD_DEST_KNOWN for the scans below).
-    rewritten=0
-    case "${revspec}" in
-        *..*|*^*) ;;
-        *) rewritten=1 ;;
-    esac
-    if [ "${remote_sha}" != "${zero}" ] && git rev-parse --verify -q "${remote_sha}^{commit}" >/dev/null \
-            && ! git merge-base --is-ancestor "${remote_sha}" "${local_sha}" 2>/dev/null; then
-        rewritten=1
-    fi
+    [ -z "${plan}" ] && continue
+    { read -r change; read -r revspec; } <<< "${plan}"
     dest_env=""
-    if [ "${rewritten}" = 1 ]; then
+    if [ "${change}" = rewritten ]; then
         load_dest
         dest_env="${dest_known}"
     fi
@@ -232,14 +194,25 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # from the org and now pushed on to another remote (a machine over ssh), has its own right author.
     if [ "${enforce_identity}" = "1" ]; then
         read -ra revs <<< "${revspec}"
-        bad_ids="$(git log "${revs[@]}" --not --remotes --pretty='format:%ae%n%ce' 2>/dev/null \
-            | sort -u \
-            | grep -Fxvf <(printf '%s\n' "${allowed_emails}") \
-            | grep -Ev "$(dispatcher::history_identity_exempt_re)" || true)"
-        if [ -n "${bad_ids}" ]; then
+        # outgoing_ids — the addresses of the outgoing commits no remote holds, less the
+        # destination's, the allowed identities and GitHub's bot accounts
+        outgoing_ids() {
+            local ids
+            ids="$(python3 "${dest_tool}" addresses "${dest_known}" "${revs[@]}")" || return 1
+            printf '%s\n' "${ids}" | grep -v '^$' \
+                | grep -Fxvf <(printf '%s\n' "${allowed_emails}") \
+                | grep -Ev "$(dispatcher::history_identity_exempt_re)" || true
+        }
+        if ! bad_ids="$(outgoing_ids)"; then
+            printf '[pre-push] dest-known.py could not read the authors of %s — refusing the push\n' "${revspec}" >&2
+            exit 1
+        fi
+        if [ -n "${bad_ids}" ] && [ "${dest_loaded}" = 0 ]; then
+            # someone unknown here: the destination may have carried them all along
             load_dest
-            if [ -n "${dest_known}" ]; then
-                bad_ids="$(printf '%s\n' "${bad_ids}" | grep -Fxvf "${dest_known}/addresses.txt" || true)"
+            if [ -n "${dest_known}" ] && ! bad_ids="$(outgoing_ids)"; then
+                printf '[pre-push] dest-known.py could not read the authors of %s — refusing the push\n' "${revspec}" >&2
+                exit 1
             fi
         fi
         if [ -n "${bad_ids}" ]; then

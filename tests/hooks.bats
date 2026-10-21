@@ -300,6 +300,24 @@ setup() {
     [ -z "$(git for-each-ref refs/guard-dest)" ]
 }
 
+@test "pre-push: what a push sends is decided in dest-known.py alone, and every check is handed it" {
+    hook="${GUARD_ROOT}/git-hooks/pre-push"
+    # no check reads the history on its own (= the range, the rewrite and the authors come from it)
+    run grep -nE '\bgit +(log|rev-list|merge-base|rev-parse|diff|show|cat-file)\b' "${hook}"
+    [ "$status" -eq 1 ]
+    # every check of the outgoing range is handed what the destination holds; a check added
+    # without it makes the two counts differ (the repair that rewrites the range is no check)
+    checks="$(grep -F -- '--range "${revspec}"' "${hook}" | grep -vc 'fixer')"
+    handed="$(grep -F -- '--range "${revspec}"' "${hook}" | grep -v 'fixer' | grep -cF 'GUARD_DEST_KNOWN="${dest_env}"')"
+    [ "${checks}" -ge 2 ]
+    [ "${handed}" -eq "${checks}" ]
+    # and the checks read a push range only through it
+    run grep -nF 'git log "${RANGE_REVS' "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    [ "$status" -eq 1 ]
+    run grep -nF 'git("log"' "${GUARD_ROOT}/scanners/corpus-scan.py"
+    [ "$status" -eq 1 ]
+}
+
 # rewrite_under_colleague — a colleague's commit that carries a word of the list in a file, in its
 # text and in its author's name, already on the destination; then the history under it rewritten
 # (the seed reworded), so the colleague's commit comes back with a new hash and nothing else new.
