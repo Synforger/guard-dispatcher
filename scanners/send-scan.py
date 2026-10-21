@@ -12,8 +12,11 @@ The pattern is a glob over the destination's name: a tool name (`mcp__*drive*`, 
 whatever it carries. A line naming an unknown area stops every send until it is fixed.
 
 A third word `order` holds the destination's sends until the operator orders each one: the entry
-point that sees the call decides whether it was ordered (agent-hooks' order.py), and the payload
-is then judged here as for any destination. Reading through it needs no order. `block order`, an
+point that sees the call decides whether it was ordered (agent-hooks' order.py). Reading through it
+and drafting in it need no order. What reaches people there passes the operator's eyes first (the
+shown call, or the draft the operator sends), so its payload gets the word list and not the
+private-document scan: the operator reads the text that goes, and the words the agent may write
+without knowing (a handle, a name) are still stopped. `block order`, an
 `order` on a `repo:` line (a push is not a call the operator can be shown) and any other third
 word stop every send until the line is fixed.
 
@@ -185,7 +188,7 @@ def judge(name: str, payload: Path, reading: bool = False, handles: Path | None 
     blocked for sending is judged as outside every area: reading through it still works. `handles`
     holds the ids the call names the service's objects by: read against the word list only."""
     try:
-        destination = where(name)
+        destination, held = find(name)
     except Broken as broken:
         return 2, f"{broken}; nothing is sent until it is fixed"
     if destination == UNDECLARED:
@@ -214,6 +217,10 @@ def judge(name: str, payload: Path, reading: bool = False, handles: Path | None 
             return 2, f"not sent to {name}: the word-list scan could not run ({error})"
         if r.returncode != 0:
             return 1, f"not sent to {name} ({place}): it carries a flagged identifier (word list)"
+    if held:
+        # 人に届く前に operator が中身を見る (= 指示の枠に出した呼び、 operator が送る下書き)。 資料の写しは
+        # operator の目が守り、 ここで照合しない (= 禁止語は上で照合済み)
+        return 0, ""
     return documents(name, place, "OUTSIDE" if destination == OUTSIDE else destination, payload, env,
                      f"Replace the text, or declare where it sits in {DESTINATIONS}")
 

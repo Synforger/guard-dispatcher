@@ -779,8 +779,12 @@ declare the other machine's host (`host:<name>   block`).
 
 A reading call and a tool that drafts (its name says `draft`) need no order.
 A command (`curl` and the like) never sends to such a destination: it cannot
-be matched against a shown call. What an ordered send carries is scanned like
-any other, so an order does not carry a client's text to the company's chat.
+be matched against a shown call. What a send there carries reaches people only
+after the operator has read it (the shown call, or the draft the operator
+sends), so it gets the word list and not the private-document scan: a client's
+text the operator has read may go to the company's chat, and a handle or a name
+the agent wrote without knowing is still stopped. A destination whose sends the
+operator does not read first takes no `order`, and keeps the scan.
 
 Claude Code writes the transcript behind the conversation. The guard checks
 that the transcript holds the message the call belongs to (the call's

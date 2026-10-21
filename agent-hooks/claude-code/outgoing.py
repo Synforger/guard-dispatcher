@@ -28,7 +28,8 @@ undeclared one passes, with nothing scanned or refused (see send-scan.py).
 A destination declared with `order` takes a send only on the operator's order (`order.py`, next to
 this file): the call must be one the agent showed and the operator then ordered. A reading call
 and a tool that drafts need none. A command (`curl` and the like) cannot be matched against what
-was shown, so it never sends there. What an ordered send carries is still scanned.
+was shown, so it never sends there. What a send there carries gets the word list and not the
+private-document scan: the operator reads it before it reaches people (see send-scan.py).
 
 A reading call (a tool whose name says it reads: get / list / search / read / fetch / query / view /
 find / export / ..., or an Artifact tool's reading action) still hands the service its own
