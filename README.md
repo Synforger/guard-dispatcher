@@ -272,7 +272,10 @@ output and vendored folders (`third_party/`, `vendor/`, ...) are someone
 else's. Runs and lines that also appear in the background text and code are
 not specific to any area and are dropped.
 
-The table of that public text keeps for a week. Past its week a scan uses the
+The table of that public text keeps for a week, or until the remote default
+branch of a published repository moves (= words it published since are not in
+the table yet, and an area that took them up would otherwise stop the very
+repository that published them). Past that a scan uses the
 old table as it is, and a process of its own rebuilds it: a commit does not
 wait for text that almost never changes, and until the rebuild is done the
 only cost is that text made public since may still be flagged. A rebuild reads

@@ -1141,6 +1141,49 @@ os.utime(sys.argv[1], ns=(status.st_atime_ns, status.st_mtime_ns))
     [ "$status" -eq 0 ]
 }
 
+@test "corpus: a table of public text behind a published repository is rebuilt apart, before its week is out" {
+    export GUARD_CORPUS_CODE_LINES=1
+    client_code "${CODE_LINE}"
+    git init -q --bare "${BATS_TEST_TMPDIR}/remote.git"
+    mkdir -p "${BATS_TEST_TMPDIR}/mine"
+    git clone -q "${BATS_TEST_TMPDIR}/remote.git" "${BATS_TEST_TMPDIR}/mine/kit" 2>/dev/null
+    cd "${BATS_TEST_TMPDIR}/mine/kit"
+    git config user.email "${ALLOWED_EMAIL}"
+    git config user.name "Fixture"
+    git config commit.gpgsign false
+    printf 'print("nothing shared yet")\n' > first.py
+    git add . && commit_bypassing_hooks "a kit"
+    git -c core.hooksPath=/dev/null push -q origin HEAD
+    git remote set-head origin -a >/dev/null
+    printf 'published %s\n' "${BATS_TEST_TMPDIR}/mine" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    sender="${PWD}"
+    commit_line "${CODE_LINE}"
+    scan_last
+    [ "$status" -eq 1 ]                 # the table is built, and the line is not public yet
+    scan_last
+    [[ "$output" != *"behind a published repository"* ]]    # nothing moved: the table is current
+    # The kit publishes the line the same day: its remote moves, and the table is a minute old
+    cd "${BATS_TEST_TMPDIR}/mine/kit"
+    printf '%s\n' "${CODE_LINE}" > second.py
+    git add . && commit_bypassing_hooks "the line"
+    git -c core.hooksPath=/dev/null push -q origin HEAD
+    git fetch -q origin
+    cd "${sender}"
+    scan_last
+    # The table on disk answers and is rebuilt apart (= in a fixture this small, the rebuild may
+    # already have cleared the line by the time the scan reads the areas' tables)
+    [[ "$output" == *"behind a published repository"* ]]
+    for _ in $(seq 1 100); do
+        python3 "${SCAN}" --summary >/dev/null 2>&1
+        scan_last
+        [ "$status" -eq 0 ] && break
+        sleep 0.1
+    done
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"behind a published repository"* ]]
+}
+
 # public_code — a client's line of code, a folder of public code that does not hold it yet, and a
 # commit of that line in a repository outside every area.
 public_code() {
