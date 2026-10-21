@@ -524,6 +524,7 @@ def skipped_settings() -> list[str]:
     kept_destinations(areas)
     for name in areas:
         kept_allowed(name, areas)
+        patterns(name, areas)
     return list(SKIPPED)
 
 

@@ -766,18 +766,30 @@ def settings_name(path: Path) -> str | None:
 
 
 def granted(path: Path, marks: set[str]) -> bool:
-    """Whether the operator's grant lets an agent with these marks write this path of the settings."""
-    import fnmatch   # loaded where it is used: most calls write no setting
+    """Whether the operator's grant lets an agent with these marks write this path of the settings.
+
+    A line is `<setting>` (a name, a glob, a folder) or `<setting> <area>...`: the first a session
+    that has read inside no area writes, the second also a session whose every mark is one of the
+    areas named (a glob matches) or lies within one of them (`areas/company/ company hub`: the
+    company's own settings, written by the session that gathers the company)."""
     name = settings_name(path)
-    if marks or not name or name.split(os.sep)[0] in {n.casefold() for n in OPERATOR_ONLY}:
+    if not name or name.split(os.sep)[0] in {n.casefold() for n in OPERATOR_ONLY}:
         return False
     try:
         lines = GRANT.read_text(encoding="utf-8").splitlines()
     except OSError:
         return False
+    areas = load_areas() if marks else []
     for line in lines:
-        entry = line.split("#", 1)[0].strip().rstrip("/").casefold()
-        if entry and (entry == "*" or fnmatch.fnmatchcase(name, entry) or name.startswith(entry + os.sep)):
+        words = line.split("#", 1)[0].split()
+        if not words:
+            continue
+        entry = words[0].rstrip("/").casefold()
+        if not (entry == "*" or fnmatch.fnmatchcase(name, entry) or name.startswith(entry + os.sep)):
+            continue
+        owners = words[1:]
+        if not marks or (owners and all(
+                any(fnmatch.fnmatchcase(m, o) or outer(o, m, areas) for o in owners) for m in marks)):
             return True
     return False
 

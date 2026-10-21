@@ -1013,6 +1013,27 @@ session_files() {
     run python3 "${HOOK}" may-write s1 "${g}/destinations.txt"; [ "${status}" -eq 1 ]
 }
 
+@test "area-guard: a grant naming areas lets a session marked only inside them write that setting" {
+    session_files
+    local g="${GUARD_CONFIG_DIR}"
+    mkdir -p "${g}/areas/company"
+    printf 'areas/company company   # the company keeps its own settings\n' > "${g}/agent-writes.txt"
+    read_case                       # s1 has read inside the client, which lies within the company
+    write_to "${g}/areas/company/destinations.txt"; passed
+    bash_in "${H}" "echo 'svc_cal company order' >> ${g}/areas/company/destinations.txt"; passed
+    # only the setting named: the machine's own files and another area's folder stay the operator's
+    write_to "${g}/destinations.txt"; denied
+    write_to "${g}/areas/client/areas.txt"; denied
+    # a mark outside the areas named is refused: the company is not within the client
+    printf 'areas/company client\n' > "${g}/agent-writes.txt"
+    agent Read file_path "${COMPANY_REPO}/notes.md" "${H}" s3; passed
+    write_to "${g}/areas/company/destinations.txt" s3; denied
+    # a grant without areas still hands a setting to a session that has read inside no area only
+    printf 'areas/company\n' > "${g}/agent-writes.txt"
+    write_to "${g}/areas/company/destinations.txt"; denied
+    write_to "${g}/areas/company/destinations.txt" s2; passed
+}
+
 @test "area-guard: a transcript kept anywhere else is still the session's: the call names it" {
     session_files
     TRANSCRIPT="${H}/elsewhere/s1.jsonl"
