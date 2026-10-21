@@ -184,14 +184,14 @@ if [ -n "${RANGE}" ]; then
     printf '\n=== deep audit: push range mode (%s, %s commits) ===\n' "${RANGE}" "${n_commits}" >&2
 fi
 
-# 書き換えた履歴の push では、 送り先が既に持つ物 (= blob・commit の文・作者の名前とアドレス) を
-# source 2/3/6 から外す (= 書き換えで同僚の commit も hash が変わり、 送り先が前から持つ履歴が
-# 全部「これから出る物」 に見えるため)。 pre-push が送り先の中身を書いた folder を
-# GUARD_DEST_KNOWN で渡し、 何を外すかは scanners/dest-known.py 1 本が決める。 書き換えで
-# 新しくできた物は今どおり検査する。 dest-known.py が隣に無い写しは range の全部を見る
-DEST_KNOWN=()
-if [ -n "${RANGE}" ] && [ -n "${GUARD_DEST_KNOWN:-}" ] && [ -f "${SCRIPT_DIR}/dest-known.py" ]; then
-    DEST_KNOWN=(python3 "${SCRIPT_DIR}/dest-known.py")
+# range mode で何が送られるかは scanners/dest-known.py 1 本が決める (= source 2/3/6 は自分で
+# git log を読まない)。 書き換えた履歴の push では、 pre-push が送り先の中身を書いた folder を
+# GUARD_DEST_KNOWN で渡し、 送り先が既に持つ物 (= blob・commit の文・作者の名前とアドレス) が外れる。
+# 書き換えで新しくできた物は今どおり検査する
+DEST_KNOWN=(python3 "${SCRIPT_DIR}/dest-known.py")
+if [ -n "${RANGE}" ] && [ ! -f "${SCRIPT_DIR}/dest-known.py" ]; then
+    log_fail "dest-known.py is missing beside this scanner: what the push sends cannot be decided"
+    exit 2
 fi
 # dest_known_failed <command> — dest-known.py が落ちた source は何も判定していないので、 1 件の hit
 # として数える (= 空の出力を clean と読まない)
@@ -303,14 +303,12 @@ fi
 printf '
 === source 2/11: git history blob (all diffs of all commits) ===
 ' >&2
-if [ ${#DEST_KNOWN[@]} -gt 0 ]; then
-    if sent="$(git log "${RANGE_REVS[@]}" -p --full-index | "${DEST_KNOWN[@]}" patch "${GUARD_DEST_KNOWN}")"; then
-        hits=$(printf '%s\n' "${sent}" | grep -E '^\+' | scan_perl)
+if [ -n "${RANGE}" ]; then
+    if sent="$("${DEST_KNOWN[@]}" patch "${GUARD_DEST_KNOWN:-}" "${RANGE_REVS[@]}")"; then
+        hits=$(printf '%s\n' "${sent}" | scan_perl)
     else
         hits="$(dest_known_failed patch)"
     fi
-elif [ -n "${RANGE}" ]; then
-    hits=$(git log "${RANGE_REVS[@]}" -p 2>/dev/null | grep -E '^\+' | scan_perl)
 else
     hits=$(git log "${HISTORY_REVS[@]}" -p 2>/dev/null | scan_perl)
 fi
@@ -319,14 +317,12 @@ total=$((total + n))
 
 # --- source 3: commit message ---
 printf '\n=== source 3/11: commit messages ===\n' >&2
-if [ ${#DEST_KNOWN[@]} -gt 0 ]; then
-    if sent="$("${DEST_KNOWN[@]}" messages "${GUARD_DEST_KNOWN}" "${RANGE_REVS[@]}")"; then
+if [ -n "${RANGE}" ]; then
+    if sent="$("${DEST_KNOWN[@]}" messages "${GUARD_DEST_KNOWN:-}" "${RANGE_REVS[@]}")"; then
         hits=$(printf '%s\n' "${sent}" | scan_perl)
     else
         hits="$(dest_known_failed messages)"
     fi
-elif [ -n "${RANGE}" ]; then
-    hits=$(git log "${RANGE_REVS[@]}" --pretty='format:%H %s%n%b' 2>/dev/null | scan_perl)
 else
     hits=$(git log "${HISTORY_REVS[@]}" --pretty='format:%H %s%n%b' 2>/dev/null | scan_perl)
 fi
@@ -356,14 +352,12 @@ fi
 
 # --- source 6: author + committer ---
 printf '\n=== source 6/11: author + committer email / name ===\n' >&2
-if [ ${#DEST_KNOWN[@]} -gt 0 ]; then
-    if sent="$("${DEST_KNOWN[@]}" authors "${GUARD_DEST_KNOWN}" "${RANGE_REVS[@]}")"; then
+if [ -n "${RANGE}" ]; then
+    if sent="$("${DEST_KNOWN[@]}" authors "${GUARD_DEST_KNOWN:-}" "${RANGE_REVS[@]}")"; then
         hits=$(printf '%s\n' "${sent}" | scan_perl)
     else
         hits="$(dest_known_failed authors)"
     fi
-elif [ -n "${RANGE}" ]; then
-    hits=$(git log "${RANGE_REVS[@]}" --pretty='format:%an <%ae> / %cn <%ce>' 2>/dev/null | scan_perl)
 else
     hits=$(git log "${HISTORY_REVS[@]}" --pretty='format:%an <%ae> / %cn <%ce>' 2>/dev/null | scan_perl)
 fi
