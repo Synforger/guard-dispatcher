@@ -1908,6 +1908,12 @@ def main(argv: list[str] | None = None) -> int:
     if not areas:
         say(f"NOT CHECKED — no areas defined in {CONFIG / 'areas.txt'} on this machine")
         return 0
+    if args.settings:
+        skipped = skipped_settings()
+        for note in skipped:
+            print(f"not read: {note}")
+        say(f"{len(area_folders())} area(s) keep settings of their own; {len(skipped)} line(s) not read")
+        return 0
     if args.refresh or args.status or args.summary:
         if args.refresh:
             for stale in ("visibility.json", "clones.json"):
