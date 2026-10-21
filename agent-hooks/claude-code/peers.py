@@ -20,6 +20,9 @@ receiver's terminal, or hands them over some other way) names it by the session'
 
     peers.py --to SESSION --text FILE     judge FILE as a message to SESSION (an id or a name)
                                           exit 0 passes, 1 refuses (one line why), 2 cannot judge
+    peers.py --to SESSION --covers SENDER exit 0 when SESSION knows every area SENDER has read
+                                          inside, 1 when not: a relaying client shows the sender's
+                                          name (which says where it works) only on 0
 
 A relaying client runs this before it delivers, so every way into it is judged at one place.
 
@@ -134,6 +137,23 @@ def judge(to: str, payload: Path) -> tuple[int, str]:
     return 0, ""
 
 
+def covers(to: str, sender: str) -> bool:
+    """Whether every session `to` names knows every area the sender has read inside: has read
+    inside it, or works inside it (the company around the client it has read). A relaying client
+    shows the sender's name (which says where it works) only then."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("corpus_scan", SEND_SCAN.with_name("corpus-scan.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    areas = module.load_areas()
+    told = marks(REF.sub("", sender.strip()))
+    for receiver in receivers(to) or [None]:
+        unknown = set(module.unknown_areas(marks(receiver) if receiver else [], areas))
+        if unknown & set(told):
+            return False
+    return True
+
+
 def typed_in(to: str, sender: str) -> tuple[int, str]:
     """(exit status, the line why) for the operator's own words, typed in `sender`, bound for
     `to`: they go only where every area `sender` has read inside has been read too."""
@@ -150,10 +170,16 @@ def typed_in(to: str, sender: str) -> tuple[int, str]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--to", required=True, help="the receiving session: its id, or its name")
-    parser.add_argument("--text", required=True, type=Path, help="a file holding the message")
+    parser.add_argument("--text", type=Path, help="a file holding the message")
+    parser.add_argument("--covers", metavar="SESSION", help="exit 0 when the receiver knows every area this "
+                        "sending session has read inside (its name may be shown to it), 1 when not")
     parser.add_argument("--typed-in", metavar="SESSION", help="the text is what the operator typed in this "
                         "session (its id, or its name): it carries every area that session has read inside")
     args = parser.parse_args()
+    if args.covers:
+        return 0 if covers(args.to, args.covers) else 1
+    if args.text is None:
+        parser.error("give --text, or --covers")
     status, why = typed_in(args.to, args.typed_in) if args.typed_in else (0, "")
     if not status:
         status, why = judge(args.to, args.text)

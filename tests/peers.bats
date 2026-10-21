@@ -104,6 +104,33 @@ denied() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"permissionDecision": "d
     done
 }
 
+@test "peers: a name of an area the receiver has not read inside is refused, in every direction" {
+    tell plain "the acme tab asks for a fix"
+    denied
+    [[ "${output}" == *"names 1 area that session has not read inside"* ]]
+    tell company "the acme tab asks for a fix"
+    denied
+    tell client "the acme tab asks for a fix"
+    passed
+    # the company around the client is where a client session works: its name tells it nothing new
+    tell client "the org planning tab"
+    passed
+    tell plain "the org planning tab"
+    denied
+    # a Latin name is a whole word: a longer word holding it is not the name
+    tell plain "the acmes of the season"
+    passed
+}
+
+@test "peers: --covers says whether the receiver knows every area the sender has read inside" {
+    run python3 "${PEERS}" --to plain --covers "${ID_CLIENT}"; [ "${status}" -eq 1 ]
+    run python3 "${PEERS}" --to company --covers "${ID_CLIENT}"; [ "${status}" -eq 1 ]
+    run python3 "${PEERS}" --to client --covers "${ID_CLIENT}"; [ "${status}" -eq 0 ]
+    run python3 "${PEERS}" --to client --covers "${ID_COMPANY}"; [ "${status}" -eq 0 ]
+    run python3 "${PEERS}" --to both --covers "${ID_CLIENT}"; [ "${status}" -eq 0 ]
+    run python3 "${PEERS}" --to plain --covers "${ID_PLAIN}"; [ "${status}" -eq 0 ]
+}
+
 @test "peers: no word list applies to a session: only the operator's agents read the message" {
     tell plain "ask ${SENTINEL} about the build"
     passed

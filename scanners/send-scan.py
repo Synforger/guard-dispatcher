@@ -250,8 +250,10 @@ def judge_session(name: str, payload: Path, read_inside: list[str]) -> tuple[int
 
     The session sits where it has read: text of those areas, and of an area around them, tells
     it nothing new, and it can write only inside them. Text of any other area would be carried
-    to wherever that session may write, so it is refused. No word list applies: only the
-    operator's agents read the message, and what one of them sends on is judged where it leaves."""
+    to wherever that session may write, so it is refused, and so is a name of an area it has not
+    read inside, nor around (the folders' names the area goes by: corpus-scan's `area_words`).
+    The operator's word list does not apply: only the operator's agents read the message, and what
+    one of them sends on is judged where it leaves."""
     try:
         known = area_names()
     except Broken as broken:
@@ -261,9 +263,23 @@ def judge_session(name: str, payload: Path, read_inside: list[str]) -> tuple[int
                    f"no longer names, so where it sits cannot be judged")
     place = f"a session that has read inside {', '.join(sorted(read_inside))}" if read_inside \
         else "a session that has read inside no area"
-    return documents(name, place, ",".join(sorted(read_inside)) or "OUTSIDE", payload,
-                     {**os.environ, "GUARD_CONFIG_DIR": str(CONFIG)},
-                     "Replace the text with words of your own")
+    status, why = documents(name, place, ",".join(sorted(read_inside)) or "OUTSIDE", payload,
+                            {**os.environ, "GUARD_CONFIG_DIR": str(CONFIG)},
+                            "Replace the text with words of your own")
+    if status:
+        return status, why
+    # The names of the areas it does not know are not told it either: a client's name in a message
+    # to a session that has not read the client says where the sender works.
+    try:
+        named = corpus_module().named_areas(payload.read_text(encoding="utf-8", errors="replace"), read_inside)
+    except ValueError as error:
+        return 2, f"{error}; nothing is sent until it is fixed"
+    if named:
+        for area, word in named:
+            print(f"    {area} name {word!r}", file=sys.stderr)
+        return 1, (f"not sent to {name} ({place}): it names {corpus_module().areas_count({a for a, _ in named})} "
+                   f"that session has not read inside. Write it without the name")
+    return 0, ""
 
 
 def main() -> int:
