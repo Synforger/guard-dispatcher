@@ -87,10 +87,21 @@ class Broken(Exception):
     """destinations.txt (or areas.txt) cannot be read as written."""
 
 
+_CORPUS = None
+
+
+def corpus_module():
+    """corpus-scan.py, loaded once: it reads the areas and their own settings."""
+    global _CORPUS
+    if _CORPUS is None:
+        spec = importlib.util.spec_from_file_location("corpus_scan", CORPUS)
+        _CORPUS = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_CORPUS)
+    return _CORPUS
+
+
 def area_names() -> set[str]:
-    spec = importlib.util.spec_from_file_location("corpus_scan", CORPUS)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = corpus_module()
     areas = CONFIG / "areas.txt"
     try:
         return set(module.load_areas(areas)) - module.UNSCANNED if areas.is_file() else set()
@@ -100,11 +111,10 @@ def area_names() -> set[str]:
 
 def rules() -> list[tuple[str, str, bool]]:
     """(pattern, where it sits, whether its sends need the operator's order), in the file's order."""
-    if not DESTINATIONS.is_file():
-        return []
     known = area_names()
     out = []
-    for n, line in enumerate(DESTINATIONS.read_text(encoding="utf-8").splitlines(), start=1):
+    machine = DESTINATIONS.read_text(encoding="utf-8").splitlines() if DESTINATIONS.is_file() else []
+    for n, line in enumerate(machine, start=1):
         words = line.split("#", 1)[0].split()
         if not words:
             continue
@@ -118,6 +128,14 @@ def rules() -> list[tuple[str, str, bool]]:
         if ordered and words[0].lower().startswith("repo:"):
             raise Broken(f"{DESTINATIONS}:{n} puts `order` on a repository: a push is not held to an order")
         out.append((words[0], words[1], ordered))
+    # Then the lines each area keeps for itself (areas/<area>/destinations.txt): a destination it
+    # places inside itself or blocks, ahead of the defaults. A line reaching outside is not read.
+    module = corpus_module()
+    if module.area_folders():
+        try:
+            out += module.kept_destinations(module.load_areas(CONFIG / "areas.txt"))
+        except ValueError as error:
+            raise Broken(str(error)) from error
     return out
 
 

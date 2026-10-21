@@ -191,10 +191,33 @@ documents themselves. Everything it reads is configured on this machine only:
                                         for your own repositories as their remote has them
 ~/.config/guard/handoff.txt             <path> per line, `~` and `$VAR` expanded from the session:
                                         where a marked session may still leave notes (see below)
-~/.config/guard/agent-writes.txt        <name> per line (a file, a folder, a glob; `*` for all):
-                                        the settings an agent that has read inside no area may
-                                        keep up to date (see *Agent entry guard*)
+~/.config/guard/agent-writes.txt        <name> [<area> ...] per line (a file, a folder, a glob;
+                                        `*` for all): the settings an agent that has read inside
+                                        no area, or only inside the areas named, may keep up to
+                                        date (see *Agent entry guard*)
+~/.config/guard/areas/<area>/           the settings an area keeps for itself (see below)
 ```
+
+#### Settings an area keeps for itself
+
+An area can keep its own `areas.txt`, `destinations.txt`, `allow.txt`, `ignore.txt`
+and `patterns/` in `~/.config/guard/areas/<area>/`, so whoever decides the area's
+boundaries writes them without touching the machine's files. A line there works
+inside the area only:
+
+| file | read | not read |
+|---|---|---|
+| `areas.txt` | a sub-area whose folders lie inside the area's; a `_carries` line between areas within it | `_exempt` / `_outside`, an area of the machine's own file outside it, a folder outside it |
+| `destinations.txt` | a destination placed in the area or an area within it, or `block`ed; `order` as in the machine's file | `outside`, a pattern that catches every destination (`*`), an area outside it |
+| `allow.txt` | a phrase fine to send of the text of the areas within it | — |
+| `patterns/<name>.txt` | a shape of the identifiers of an area within it | a shape that does not compile |
+| `ignore.txt` | a folder inside it that holds none of its documents | a folder outside it |
+
+The machine's own files come first and win, and the areas' destination lines
+come ahead of the built-in defaults (a connector the defaults put outside every
+area can be placed in the company by the company). A line not read stops nothing
+else: `corpus-scan.py --settings` names every one and why. A folder named for no
+area is not read at all.
 
 `client-* /srv/company/clients/*` makes every sub-folder of `clients/` its own area
 (`client-acme`, `client-beta`, ...), so a client folder created tomorrow is
@@ -426,6 +449,11 @@ step earlier, before each tool call, from the same `areas.txt`:
   `orders.txt` and `agent-off` stay the operator's whatever the grant says: an
   agent that wrote those would grant itself, order its own sends, or switch the
   guard off. `may-write` answers for the settings as an Edit of them is judged.
+  A line may name areas after the setting (`areas/company/ company hub`): then a
+  session whose every mark is one of those areas, or lies within one of them,
+  writes it too. The session that gathers the company keeps the company's own
+  settings that way, and what it writes there works inside the company only
+  (*Settings an area keeps for itself*).
 - **The operator's switch** is one file: while `$GUARD_CONFIG_DIR/agent-off`
   exists, the entry guard passes every call. Installing or updating the guard
   leaves it alone, so a guard switched off stays off until the file is

@@ -317,16 +317,67 @@ def read_lines(path: Path) -> list[str]:
             if line.strip() and not line.lstrip().startswith("#")]
 
 
-def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
-    """Areas by name. A line whose name holds `*` and whose paths end in `/*` makes one
-    area per sub-folder (`client-* /srv/company/clients/*` -> `client-acme` for `clients/acme`);
-    on a line whose name does not, every sub-folder of such a path joins the line's area
-    (`company ~/*`). Either way a folder created tomorrow is guarded from the moment it exists.
-    A path already named on an explicit line keeps that line's name, so `_outside ~/personal`
-    keeps `~/personal` out of `company ~/*`."""
+# Settings an area keeps for itself (`areas/<area>/` beside the machine's own files), written by
+# the session the operator hands them to (`agent-writes.txt`): areas.txt, destinations.txt,
+# allow.txt, ignore.txt and patterns/. A line there works inside the area only: a sub-area within
+# its folders, a destination placed in it or blocked, a phrase fine to send of its text, a shape
+# of its identifiers, a folder of it that holds none of its documents. A line that would reach
+# outside the area is skipped and named (`--settings`), so a slip of the area's keeper stops
+# nothing else. The machine's own files come first and win.
+AREA_SETTINGS = CONFIG / "areas"
+#: "<file>: <line> -- <why>" for every line of an area's settings this process skipped.
+SKIPPED: list[str] = []
+
+
+def area_folders() -> list[tuple[str, Path]]:
+    """(area, folder) for each area that keeps settings of its own."""
+    if not AREA_SETTINGS.is_dir():
+        return []
+    return [(f.name, f) for f in sorted(AREA_SETTINGS.iterdir())
+            if f.is_dir() and not f.name.startswith((".", "_"))]
+
+
+def skip(path: Path, line: str, why: str) -> None:
+    note = f"{path}: {line!r} -- {why}"
+    if note not in SKIPPED:
+        SKIPPED.append(note)
+
+
+def inside(path: Path, roots: list[Path]) -> bool:
+    """Strictly inside one of the roots: a folder of the area, not the area itself."""
+    return any(root in path.parents for root in roots)
+
+
+def within(name: str, owner: str, areas: dict[str, list[Path]]) -> bool:
+    """The owner itself, or an area all of whose folders here lie inside the owner's."""
+    if name == owner:
+        return True
+    roots, outer = areas.get(name) or [], areas.get(owner) or []
+    return bool(roots and outer) and all(inside(r, outer) for r in roots)
+
+
+def kept_lines(name: str, areas: dict[str, list[Path]], of: str | None = None) -> list[tuple[str, Path, str]]:
+    """(owner, file, line) of `name` (a file of an area's settings) in every area's folder that is
+    an area here, or in the folders of the areas `of` lies within when it is given."""
+    out = []
+    for owner, folder in area_folders():
+        path = folder / name
+        lines = read_lines(path)
+        if not lines:
+            continue
+        if owner not in areas or owner in UNSCANNED:
+            for line in lines:
+                skip(path, line, f"{owner} is no area")
+            continue
+        if of is None or within(of, owner, areas):
+            out += [(owner, path, line) for line in lines]
+    return out
+
+
+def _areas_of(lines: list[str]) -> dict[str, list[Path]]:
     explicit: dict[str, list[Path]] = {}
     templates: list[tuple[str, list[Path]]] = []
-    for line in read_lines(source or CONFIG / "areas.txt"):
+    for line in lines:
         parts = shlex.split(line, comments=True)
         if len(parts) < 2 or parts[0] == CARRIES:       # `_carries` names areas, not paths: load_carries
             continue
@@ -358,6 +409,135 @@ def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
     return areas
 
 
+def area_lines(source: Path | None = None) -> list[str]:
+    """The lines of areas.txt, then each area's own lines that stay inside it: a sub-area whose
+    folders here lie inside the area's (and its roots on other machines), or a `_carries` line
+    between areas within it. A line that sets a folder apart from every area (`_exempt`,
+    `_outside`), reaches an area defined elsewhere, or names a folder outside is skipped."""
+    path = source or CONFIG / "areas.txt"
+    lines = read_lines(path)
+    if path != CONFIG / "areas.txt" or not area_folders():
+        return lines
+    top = _areas_of(lines)
+    carries: list[tuple[str, Path, list[str], str]] = []
+    for owner, own, line in kept_lines("areas.txt", top):
+        try:
+            parts = shlex.split(line, comments=True)
+        except ValueError:
+            skip(own, line, "is not a line of areas.txt")
+            continue
+        if len(parts) < 2:
+            skip(own, line, "is not a line of areas.txt")
+        elif parts[0] == CARRIES:
+            carries.append((owner, own, parts, line))
+        elif parts[0].startswith("_"):
+            skip(own, line, "only the machine's own areas.txt sets a folder apart from every area")
+        elif parts[0] in top and not within(parts[0], owner, top):
+            skip(own, line, f"{parts[0]} is an area of the machine's own areas.txt, outside {owner}")
+        elif bad := [p for p in parts[1:] if not p.startswith(REMOTE)
+                     and not (p.startswith(("/", "~", "$")) and inside(expand(p[:-2] if p.endswith("/*") else p),
+                                                                    top[owner]))]:
+            skip(own, line, f"{bad[0]} is not a folder inside {owner}")
+        else:
+            lines.append(line)
+    if carries:
+        areas = _areas_of(lines)
+        for owner, own, parts, line in carries:
+            named = parts[1:]
+            if len(named) < 2 or any(any(c in n for c in "*?[") or not within(n, owner, areas) for n in named):
+                skip(own, line, f"a {CARRIES} line here names areas within {owner} only, without globs")
+            else:
+                lines.append(line)
+    return lines
+
+
+def kept_allowed(name: str, areas: dict[str, list[Path]]) -> list[str]:
+    """Phrases fine to send of the area `name`'s text that the areas it lies within keep: taken
+    out of a line before it is compared with that area's documents (the machine's allow.txt is
+    also taken out of the tables when they are built)."""
+    return [line for _, _, line in kept_lines("allow.txt", areas, of=name)]
+
+
+def kept_ignored(areas: dict[str, list[Path]]) -> list[Path]:
+    """Folders an area keeps out of its own walk (no document of it there): only inside its folders."""
+    out = []
+    for owner, path, line in kept_lines("ignore.txt", areas):
+        folder = expand(line)
+        if line.startswith(("/", "~", "$")) and inside(folder, areas[owner]):
+            out.append(folder)
+        else:
+            skip(path, line, f"is not a folder inside {owner}")
+    return out
+
+
+def ignored_folders(areas: dict[str, list[Path]]) -> list[Path]:
+    return [expand(p) for p in read_lines(CONFIG / "ignore.txt")] + kept_ignored(areas)
+
+
+def kept_patterns(name: str, areas: dict[str, list[Path]]) -> list[tuple[Path, str]]:
+    """(file, line) of the identifier shapes of `name` the areas it lies within keep."""
+    out = []
+    for owner, folder in area_folders():
+        path = folder / "patterns" / f"{name}.txt"
+        if owner in areas and owner not in UNSCANNED and within(name, owner, areas):
+            out += [(path, line) for line in read_lines(path)]
+    return out
+
+
+#: What a destination line may name besides an area: the kinds of send-scan.py's patterns.
+DESTINATION_KINDS = ("repo:", "host:", "local:", "tmux:", "browser:")
+
+
+def kept_destinations(areas: dict[str, list[Path]]) -> list[tuple[str, str, bool]]:
+    """(pattern, where it sits, whether its sends need the operator's order) of the destination
+    lines each area keeps, in order: a destination placed in the area or an area within it, or
+    blocked. Putting one outside every area, a line catching every destination, or a line that
+    does not read as one is skipped and named."""
+    out = []
+    for owner, path, line in kept_lines("destinations.txt", areas):
+        words = line.split("#", 1)[0].split()
+        if len(words) not in (2, 3) or (len(words) == 3 and words[2] != "order"):
+            skip(path, line, "is not `<pattern> <area|block> [order]`")
+            continue
+        pattern, target, ordered = words[0], words[1], len(words) == 3
+        literal = pattern.lower()
+        for kind in DESTINATION_KINDS:
+            literal = literal.removeprefix(kind)
+        literal = re.sub(r"[*?\[\]]", "", literal)
+        if target == "outside":
+            skip(path, line, "only the machine's own destinations.txt puts a destination outside every area")
+        elif target != "block" and not (target in areas and within(target, owner, areas)):
+            skip(path, line, f"{target} is no area within {owner}")
+        elif len(literal) < 3:
+            skip(path, line, "catches every destination: name the service or the host")
+        elif ordered and (target == "block" or pattern.lower().startswith("repo:")):
+            skip(path, line, "takes `order` only for a send that can be ordered")
+        else:
+            out.append((pattern, target, ordered))
+    return out
+
+
+def skipped_settings() -> list[str]:
+    """Every line of the areas' own settings that is not read, with why (`--settings`)."""
+    areas = load_areas()
+    kept_ignored(areas)
+    kept_destinations(areas)
+    for name in areas:
+        kept_allowed(name, areas)
+        patterns(name, areas)
+    return list(SKIPPED)
+
+
+def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
+    """Areas by name. A line whose name holds `*` and whose paths end in `/*` makes one
+    area per sub-folder (`client-* /srv/company/clients/*` -> `client-acme` for `clients/acme`);
+    on a line whose name does not, every sub-folder of such a path joins the line's area
+    (`company ~/*`). Either way a folder created tomorrow is guarded from the moment it exists.
+    A path already named on an explicit line keeps that line's name, so `_outside ~/personal`
+    keeps `~/personal` out of `company ~/*`. Each area's own lines join them (`area_lines`)."""
+    return _areas_of(area_lines(source))
+
+
 def load_remote_areas(source: Path | None = None) -> list[tuple[str, str, str]]:
     """The roots on other machines, (area, host, path), the longest path first so the innermost
     wins. A root is `host:<host>:<absolute path>`, or `host:<host>:~/<path>` under that machine's home
@@ -368,7 +548,7 @@ def load_remote_areas(source: Path | None = None) -> list[tuple[str, str, str]]:
     source = source or CONFIG / "areas.txt"
     local = load_areas(source)
     out = []
-    for line in read_lines(source):
+    for line in area_lines(source):
         parts = shlex.split(line, comments=True)
         for part in parts[1:]:
             if not part.startswith(REMOTE):
@@ -405,7 +585,7 @@ def load_carries(areas: dict[str, list[Path]], source: Path | None = None) -> di
     judged as before. A line that is not `_carries <an area> <a name or glob> ...` is a broken
     file, not a pass."""
     carries: dict[str, list[str]] = {}
-    for line in read_lines(source or CONFIG / "areas.txt"):
+    for line in area_lines(source):
         parts = shlex.split(line, comments=True)
         if not parts or parts[0] != CARRIES:
             continue
@@ -997,7 +1177,7 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
     old = json.loads(INDEX.read_text()) if INDEX.is_file() else {}
     previous = json.loads((CACHE / "summary.json").read_text()) if (CACHE / "summary.json").is_file() else {}
     index: dict = {}
-    ignored = [expand(p) for p in read_lines(CONFIG / "ignore.txt")]
+    ignored = ignored_folders(areas)
     repos = Repos()
     summary = {"built": started, "checked": started, "run": [RUN, LATIN_RUN], "areas": {}, "unreadable": []}
     folders: dict = {}
@@ -1198,7 +1378,7 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
             changed, removed = stat_changes(index)
             changed += created
         started = time.time()
-        ignored = [expand(p) for p in read_lines(CONFIG / "ignore.txt")]
+        ignored = ignored_folders(areas)
         repos = Repos()
         touched: set[str] = set()
         dropped = False
@@ -1449,6 +1629,9 @@ def repo_rules() -> list[tuple[str, str]]:
         words = line.split("#", 1)[0].split()
         if len(words) >= 2 and words[0].lower().startswith("repo:"):
             out.append((words[0][5:].lower(), words[1]))
+    if area_folders():
+        out += [(pattern[5:].lower(), target) for pattern, target, _ in kept_destinations(load_areas())
+                if pattern.lower().startswith("repo:")]
     return out
 
 
@@ -1640,7 +1823,9 @@ def keep_blocks(results: list, lines_in_a_row: int) -> list:
     return kept
 
 
-def patterns(name: str) -> list[re.Pattern]:
+def patterns(name: str, areas: dict[str, list[Path]] | None = None) -> list[re.Pattern]:
+    """The identifier shapes of the area `name`: the machine's patterns/<name>.txt, then the ones
+    the areas it lies within keep (a shape there that does not compile is skipped and named)."""
     compiled = []
     for line in read_lines(CONFIG / "patterns" / f"{name}.txt"):
         try:
@@ -1648,6 +1833,11 @@ def patterns(name: str) -> list[re.Pattern]:
         except re.error as error:
             say(f"patterns/{name}.txt: {line!r} does not compile ({error})")
             sys.exit(2)
+    for path, line in kept_patterns(name, areas) if areas else []:
+        try:
+            compiled.append(re.compile(line, re.IGNORECASE))
+        except re.error as error:
+            skip(path, line, f"does not compile ({error})")
     return compiled
 
 
@@ -1656,6 +1846,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--range", dest="span")
     parser.add_argument("--text", type=Path)
+    parser.add_argument("--settings", action="store_true",
+                        help="name every line of the areas' own settings (areas/<area>/) that is not read, and why")
     parser.add_argument("--repo", type=Path, help="where the sending repository lives (default: here)")
     parser.add_argument("--dest", help="the remote URL (or owner/repo) the text is sent to")
     parser.add_argument("--gh-argv", type=Path, help="a file holding the NUL-separated arguments of a gh call")
@@ -1716,6 +1908,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if not areas:
         say(f"NOT CHECKED — no areas defined in {CONFIG / 'areas.txt'} on this machine")
+        return 0
+    if args.settings:
+        skipped = skipped_settings()
+        for note in skipped:
+            print(f"not read: {note}")
+        say(f"{len(area_folders())} area(s) keep settings of their own; {len(skipped)} line(s) not read")
         return 0
     if args.refresh or args.status or args.summary:
         if args.refresh:
@@ -1812,12 +2010,13 @@ def main(argv: list[str] | None = None) -> int:
     public = background_prints()
     found = []
     for name in checked:
-        shapes = patterns(name)
+        shapes = patterns(name, areas)
         tables = [t for t in prints.get(name, []) if len(t)]
+        fine = allowed + [normalize(p) for p in kept_allowed(name, areas)]
         results = []
         for group, where, line in lines:
             match = next((m.group(0) for p in shapes if (m := p.search(line))), None)
-            found_here = ("shape", match) if match else (hit(line, tables, allowed, public) if tables else None)
+            found_here = ("shape", match) if match else (hit(line, tables, fine, public) if tables else None)
             results.append((group, where, line, found_here))
         for _, where, line, what in keep_blocks(results, CODE_LINES):
             if what:
