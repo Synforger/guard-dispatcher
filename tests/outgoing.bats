@@ -894,18 +894,25 @@ slack() { ordered "${SLACK}" "$(message "$1" "$2")" "${3:-toolu_1}"; }
     denied
 }
 
-@test "order: an ordered send is still scanned: the client's text does not reach the company's service" {
+@test "order: a send the operator reads first takes the word list, not the private-document scan" {
+    words_for_areas
     held
     said "tell them"
     show C0123ABCD "${CLIENT_TEXT}"
-    show C0123ABCD "${COMPANY_TEXT}"
+    show C0123ABCD "a note from ${SENTINEL}"
     said "送信して"
     slack C0123ABCD "${CLIENT_TEXT}"
-    denied
+    passed                                                # the operator read it in the shown block
+    slack C0123ABCD "a note from ${SENTINEL}"
+    denied                                                # a handle is stopped all the same
     [[ "${output}" == *"(in company)"* ]]
-    [ ! -d "${AREA_GUARD_STATE}/s1.orders" ]              # a refused call spends nothing
-    slack C0123ABCD "${COMPANY_TEXT}"
-    passed
+    [[ "${output}" == *"word list"* ]]
+    ordered mcp__claude_ai_Slack__slack_send_message_draft "$(message C0123ABCD "${CLIENT_TEXT}")"
+    passed                                                # a draft the operator sends
+    destinations '*slack* company'
+    ordered mcp__claude_ai_Slack__slack_send_message_draft "$(message C0123ABCD "${CLIENT_TEXT}")"
+    denied                                                # with no order on the line, the copy is stopped
+    [[ "${output}" == *"private area"* ]]
 }
 
 @test "order: with no orders.txt nothing is ordered" {
