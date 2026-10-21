@@ -451,6 +451,82 @@ def area_lines(source: Path | None = None) -> list[str]:
     return lines
 
 
+def kept_allowed(name: str, areas: dict[str, list[Path]]) -> list[str]:
+    """Phrases fine to send of the area `name`'s text that the areas it lies within keep: taken
+    out of a line before it is compared with that area's documents (the machine's allow.txt is
+    also taken out of the tables when they are built)."""
+    return [line for _, _, line in kept_lines("allow.txt", areas, of=name)]
+
+
+def kept_ignored(areas: dict[str, list[Path]]) -> list[Path]:
+    """Folders an area keeps out of its own walk (no document of it there): only inside its folders."""
+    out = []
+    for owner, path, line in kept_lines("ignore.txt", areas):
+        folder = expand(line)
+        if line.startswith(("/", "~", "$")) and inside(folder, areas[owner]):
+            out.append(folder)
+        else:
+            skip(path, line, f"is not a folder inside {owner}")
+    return out
+
+
+def ignored_folders(areas: dict[str, list[Path]]) -> list[Path]:
+    return [expand(p) for p in read_lines(CONFIG / "ignore.txt")] + kept_ignored(areas)
+
+
+def kept_patterns(name: str, areas: dict[str, list[Path]]) -> list[tuple[Path, str]]:
+    """(file, line) of the identifier shapes of `name` the areas it lies within keep."""
+    out = []
+    for owner, folder in area_folders():
+        path = folder / "patterns" / f"{name}.txt"
+        if owner in areas and owner not in UNSCANNED and within(name, owner, areas):
+            out += [(path, line) for line in read_lines(path)]
+    return out
+
+
+#: What a destination line may name besides an area: the kinds of send-scan.py's patterns.
+DESTINATION_KINDS = ("repo:", "host:", "local:", "tmux:", "browser:")
+
+
+def kept_destinations(areas: dict[str, list[Path]]) -> list[tuple[str, str, bool]]:
+    """(pattern, where it sits, whether its sends need the operator's order) of the destination
+    lines each area keeps, in order: a destination placed in the area or an area within it, or
+    blocked. Putting one outside every area, a line catching every destination, or a line that
+    does not read as one is skipped and named."""
+    out = []
+    for owner, path, line in kept_lines("destinations.txt", areas):
+        words = line.split("#", 1)[0].split()
+        if len(words) not in (2, 3) or (len(words) == 3 and words[2] != "order"):
+            skip(path, line, "is not `<pattern> <area|block> [order]`")
+            continue
+        pattern, target, ordered = words[0], words[1], len(words) == 3
+        literal = pattern.lower()
+        for kind in DESTINATION_KINDS:
+            literal = literal.removeprefix(kind)
+        literal = re.sub(r"[*?\[\]]", "", literal)
+        if target == "outside":
+            skip(path, line, "only the machine's own destinations.txt puts a destination outside every area")
+        elif target != "block" and not (target in areas and within(target, owner, areas)):
+            skip(path, line, f"{target} is no area within {owner}")
+        elif len(literal) < 3:
+            skip(path, line, "catches every destination: name the service or the host")
+        elif ordered and (target == "block" or pattern.lower().startswith("repo:")):
+            skip(path, line, "takes `order` only for a send that can be ordered")
+        else:
+            out.append((pattern, target, ordered))
+    return out
+
+
+def skipped_settings() -> list[str]:
+    """Every line of the areas' own settings that is not read, with why (`--settings`)."""
+    areas = load_areas()
+    kept_ignored(areas)
+    kept_destinations(areas)
+    for name in areas:
+        kept_allowed(name, areas)
+    return list(SKIPPED)
+
+
 def load_areas(source: Path | None = None) -> dict[str, list[Path]]:
     """Areas by name. A line whose name holds `*` and whose paths end in `/*` makes one
     area per sub-folder (`client-* /srv/company/clients/*` -> `client-acme` for `clients/acme`);
@@ -1100,7 +1176,7 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
     old = json.loads(INDEX.read_text()) if INDEX.is_file() else {}
     previous = json.loads((CACHE / "summary.json").read_text()) if (CACHE / "summary.json").is_file() else {}
     index: dict = {}
-    ignored = [expand(p) for p in read_lines(CONFIG / "ignore.txt")]
+    ignored = ignored_folders(areas)
     repos = Repos()
     summary = {"built": started, "checked": started, "run": [RUN, LATIN_RUN], "areas": {}, "unreadable": []}
     folders: dict = {}
@@ -1301,7 +1377,7 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
             changed, removed = stat_changes(index)
             changed += created
         started = time.time()
-        ignored = [expand(p) for p in read_lines(CONFIG / "ignore.txt")]
+        ignored = ignored_folders(areas)
         repos = Repos()
         touched: set[str] = set()
         dropped = False
@@ -1552,6 +1628,9 @@ def repo_rules() -> list[tuple[str, str]]:
         words = line.split("#", 1)[0].split()
         if len(words) >= 2 and words[0].lower().startswith("repo:"):
             out.append((words[0][5:].lower(), words[1]))
+    if area_folders():
+        out += [(pattern[5:].lower(), target) for pattern, target, _ in kept_destinations(load_areas())
+                if pattern.lower().startswith("repo:")]
     return out
 
 
@@ -1743,7 +1822,9 @@ def keep_blocks(results: list, lines_in_a_row: int) -> list:
     return kept
 
 
-def patterns(name: str) -> list[re.Pattern]:
+def patterns(name: str, areas: dict[str, list[Path]] | None = None) -> list[re.Pattern]:
+    """The identifier shapes of the area `name`: the machine's patterns/<name>.txt, then the ones
+    the areas it lies within keep (a shape there that does not compile is skipped and named)."""
     compiled = []
     for line in read_lines(CONFIG / "patterns" / f"{name}.txt"):
         try:
@@ -1751,6 +1832,11 @@ def patterns(name: str) -> list[re.Pattern]:
         except re.error as error:
             say(f"patterns/{name}.txt: {line!r} does not compile ({error})")
             sys.exit(2)
+    for path, line in kept_patterns(name, areas) if areas else []:
+        try:
+            compiled.append(re.compile(line, re.IGNORECASE))
+        except re.error as error:
+            skip(path, line, f"does not compile ({error})")
     return compiled
 
 
@@ -1759,6 +1845,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--range", dest="span")
     parser.add_argument("--text", type=Path)
+    parser.add_argument("--settings", action="store_true",
+                        help="name every line of the areas' own settings (areas/<area>/) that is not read, and why")
     parser.add_argument("--repo", type=Path, help="where the sending repository lives (default: here)")
     parser.add_argument("--dest", help="the remote URL (or owner/repo) the text is sent to")
     parser.add_argument("--gh-argv", type=Path, help="a file holding the NUL-separated arguments of a gh call")
@@ -1915,12 +2003,13 @@ def main(argv: list[str] | None = None) -> int:
     public = background_prints()
     found = []
     for name in checked:
-        shapes = patterns(name)
+        shapes = patterns(name, areas)
         tables = [t for t in prints.get(name, []) if len(t)]
+        fine = allowed + [normalize(p) for p in kept_allowed(name, areas)]
         results = []
         for group, where, line in lines:
             match = next((m.group(0) for p in shapes if (m := p.search(line))), None)
-            found_here = ("shape", match) if match else (hit(line, tables, allowed, public) if tables else None)
+            found_here = ("shape", match) if match else (hit(line, tables, fine, public) if tables else None)
             results.append((group, where, line, found_here))
         for _, where, line, what in keep_blocks(results, CODE_LINES):
             if what:
