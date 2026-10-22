@@ -1179,6 +1179,34 @@ os.utime(sys.argv[1], ns=(status.st_atime_ns, status.st_mtime_ns))
     [ "$status" -eq 0 ]
 }
 
+@test "corpus: repositories are read as themselves when the scan runs in another repository's hook" {
+    # A hook runs with GIT_DIR naming its own repository, and it wins over `git -C <folder>`.
+    export GUARD_CORPUS_CODE_LINES=1
+    client_code "${CODE_LINE}"
+    git init -q "${BATS_TEST_TMPDIR}/hooked"
+    printf '%s\n' "${CODE_LINE}" > "${BATS_TEST_TMPDIR}/payload.txt"
+    hooked() {
+        (cd "${BATS_TEST_TMPDIR}/hooked" && GIT_DIR="${BATS_TEST_TMPDIR}/hooked/.git" \
+            python3 "${SCAN}" --text "${BATS_TEST_TMPDIR}/payload.txt" --dest-area OUTSIDE)
+    }
+    run hooked
+    [ "$status" -eq 1 ]                 # the client's repository is read for what it tracks
+    git init -q --bare "${BATS_TEST_TMPDIR}/remote.git"
+    mkdir -p "${BATS_TEST_TMPDIR}/mine"
+    git clone -q "${BATS_TEST_TMPDIR}/remote.git" "${BATS_TEST_TMPDIR}/mine/kit" 2>/dev/null
+    cd "${BATS_TEST_TMPDIR}/mine/kit"
+    git config user.email "${ALLOWED_EMAIL}"
+    git config user.name "Fixture"
+    git config commit.gpgsign false
+    printf '%s\n' "${CODE_LINE}" > kit.py
+    git add . && commit_bypassing_hooks "a kit"
+    git -c core.hooksPath=/dev/null push -q origin HEAD
+    git remote set-head origin -a >/dev/null
+    printf 'published %s\n' "${BATS_TEST_TMPDIR}/mine" > "${GUARD_CONFIG_DIR}/background.txt"
+    run hooked
+    [ "$status" -eq 0 ]                 # and the published kit for what its remote carries
+}
+
 @test "corpus: a table of public text behind a published repository is rebuilt apart, before its week is out" {
     export GUARD_CORPUS_CODE_LINES=1
     client_code "${CODE_LINE}"
