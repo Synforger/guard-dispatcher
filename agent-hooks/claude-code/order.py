@@ -23,7 +23,8 @@ only when all of these hold, read from the transcript Claude Code keeps for the 
    A key whose line holds a value takes the first word as the value (the rest is a label for the
    reader); a key with nothing after the colon takes every line after it, so it comes last. The
    call's input must carry exactly the shown keys with the shown values (a false or empty value
-   counts as absent), and `tool` names the tool (its last part, or the whole name). A text that
+   counts as absent; a Bash call's `description`, `timeout` and `run_in_background` are left out
+   on both sides, see `NOTES`), and `tool` names the tool (its last part, or the whole name). A text that
    holds a ``` line of its own goes in a longer fence (````send ... ````).
 3. Each shown block is spent by one call. The guard keeps what it let through beside the
    session's marks (`<session>.orders/`), since the transcript does not hold a call until it has
@@ -91,6 +92,10 @@ DRAFT = re.compile(r"(^|_)drafts?(_|$)", re.I)
 SHOW = {SEND: "Show the call in a ```send block and wait for the operator's order",
         CHANGE: "Show the call in a ```guard block (`tool: Bash`, then `command:` and the command on "
                 "the lines after it), ask the operator, and wait for their yes"}
+# Input keys of a tool that change neither what the call runs nor where it acts: they label it or
+# say how long to wait for it, and a block shows what runs. Only Bash: a send tool's `description`
+# can be what it sends.
+NOTES = {"Bash": frozenset({"description", "timeout", "run_in_background"})}
 # What an operator answers when asked whether a change may be made, when orders.txt names none.
 APPROVALS = ("はい", "お願い", "どうぞ", "いいよ", "いいです", "やって", "変えて", "外して", "OK", "ok", "yes", "Yes")
 # How much of a transcript is read at a time when it is read from its end.
@@ -305,13 +310,19 @@ def value(v) -> str | None:
     return json.dumps(v, ensure_ascii=False, separators=(",", ":"))
 
 
+def compared(tool: str, fields: dict) -> dict[str, str]:
+    """The input of a call as a shown block and the call are compared: present values as the text
+    spells them, less the keys that only annotate the call (`NOTES`)."""
+    notes = NOTES.get(tool, frozenset())
+    return {k: s for k, v in fields.items() if k not in notes and (s := value(v)) is not None}
+
+
 def same(shown: dict[str, str], tool: str, args: dict) -> bool:
     shown = dict(shown)
     name = shown.pop("tool", None)
     if name not in (tool, tool.rsplit("__", 1)[-1]):
         return False
-    given = {k: s for k, v in args.items() if (s := value(v)) is not None}
-    return given == shown
+    return compared(tool, args) == compared(tool, shown)
 
 
 class Ordered(NamedTuple):
@@ -359,7 +370,7 @@ def ordered(tool: str, args: dict, event: dict | None, kind: str = SEND) -> tupl
                 f"block with the same tool and the same input). {show}"), None
     failed = {b.get("tool_use_id") for r in history[last + 1:] if r.get("type") == "user"
               for b in content(r) if b.get("type") == "tool_result" and b.get("is_error")}
-    given = {k: s for k, v in args.items() if (s := value(v)) is not None}
+    given = compared(tool, args)
     import hashlib   # loaded where it is used: most calls are not sends, and never get here
     call = hashlib.sha256(json.dumps([tool.rsplit("__", 1)[-1], given], ensure_ascii=False,
                                      sort_keys=True).encode()).hexdigest()[:16]

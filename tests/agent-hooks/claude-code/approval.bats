@@ -147,3 +147,32 @@ HOOKS_OFF="git config core.hooksPath .husky"
     bash_in "${COMPANY_REPO}" "git config --unset core.hooksPath"
     passed
 }
+
+@test "approval: a Bash call's description, timeout and running in the background are not compared, and pass once" {
+    said "fix it"
+    shown "${HOOKS_OFF}"
+    said "はい"
+    call Bash "$(jq -n --arg c "${HOOKS_OFF}" '{command: $c, description: "Run the template hooks", timeout: 120000, run_in_background: false}')" "${COMPANY_REPO}"
+    passed
+    # another label on the same command is the same call: the block is spent
+    call Bash "$(jq -n --arg c "${HOOKS_OFF}" '{command: $c, description: "Once more", timeout: 60000}')" "${COMPANY_REPO}" toolu_2
+    denied
+    [[ "${output}" == *"already been spent"* ]]
+    # a label does not make another command the shown one
+    call Bash "$(jq -n '{command: "git config core.hooksPath .githooks", description: "Run the template hooks"}')" "${COMPANY_REPO}" toolu_3
+    denied
+    [[ "${output}" == *"not one the agent showed"* ]]
+}
+
+@test "approval: a description is compared for every tool but Bash" {
+    run python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+import order
+shown = {"tool": "create_issue", "title": "x"}
+assert order.same(shown, "mcp__github__create_issue", {"title": "x"})
+assert not order.same(shown, "mcp__github__create_issue", {"title": "x", "description": "more text"})
+assert order.same({"tool": "Bash", "command": "ls"}, "Bash", {"command": "ls", "description": "List"})
+' "${GUARD_ROOT}/agent-hooks/claude-code"
+    [ "$status" -eq 0 ]
+}
