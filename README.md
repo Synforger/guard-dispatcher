@@ -408,6 +408,14 @@ step earlier, before each tool call, from the same `areas.txt`:
   A path inside a sentence is text, and names nothing: a commit message, a
   line of a note being written, a replacement string (`"the format is kept in
   <path> now"`). Nothing opens it, so writing about an area is not reading it.
+
+  A read that walks a folder reads inside every area whose root lies under
+  it: a recursive `grep` (`-r`, `-R`, `--recursive`), `rg` / `ag` / `ack`, a
+  `find` that runs a command on what it finds (`-exec`, `-ok`, or `| xargs`),
+  a recursive copy (`cp -R`, `rsync`, `tar`, `zip -r`), and a `Grep` call,
+  each on the folders it is given or on its working directory. A folder that
+  `grep --exclude-dir` keeps out of the walk is not read, and a listing of
+  names (`ls -R`, `tree`, a `find` that runs nothing) reads no area.
   A command line written as one string inside other code
   (`os.system("cat <path>")`) is a sentence too and is not read; neither is a
   script run from a file.

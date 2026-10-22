@@ -1313,6 +1313,26 @@ write_text() {
     agent Read file_path "${NOTES}/today.md"; passed
 }
 
+@test "area-guard: a recursive read of a folder that holds areas reads inside each of them" {
+    export GUARD_WORK_FOLDER="${PERSONAL}"
+    # the home folder holds the company and the client: what walks it reads them both
+    bash_in "${H}" "grep -rnoE someword ."; denied
+    [[ "${output}" == *"reads inside client, company"* ]]
+    bash_in "${H}" "grep -rn someword ${H}"; denied
+    bash_in "${H}" "find . -type f -exec cat {} +"; denied
+    bash_in "${H}" "find . -type f | xargs cat"; denied
+    bash_in "${H}" "rg someword"; denied
+    bash_in "${H}" "bash -c 'grep -R someword .'"; denied
+    bash_in "${H}" "cp -R . /tmp/copy"; denied
+    agent Grep path "${H}"; denied
+    # a walk that leaves the areas out, a listing of names, and a folder without areas read nothing
+    bash_in "${H}" "grep -rn someword --exclude-dir=org ."; passed
+    bash_in "${H}" "find . -name '*.md'"; passed
+    bash_in "${H}" "ls -R ."; passed
+    bash_in "${H}" "grep -rn someword ${PERSONAL}"; passed
+    bash_in "${H}" "grep -n someword ${PERSONAL}/README.md"; passed
+}
+
 @test "area-guard: the areas a work folder's guard-reads.txt names are read too" {
     export GUARD_WORK_FOLDER="${PERSONAL}"
     printf 'client   # the client this tool is built for\n' > "${PERSONAL}/guard-reads.txt"
