@@ -5,7 +5,10 @@ The word list catches names someone thought to write down. Text copied from a
 real document -- a sentence from a slide, a row of a table -- is on no list.
 This scanner compares what is about to be sent with the documents themselves.
 
-Areas are defined on this machine only (never in a repository):
+Areas are defined on this machine only (never in a repository). The places below are the ones
+used when the guard runs on its own; under a platform root the same files sit in
+`<root>/config/guard/boundaries/` (allow.txt in `exit/`, background.txt named public.txt), and
+`scanners/guard_places.py` holds every place:
 
     ~/.config/guard/areas.txt
         <name> <path> [<path> ...]     one area per line; nested paths belong

@@ -97,6 +97,12 @@ def words_folder() -> Path:
     return root / "config/guard/exit/words"
 
 
+def master_words() -> Path:
+    """The operator's word list, the one every other list is synced from (`ANON_TRUTH_PATH` names it directly)."""
+    truth = os.environ.get("ANON_TRUTH_PATH")
+    return Path(truth).expanduser() if truth else words_folder() / "master.txt"
+
+
 def audit_setting(name: str) -> Path:
     """One of the weekly audit's settings (`weekly-audit.conf`, `known`)."""
     if name not in AUDIT_SETTINGS:
@@ -137,6 +143,7 @@ PLACES = {
     **{name: (lambda name=name: audit_setting(name)) for name in AUDIT_SETTINGS},
     "settings": settings_folder,
     "words": words_folder,
+    "master-words": master_words,
     "marks": marks_folder,
     "audit-logs": audit_logs_folder,
     "corpus": corpus_folder,

@@ -24,7 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=setup-lib.sh
 source "${SCRIPT_DIR}/setup-lib.sh"
 
-TRUTH_PATH="${ANON_TRUTH_PATH:-${HOME}/.config/anon-words/master.txt}"
+TRUTH_PATH="$(python3 "${SCRIPT_DIR}/guard_places.py" master-words)"
 TARGET_PATH="${SCRIPT_DIR}/anon-words.txt"
 EXAMPLE_PATH="${SCRIPT_DIR}/anon-words.example.txt"
 

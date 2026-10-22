@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Keep an AI agent from carrying what it read out of an area (Claude Code PreToolUse hook).
 
-Areas are defined in `$GUARD_CONFIG_DIR/areas.txt` (default `~/.config/guard/`), the same file
+Areas are defined in `areas.txt` among the guard's settings (`scanners/guard_places.py` holds where:
+`~/.config/guard/`, or `<root>/config/guard/boundaries/` under a platform root), the same file
 the private-document scan reads, through the same parser (`scanners/corpus-scan.py`). A session
 that reads inside an area is marked with the area's name. A marked session may not write into a
 git repository outside its marks, nor commit, push or send through `gh` to a destination outside
@@ -59,7 +60,8 @@ can have such a message written, so nothing in it moves the agent's hands before
 seen it.
 
 Nothing is printed when a call passes, so nothing lands in the agent's context. A refusal is one
-line. Marks are kept in `~/.cache/area-guard/<session_id>.json`, so they outlive compaction.
+line. Marks are kept in `<marks>/<session_id>.json` (`~/.cache/area-guard/`, or
+`<root>/state/guard/marks/` under a platform root), so they outlive compaction.
 
 A script the agent runs is not read: the guard sees the command that starts it, not what it
 writes. A script that writes where its arguments say asks before it writes:

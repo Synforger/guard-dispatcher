@@ -7,8 +7,9 @@
 GUARD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # What the session running the tests was handed (the folder its launcher works in, the
-# destination a push of it fetched) is not the fixtures': a test sets them itself.
-unset GUARD_WORK_FOLDER GUARD_DEST_KNOWN
+# destination a push of it fetched, the platform root it runs under) is not the fixtures': a test
+# sets them itself.
+unset GUARD_WORK_FOLDER GUARD_DEST_KNOWN AGENT_PLATFORM_ROOT
 
 # The fixture remotes are GitHub addresses no test can reach. A push that rewrites history, or
 # carries an author unknown here, fetches its destination; over ssh that waits on GitHub and can
