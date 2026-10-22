@@ -6,7 +6,7 @@
 # A throwaway HOME holds a company folder with a client inside it, each with one made-up
 # document, and the files Claude Code keeps for its running sessions.
 
-load helpers
+load ../../_internal/helpers
 
 HOOK="${GUARD_ROOT}/agent-hooks/claude-code/area-guard.py"
 PEERS="${GUARD_ROOT}/agent-hooks/claude-code/peers.py"
@@ -268,7 +268,7 @@ AREAS
     mkdir -p "${H}/other"
     printf '%s\n' "the other client ships a pale blue enclosure next month" > "${H}/other/spec.md"
     printf '%s\n%s\n' "${CLIENT_TEXT}" "the other client ships a pale blue enclosure next month" > "${H}/message.txt"
-    scan() { run python3 "${GUARD_ROOT}/scanners/send-scan.py" --dest session:x --text "${H}/message.txt" --session-areas "$1"; }
+    scan() { run python3 "${GUARD_ROOT}/scanners/destinations/send-scan.py" --dest session:x --text "${H}/message.txt" --session-areas "$1"; }
     scan "client,other"
     [ "${status}" -eq 0 ]
     scan "client"
@@ -361,7 +361,7 @@ AREAS
 }
 
 @test "send-scan: a name that stays on this machine is reached only by a line naming its kind" {
-    where() { run python3 "${GUARD_ROOT}/scanners/send-scan.py" --where "$1"; }
+    where() { run python3 "${GUARD_ROOT}/scanners/destinations/send-scan.py" --where "$1"; }
     where local:8766/pty/ses_1/send
     [ "${output}" = "undeclared" ]
     where tmux:agents-1

@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # Integration tests for the three dispatcher hooks against fixture repos.
 
-load helpers
+load ../_internal/helpers
 
 setup() {
     setup_words
@@ -325,10 +325,10 @@ setup() {
     # and the checks read a push range only through it, however the git call is spelled (the deep
     # scan counts the range's commits with rev-list, which judges nothing)
     run grep -nE 'git +(log|show|diff|diff-tree|cat-file|format-patch)\b.*RANGE' \
-        "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+        "${GUARD_ROOT}/scanners/words/anon-audit-deep.sh"
     [ "$status" -eq 1 ]
     run grep -nE '(git\(|"git",).*"(log|rev-list|diff|diff-tree|format-patch|cat-file)"' \
-        "${GUARD_ROOT}/scanners/corpus-scan.py"
+        "${GUARD_ROOT}/scanners/corpus/corpus-scan.py"
     [ "$status" -eq 1 ]
 }
 
@@ -510,7 +510,7 @@ stranger_commit() {
     mk_repo synforger
     git clone -q --bare . "${BATS_TEST_TMPDIR}/full.git"
     cd "${BATS_TEST_TMPDIR}/full.git"
-    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    run bash "${GUARD_ROOT}/scanners/words/anon-audit-deep.sh"
     [ "$status" -eq 2 ]
     [[ "${output}" == *"use --range"* ]]
 }

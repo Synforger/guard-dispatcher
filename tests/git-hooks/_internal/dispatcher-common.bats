@@ -1,11 +1,11 @@
 #!/usr/bin/env bats
-# Unit tests for git-hooks/lib/dispatcher-common.sh helpers.
+# Unit tests for git-hooks/_internal/dispatcher-common.sh helpers.
 
-load helpers
+load ../../_internal/helpers
 
 setup() {
     setup_words
-    . "${GUARD_ROOT}/git-hooks/lib/dispatcher-common.sh"
+    . "${GUARD_ROOT}/git-hooks/_internal/dispatcher-common.sh"
 }
 
 @test "detect_repo_kind: synforger org URL (ssh)" {
@@ -58,7 +58,10 @@ setup() {
 
 @test "locate_scanner: bundled fallback when repo has no local toolkit" {
     mk_repo synforger
-    [ "$(dispatcher::locate_scanner anon-scan.sh)" = "${GUARD_ROOT}/scanners/anon-scan.sh" ]
+    [ "$(dispatcher::locate_scanner anon-scan.sh)" = "${GUARD_ROOT}/scanners/words/anon-scan.sh" ]
+    [ "$(dispatcher::locate_scanner dest-known.py)" = "${GUARD_ROOT}/scanners/destinations/dest-known.py" ]
+    [ "$(dispatcher::locate_scanner corpus-scan.py)" = "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" ]
+    [ -z "$(dispatcher::locate_scanner setup-lib.sh)" ]
 }
 
 @test "locate_scanner: repo-local copy wins over bundled" {
@@ -73,8 +76,8 @@ setup() {
 @test "guard_root: resolves through a symlinked hooks dir" {
     fake="${BATS_TEST_TMPDIR}/fake-git-hooks"
     mkdir -p "${fake}"
-    ln -s "${GUARD_ROOT}/git-hooks/lib" "${fake}/lib"
-    result="$(bash -c ". '${fake}/lib/dispatcher-common.sh'; dispatcher::guard_root")"
+    ln -s "${GUARD_ROOT}/git-hooks/_internal" "${fake}/_internal"
+    result="$(bash -c ". '${fake}/_internal/dispatcher-common.sh'; dispatcher::guard_root")"
     [ "${result}" = "${GUARD_ROOT}" ]
 }
 
@@ -164,7 +167,7 @@ setup() {
 # operator identity list that pre-commit uses.
 
 @test "history_identity_exempt_re: matches a dependabot address" {
-    run bash -c ". '${GUARD_ROOT}/git-hooks/lib/dispatcher-common.sh'; \
+    run bash -c ". '${GUARD_ROOT}/git-hooks/_internal/dispatcher-common.sh'; \
         printf '%s\n' '49699333+dependabot[bot]@users.noreply.github.com' \
         | grep -Eq \"\$(dispatcher::history_identity_exempt_re)\""
     [ "${status}" -eq 0 ]
@@ -173,7 +176,7 @@ setup() {
 @test "history_identity_exempt_re: matches other GitHub bots, not just dependabot" {
     for addr in '41898282+github-actions[bot]@users.noreply.github.com' \
                 '29139614+renovate[bot]@users.noreply.github.com'; do
-        run bash -c ". '${GUARD_ROOT}/git-hooks/lib/dispatcher-common.sh'; \
+        run bash -c ". '${GUARD_ROOT}/git-hooks/_internal/dispatcher-common.sh'; \
             printf '%s\n' '${addr}' | grep -Eq \"\$(dispatcher::history_identity_exempt_re)\""
         [ "${status}" -eq 0 ]
     done
@@ -184,7 +187,7 @@ setup() {
                 '12345+someone@users.noreply.github.com' \
                 'dependabot[bot]@example.com' \
                 'evil+dependabot[bot]@users.noreply.github.com.attacker.test'; do
-        run bash -c ". '${GUARD_ROOT}/git-hooks/lib/dispatcher-common.sh'; \
+        run bash -c ". '${GUARD_ROOT}/git-hooks/_internal/dispatcher-common.sh'; \
             printf '%s\n' '${addr}' | grep -Eq \"\$(dispatcher::history_identity_exempt_re)\""
         [ "${status}" -ne 0 ]
     done

@@ -51,7 +51,7 @@ import os, sys
 print(os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[1]))))
 PY
 )"
-SCANNER="${GUARD_SCANNER_OVERRIDE:-${GUARD_ROOT}/scanners/anon-scan.sh}"
+SCANNER="${GUARD_SCANNER_OVERRIDE:-${GUARD_ROOT}/scanners/words/anon-scan.sh}"
 
 # --- decide whether this invocation sends anything ---------------------------
 # The command is the first non-option argument, the verb the next one.
@@ -218,7 +218,7 @@ fi
 # sends to (= -R / GH_REPO / the api path / the folder's remote), never by the
 # folder it is typed in — a PR opened from inside a client folder onto a public
 # repository leaves the client all the same.
-CORPUS="${GUARD_ROOT}/scanners/corpus-scan.py"
+CORPUS="${GUARD_ROOT}/scanners/corpus/corpus-scan.py"
 if [ "${GUARD_CORPUS_SKIP:-0}" != "1" ]; then
     if [ ! -f "${CORPUS}" ]; then
         printf '[gh-guard] corpus scanner not found at %s — refusing to send.\n' "${CORPUS}" >&2

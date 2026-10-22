@@ -6,7 +6,7 @@
 # binary that records whether it was reached. "Refused" therefore means the
 # real CLI never ran, not merely that the exit code was non-zero.
 
-load helpers
+load ../_internal/helpers
 
 setup() {
     setup_words

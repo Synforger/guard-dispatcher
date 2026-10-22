@@ -72,7 +72,7 @@ case "${RANGE}" in
         ;;
 esac
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # The scan target is the repository the caller stands in — not the guard
 # checkout this script lives in. Hooks invoke scanners with cwd already at
 # the target repo root; direct callers may be anywhere inside the repo.
@@ -98,7 +98,7 @@ if [ -z "${WORDS_FILE}" ]; then
     WORDS_FILE="${WORDS_FILE/#\$HOME/${HOME}}"
 fi
 if [ -z "${WORDS_FILE}" ]; then
-    MASTER_WORDS="$(python3 "${SCRIPT_DIR}/guard_places.py" master-words)"
+    MASTER_WORDS="$(python3 "${SCRIPT_DIR}/../../_common/guard_places.py" master-words)"
     if [ -f "${MASTER_WORDS}" ]; then
         WORDS_FILE="${MASTER_WORDS}"
     else

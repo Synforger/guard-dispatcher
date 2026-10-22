@@ -33,7 +33,7 @@ set -euo pipefail
 #                    Empty = scan the whole tree.
 # =============================================================================
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # Word list resolution (operator master first — the guard checkout itself
 # never carries the real list):
 #   1. $ANON_WORDS_FILE            explicit override
@@ -49,7 +49,7 @@ if [ -z "${WORDS_FILE}" ]; then
     WORDS_FILE="${WORDS_FILE/#\$HOME/${HOME}}"
 fi
 if [ -z "${WORDS_FILE}" ]; then
-    MASTER_WORDS="$(python3 "${SCRIPT_DIR}/guard_places.py" master-words)"
+    MASTER_WORDS="$(python3 "${SCRIPT_DIR}/../../_common/guard_places.py" master-words)"
     if [ -f "${MASTER_WORDS}" ]; then
         WORDS_FILE="${MASTER_WORDS}"
     else

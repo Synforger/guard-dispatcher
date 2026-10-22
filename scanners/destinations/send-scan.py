@@ -63,12 +63,12 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parents[1] / "_common"))
 import guard_places  # noqa: E402
 
 DESTINATIONS = guard_places.setting("destinations.txt")
-CORPUS = HERE / "corpus-scan.py"
-ANON = HERE / "anon-scan.sh"
+CORPUS = HERE.parent / "corpus/corpus-scan.py"
+ANON = HERE.parent / "words/anon-scan.sh"
 # The operator's word lists: master.txt, and one per area that has its own readers (`company.txt`
 # for the company, which works under real names but keeps the operator's handles out).
 WORD_LISTS = guard_places.words_folder()

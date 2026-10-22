@@ -8,7 +8,7 @@ This scanner compares what is about to be sent with the documents themselves.
 Areas are defined on this machine only (never in a repository). The places below are the ones
 used when the guard runs on its own; under a platform root the same files sit in
 `<root>/config/guard/boundaries/` (allow.txt in `exit/`, background.txt named public.txt), and
-`scanners/guard_places.py` holds every place:
+`_common/guard_places.py` holds every place:
 
     ~/.config/guard/areas.txt
         <name> <path> [<path> ...]     one area per line; nested paths belong
@@ -135,7 +135,7 @@ from array import array
 from collections import Counter
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 import guard_places  # noqa: E402
 
 
@@ -1901,8 +1901,8 @@ def sending_repo() -> str:
 
 
 def dest_known():
-    """scanners/dest-known.py, the one place that decides what a push sends."""
-    spec = importlib.util.spec_from_file_location("dest_known", Path(__file__).resolve().with_name("dest-known.py"))
+    """scanners/destinations/dest-known.py, the one place that decides what a push sends."""
+    spec = importlib.util.spec_from_file_location("dest_known", Path(__file__).resolve().parents[1] / "destinations/dest-known.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

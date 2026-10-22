@@ -10,7 +10,7 @@
 #
 # Configuration (operator-private, never committed) at:
 #   $HOME/.config/guard-dispatcher/weekly-audit.conf
-#   (<root>/config/guard/audit/ under a platform root; scanners/guard_places.py holds every place)
+#   (<root>/config/guard/audit/ under a platform root; _common/guard_places.py holds every place)
 #
 #   REPOS_GLOB="<glob of repos to audit>"          # repositories outside every area
 #   AREA_REPOS=0                                   # optional — leave out the repositories
@@ -38,8 +38,8 @@
 set -uo pipefail
 
 GUARD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCANNER="${GUARD_ROOT}/scanners/anon-audit-deep.sh"
-PLACES="${GUARD_ROOT}/scanners/guard_places.py"
+SCANNER="${GUARD_ROOT}/scanners/words/anon-audit-deep.sh"
+PLACES="${GUARD_ROOT}/_common/guard_places.py"
 CONF="$(python3 "${PLACES}" weekly-audit.conf)"
 STATE_DIR="$(python3 "${PLACES}" audit-logs)"
 # Findings accepted as known, one file per repository (named after its folder). The audit then
@@ -71,7 +71,7 @@ source "${CONF}"
 # tomorrow is in the next audit without anyone listing it. A listed glob covers only what someone
 # remembered to list, and a client's repository outside it went unaudited for weeks.
 area_repos() {
-    python3 - "${GUARD_ROOT}/scanners/corpus-scan.py" <<'PY'
+    python3 - "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" <<'PY'
 import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location("corpus_scan", sys.argv[1])
 module = importlib.util.module_from_spec(spec)

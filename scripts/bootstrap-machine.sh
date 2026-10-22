@@ -31,10 +31,10 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUARD_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# shellcheck source=../scanners/setup-lib.sh
-source "${GUARD_ROOT}/scanners/setup-lib.sh"
+# shellcheck source=../scanners/_internal/setup-lib.sh
+source "${GUARD_ROOT}/scanners/_internal/setup-lib.sh"
 
-TRUTH_PATH="$(python3 "${GUARD_ROOT}/scanners/guard_places.py" master-words)"
+TRUTH_PATH="$(python3 "${GUARD_ROOT}/_common/guard_places.py" master-words)"
 
 echo "=== bootstrap-machine: arming this machine ==="
 
@@ -98,7 +98,7 @@ if [ ! -f "${TRUTH_PATH}" ]; then
       ${TRUTH_PATH}
 
   (or export ANON_TRUTH_PATH to point elsewhere). Format: one PCRE
-  fragment per line, '#' comments. See scanners/anon-words.example.txt
+  fragment per line, '#' comments. See configs/anon-words.example.txt
   for the format. Scanners read this master directly — no per-repo
   copies are needed.
 

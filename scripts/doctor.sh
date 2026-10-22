@@ -33,8 +33,8 @@ done
 GUARD_ROOT="$(cd -P "$(dirname "${src}")/.." && pwd)"
 EXPECTED_HOOKS_DIR="${HOME}/.git-hooks"
 
-# shellcheck source=../git-hooks/lib/dispatcher-common.sh
-. "${GUARD_ROOT}/git-hooks/lib/dispatcher-common.sh"
+# shellcheck source=../git-hooks/_internal/dispatcher-common.sh
+. "${GUARD_ROOT}/git-hooks/_internal/dispatcher-common.sh"
 
 RED=$'\033[0;31m'
 YEL=$'\033[0;33m'
@@ -65,7 +65,7 @@ check_global() {
 
     # Machine axis: the strongest hooks are useless without the operator
     # master word list — a machine can be "armed" and still scan nothing.
-    local truth; truth="$(python3 "${GUARD_ROOT}/scanners/guard_places.py" master-words)"
+    local truth; truth="$(python3 "${GUARD_ROOT}/_common/guard_places.py" master-words)"
     if [ -f "${truth}" ]; then
         printf '  %s✓%s operator master present (%s)\n' "${GRN}" "${NC}" "${truth}"
     else
@@ -74,12 +74,12 @@ check_global() {
     fi
 
     # Private documents are optional: a machine without areas is told so, not failed.
-    local areas; areas="$(python3 "${GUARD_ROOT}/scanners/guard_places.py" areas.txt)"
+    local areas; areas="$(python3 "${GUARD_ROOT}/_common/guard_places.py" areas.txt)"
     if [ -f "${areas}" ]; then
         printf '  %s✓%s private areas defined (%s)\n' "${GRN}" "${NC}" "${areas}"
         # Counts only: doctor runs under bootstrap, install and agents, and an area's name or a
         # document's path says what the area holds. `corpus-scan.py --status` names them.
-        python3 "$(dispatcher::guard_root)/scanners/corpus-scan.py" --summary 2>&1 | sed 's/^/    /'
+        python3 "$(dispatcher::guard_root)/scanners/corpus/corpus-scan.py" --summary 2>&1 | sed 's/^/    /'
     else
         printf '  %s-%s no private areas (%s) — text copied from documents is NOT checked\n' "${DIM}" "${NC}" "${areas}"
     fi
@@ -92,7 +92,7 @@ check_global() {
 check_agent() {
     local areas="$1"
     local hook="${EXPECTED_HOOKS_DIR}/agent-hooks/claude-code/area-guard.py"
-    local off; off="$(python3 "${GUARD_ROOT}/scanners/guard_places.py" agent-off)"
+    local off; off="$(python3 "${GUARD_ROOT}/_common/guard_places.py" agent-off)"
     if [ -f "${hook}" ] && [ -e "${off}" ]; then
         printf '  %s-%s agent entry guard installed, switched OFF by the operator (%s; remove it to switch on)\n' "${YEL}" "${NC}" "${off}"
     elif [ -f "${hook}" ]; then
@@ -179,7 +179,7 @@ check_repo() {
     # copies — a repo with no local toolkit is still armed as long as the
     # guard checkout is healthy.
     local guard_scanners
-    guard_scanners="$(dispatcher::guard_root)/scanners"
+    guard_scanners="$(dispatcher::guard_root)/scanners/words"
     if [ ! -f "${repo}/.tooling/local-ci/anon-scan.sh" ] && [ ! -f "${guard_scanners}/anon-scan.sh" ]; then
         printf '\n    %s✗%s anon-scan.sh unresolvable (repo-local + guard bundled both missing)' "${RED}" "${NC}"
         findings=$((findings + 1))
@@ -195,7 +195,7 @@ check_repo() {
     # master (scanners prefer the master, but a repo-local scanner override
     # would read its neighbour). Warn on drift so the copy gets removed or
     # refreshed.
-    local truth; truth="$(python3 "${GUARD_ROOT}/scanners/guard_places.py" master-words)"
+    local truth; truth="$(python3 "${GUARD_ROOT}/_common/guard_places.py" master-words)"
     local repo_words="${repo}/.tooling/local-ci/anon-words.txt"
     if [ -f "${truth}" ] && [ -f "${repo_words}" ]; then
         if ! diff -q "${truth}" "${repo_words}" >/dev/null 2>&1; then

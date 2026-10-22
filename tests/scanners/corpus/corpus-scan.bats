@@ -6,7 +6,7 @@
 # nested inside it, and a personal repo outside both — so no operator document
 # is ever read. Sentences are made up and long enough to form 12-character runs.
 
-load helpers
+load ../../_internal/helpers
 
 # Japanese counts as copied from 12 characters (two thirds of them Japanese), any other text from 40
 # (twelve characters of English are two common words).
@@ -40,7 +40,7 @@ commit_line() {
 
 # scan_last — run the scanner over the newest commit of the current repo.
 scan_last() {
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD
 }
 
 # mk_repo_at <dir> — a fixture repo at a chosen place (areas are decided by place).
@@ -212,7 +212,7 @@ mk_repo_at() {
     printf 'repo:acme/* outside\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
     mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
     commit_line "${CLIENT_TEXT}"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
     [ "$status" -eq 1 ]
     [[ "$output" == *"declared outside every area"* ]]
 }
@@ -248,7 +248,7 @@ mk_clone_at() {
     seed_visibility acme/sdk public
     mk_clone_at "${WORK}/repos/sdk" acme/sdk
     commit_line "${COMPANY_TEXT}"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/sdk.git
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/sdk.git
     [ "$status" -eq 1 ]
     [[ "$output" == *"company text"* ]]
 }
@@ -257,7 +257,7 @@ mk_clone_at() {
     seed_visibility acme/pipeline private
     mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
     commit_line "${CLIENT_TEXT}"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
     [ "$status" -eq 0 ]
 }
 
@@ -265,7 +265,7 @@ mk_clone_at() {
     seed_visibility acme/elsewhere private
     mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
     commit_line "${CLIENT_TEXT}"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/elsewhere.git
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/elsewhere.git
     [ "$status" -eq 1 ]
     [[ "$output" == *"no clone on this machine"* ]]
 }
@@ -276,7 +276,7 @@ mk_clone_at() {
     FAIL_DIR="${BATS_TEST_TMPDIR}/nogh"; mkdir -p "${FAIL_DIR}"
     printf '#!/bin/sh\nexit 1\n' > "${FAIL_DIR}/gh"; chmod +x "${FAIL_DIR}/gh"
     https_proxy=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 PATH="${FAIL_DIR}:${PATH}" \
-        run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/unasked.git
+        run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/unasked.git
     [ "$status" -eq 1 ]
     [[ "$output" == *"is unknown on GitHub"* ]]
 }
@@ -289,7 +289,7 @@ mk_clone_at() {
     FAKE_DIR="${BATS_TEST_TMPDIR}/scopedgh"; mkdir -p "${FAKE_DIR}"
     printf '#!/bin/sh\n[ -n "$GH_TOKEN" ] && exit 1\necho true\n' > "${FAKE_DIR}/gh"; chmod +x "${FAKE_DIR}/gh"
     GH_TOKEN=scoped https_proxy=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 PATH="${FAKE_DIR}:${PATH}" \
-        run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/scoped.git
+        run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/scoped.git
     [ "$status" -eq 0 ]
 }
 
@@ -297,10 +297,10 @@ mk_clone_at() {
     seed_visibility acme/pipeline private
     seed_visibility acme/sdk public
     mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --where --dest git@github-work:acme/pipeline.git
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --where --dest git@github-work:acme/pipeline.git
     [ "$status" -eq 0 ]
     [[ "$output" == *"clients/acme/repos/pipeline" ]]
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --where --dest https://github.com/acme/sdk
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --where --dest https://github.com/acme/sdk
     [[ "$output" == *"OUTSIDE" ]]
 }
 
@@ -547,7 +547,7 @@ client_code() {
 @test "corpus: a sentence a PDF wrapped across lines is joined again" {
     run python3 -c "
 import importlib.util
-spec = importlib.util.spec_from_file_location('c', '${GUARD_ROOT}/scanners/corpus-scan.py')
+spec = importlib.util.spec_from_file_location('c', '${GUARD_ROOT}/scanners/corpus/corpus-scan.py')
 c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
 print(c.join_wrapped(['採寸表の三段目は夜', '明けに読み直すこと', '', 'the next', 'paragraph']))"
     [ "$output" = "['採寸表の三段目は夜明けに読み直すこと', 'the next paragraph']" ]
@@ -690,7 +690,7 @@ home_is_company() {
     seed_visibility acme/site private
     mk_clone_at "${WORK}/public/site" acme/site
     commit_line "${COMPANY_TEXT}"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/site.git
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/site.git
     [ "$status" -eq 1 ]
     [[ "$output" == *"company text"* ]]
 }
@@ -1018,7 +1018,7 @@ wait_for_walk() {
 # an area's own table when that table is merged: the last two tests watch that merge happen
 # when what is public changes.
 
-SCAN="${GUARD_ROOT}/scanners/corpus-scan.py"
+SCAN="${GUARD_ROOT}/scanners/corpus/corpus-scan.py"
 LICENSE_ROW="Permission is hereby granted, free of charge, to any person obtaining a copy"
 
 # public_row — a client's file holds a row of a license, a folder of public text does not hold
@@ -1510,7 +1510,7 @@ hub_records() {
 
 # commit_scan [args] — the scan pre-commit runs over what a commit adds to the repository here.
 commit_scan() {
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/added.txt" --repo "${PWD}" --commit "$@"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/added.txt" --repo "${PWD}" --commit "$@"
 }
 
 @test "corpus: a repository whose area carries others takes a commit holding their text" {
@@ -1546,7 +1546,7 @@ commit_scan() {
 
 @test "corpus: only a commit carries: the same text judged as a payload or a push is refused" {
     hub_records "company client"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/added.txt" --repo "${PWD}"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/added.txt" --repo "${PWD}"
     [ "$status" -eq 1 ]
     cp "${BATS_TEST_TMPDIR}/added.txt" notes.md
     git add notes.md
@@ -1658,7 +1658,7 @@ teardown() {
 # (the changed documents, everything when a full walk is due).
 update_prints() {
     printf 'nothing copied here\n' > "${BATS_TEST_TMPDIR}/prime.txt"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/prime.txt"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/prime.txt"
     [ "$status" -eq 0 ]
 }
 
@@ -1667,7 +1667,7 @@ update_prints() {
     # named <output> — the output carries an area's name, its folder or a document of it.
     named() { [[ "$1" == *company* || "$1" == *client* || "$1" == *acme* || "$1" == *"${WORK}"* || "$1" == *broken.pptx* ]]; }
     for mode in --refresh --summary; do
-        run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" "${mode}"
+        run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" "${mode}"
         [ "$status" -eq 0 ]
         [[ "$output" == *"documents / "*" prints in 2 areas"* ]]
         [[ "$output" == *"1 documents could not be read (see --status)"* ]]
@@ -1683,7 +1683,7 @@ update_prints() {
     [[ "$output" == *"prints in 2 areas"* ]]
     if named "$output"; then echo "doctor named: $output"; return 1; fi
     # The operator's own look names everything.
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --status
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --status
     [[ "$output" == *"company "*" documents / "*"client "*" documents / "* ]]
     [[ "$output" == *"/received/broken.pptx"* ]]
 }
@@ -1693,7 +1693,7 @@ update_prints() {
 @test "corpus: a time-out, a missing extractor and an exit code are told apart, not just OSError" {
     run python3 -c "
 import importlib.util, subprocess
-spec = importlib.util.spec_from_file_location('c', '${GUARD_ROOT}/scanners/corpus-scan.py')
+spec = importlib.util.spec_from_file_location('c', '${GUARD_ROOT}/scanners/corpus/corpus-scan.py')
 c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
 
 cases = [
@@ -1717,10 +1717,10 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
     command -v pdftotext >/dev/null || skip "pdftotext is not installed"
     printf 'not a real pdf file at all\n' > "${CLIENT}/received/broken.pdf"
     printf 'nothing copied here\n' > "${BATS_TEST_TMPDIR}/prime.txt"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/prime.txt"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/prime.txt"
     [ "$status" -eq 0 ]
     [[ "$output" == *"1 documents could not be read (see --status): pdftotext exited"* ]]
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --status
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --status
     [[ "$output" == *"could not read (not checked): "*"/received/broken.pdf (pdftotext exited"* ]]
 }
 
@@ -1732,7 +1732,7 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
     export GUARD_CORPUS_PDF_TIMEOUT=1
     printf 'nothing copied here\n' > "${BATS_TEST_TMPDIR}/prime.txt"
     started="$(date +%s)"
-    PATH="${STUB}:${PATH}" run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" \
+    PATH="${STUB}:${PATH}" run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" \
         --text "${BATS_TEST_TMPDIR}/prime.txt"
     elapsed=$(( $(date +%s) - started ))
     [ "$status" -eq 0 ]
@@ -1744,7 +1744,7 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
     printf 'broken' > "${CLIENT}/received/broken.pptx"
     command -v pdftotext >/dev/null && printf 'not a real pdf file at all\n' > "${CLIENT}/received/broken.pdf"
     update_prints
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --summary
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --summary
     [ "$status" -eq 0 ]
     [[ "$output" == *"not a valid Office document: 1"* ]]
     [[ "$output" != *"broken.pptx"* ]]
@@ -1756,7 +1756,7 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
     printf 'repo:acme/* outside order\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
     mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
     commit_line "${CLIENT_TEXT}"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
     [ "$status" -eq 1 ]
     [[ "$output" == *"declared outside every area"* ]]
 }
@@ -1851,7 +1851,7 @@ commit_lines() {
     mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
     commit_line "${CLIENT_TEXT}"
     commit_line "${COMPANY_TEXT}"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~2..HEAD --dest git@github.com:acme/pipeline.git
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~2..HEAD --dest git@github.com:acme/pipeline.git
     [ "$status" -eq 0 ]
 }
 
@@ -1863,7 +1863,7 @@ commit_lines() {
     printf 'repo:acme/* company\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
     mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
     commit_line "the beta fixture lists eleven sensors along the north wall"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
     [ "$status" -eq 1 ]
     [[ "$output" == *"beta text"* ]]
 }
@@ -1872,7 +1872,7 @@ commit_lines() {
     seed_visibility acme/pipeline private
     mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
     commit_line "${COMPANY_TEXT}"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
     [ "$status" -eq 1 ]
     [[ "$output" == *"company text"* ]]
 }
@@ -1882,7 +1882,7 @@ commit_lines() {
     printf 'repo:acme/* client\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
     mk_clone_at "${WORK}/repos/pipeline" acme/pipeline
     commit_line "${COMPANY_TEXT}"
-    run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
     [ "$status" -eq 1 ]
     [[ "$output" == *"company text"* ]]
 }

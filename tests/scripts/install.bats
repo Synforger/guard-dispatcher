@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # scripts/install.sh, bootstrap-machine.sh and doctor.sh on a throwaway HOME.
 
-load helpers
+load ../_internal/helpers
 
 setup() {
     H="$(cd -P "${BATS_TEST_TMPDIR}" && pwd)/home"
@@ -66,9 +66,29 @@ JSON
     run bash "${H}/src/scripts/install.sh"
     [ "${status}" -eq 0 ]
     [ "$(readlink "${H}/.git-hooks/pre-push")" = "${H}/src/git-hooks/pre-push" ]
-    [ "$(readlink "${H}/.git-hooks/scanners")" = "${H}/src/scanners" ]
-    printf '# edited\n' >> "${H}/src/scanners/anon-scan.sh"
+    [ "$(readlink "${H}/.git-hooks/scanners/anon-scan.sh")" = "${H}/src/scanners/words/anon-scan.sh" ]
+    printf '# edited\n' >> "${H}/src/scanners/words/anon-scan.sh"
     grep -q '# edited' "${H}/.git-hooks/scanners/anon-scan.sh"
+}
+
+@test "install: a scanner called by its name alone finds the parts it uses, and a link to nothing is removed" {
+    clone_to "${H}/src"
+    mkdir -p "${H}/.git-hooks"
+    ln -s "${H}/src/gone" "${H}/.git-hooks/lib"
+    run bash "${H}/src/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    [ ! -L "${H}/.git-hooks/lib" ]
+    for name in anon-scan.sh anon-audit-deep.sh anon-fix.sh anon-pattern.sh anon-sync-truth.sh \
+                corpus-scan.py send-scan.py dest-known.py guard_places.py; do
+        [ -f "${H}/.git-hooks/scanners/${name}" ]
+    done
+    [ "$(python3 "${H}/.git-hooks/scanners/guard_places.py" master-words)" = "${H}/.config/anon-words/master.txt" ]
+    mk_repo synforger
+    printf 'clean\n' > clean.txt
+    ANON_SCAN_PATHS="$(pwd)/clean.txt" run bash "${H}/.git-hooks/scanners/anon-scan.sh"
+    [ "${status}" -eq 0 ]
+    run python3 "${H}/.git-hooks/scanners/corpus-scan.py" --summary
+    [ "${status}" -eq 0 ]
 }
 
 @test "install: pre-compiles the clone's bytecode so the hook does not recompile on every call" {
@@ -77,9 +97,10 @@ JSON
     [ "${status}" -eq 0 ]
     [[ "${output}" == *"pre-compiled ${H}/src bytecode"* ]]
     [ -d "${H}/src/agent-hooks/claude-code/__pycache__" ]
-    [ -d "${H}/src/scanners/__pycache__" ]
+    [ -d "${H}/src/scanners/corpus/__pycache__" ]
     compgen -G "${H}/src/agent-hooks/claude-code/__pycache__/area-guard.*.pyc" > /dev/null
-    compgen -G "${H}/src/scanners/__pycache__/corpus-scan.*.pyc" > /dev/null
+    compgen -G "${H}/src/scanners/corpus/__pycache__/corpus-scan.*.pyc" > /dev/null
+    compgen -G "${H}/src/_common/__pycache__/guard_places.*.pyc" > /dev/null
 }
 
 @test "install: an unknown argument is refused before anything is linked" {

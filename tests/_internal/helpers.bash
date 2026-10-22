@@ -4,7 +4,7 @@
 # sentinel-only word list, so no real operator data is ever touched and
 # the suite runs identically on any machine.
 
-GUARD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GUARD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # What the session running the tests was handed (the folder its launcher works in, the
 # destination a push of it fetched, the platform root it runs under) is not the fixtures': a test

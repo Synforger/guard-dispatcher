@@ -5,7 +5,7 @@
 # repository, and the operator's own notes (_exempt). Every call feeds the hook
 # the JSON Claude Code sends before a tool runs.
 
-load helpers
+load ../../_internal/helpers
 
 HOOK="${GUARD_ROOT}/agent-hooks/claude-code/area-guard.py"
 

@@ -3,7 +3,7 @@
 #   - anon-scan.sh   NFKC width folding on the tracked-file / staged scan
 #   - anon-audit-deep.sh   PR/Issue comment threads via a gh stub
 
-load helpers
+load ../../_internal/helpers
 
 setup() {
     setup_words
@@ -20,14 +20,14 @@ WIDE_SENTINEL='ＸＬＥＡＫＸ７ｑ３ｚ'
 @test "anon-scan: full-width text is folded (NFKC) and caught by a half-width word list" {
     mk_repo other
     printf '%s\n' "${WIDE_SENTINEL}" > widefold.txt
-    ANON_SCAN_PATHS="$(pwd)/widefold.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/widefold.txt" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -ne 0 ]
 }
 
 @test "anon-scan: unrelated full-width text stays clean (folding does not over-match)" {
     mk_repo other
     printf 'ＨＥＬＬＯ　ｗｏｒｌｄ\n' > clean.txt
-    ANON_SCAN_PATHS="$(pwd)/clean.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/clean.txt" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -eq 0 ]
 }
 
@@ -43,7 +43,7 @@ DEFINITION_SENTINEL='XDefX7q3z'
     mk_repo other
     printf '%s\n' "${DEFINITION_SENTINEL}" > "${ANON_WORDS_FILE}"
     printf 'banned = ["%s"]\n' "${DEFINITION_SENTINEL}" > guards.toml
-    ANON_SCAN_PATHS="$(pwd)/guards.toml" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/guards.toml" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -eq 0 ]
 }
 
@@ -51,7 +51,7 @@ DEFINITION_SENTINEL='XDefX7q3z'
     mk_repo other
     printf '%s\n' "${DEFINITION_SENTINEL}" > "${ANON_WORDS_FILE}"
     printf 'banned = ["%s"]\n' "${DEFINITION_SENTINEL}" > settings.toml
-    ANON_SCAN_PATHS="$(pwd)/settings.toml" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/settings.toml" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -ne 0 ]
 }
 
@@ -69,7 +69,7 @@ CASE_SENTINEL='XCaseX7q3z'
     mk_repo other
     printf 'cs:%s\n' "${CASE_SENTINEL}" > "${ANON_WORDS_FILE}"
     printf 'harmless text with %s in it\n' "$(printf '%s' "${CASE_SENTINEL}" | tr '[:upper:]' '[:lower:]')" > lower.txt
-    ANON_SCAN_PATHS="$(pwd)/lower.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/lower.txt" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -eq 0 ]
 }
 
@@ -77,7 +77,7 @@ CASE_SENTINEL='XCaseX7q3z'
     mk_repo other
     printf 'cs:%s\n' "${CASE_SENTINEL}" > "${ANON_WORDS_FILE}"
     printf 'a real leak: %s\n' "${CASE_SENTINEL}" > exact.txt
-    ANON_SCAN_PATHS="$(pwd)/exact.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/exact.txt" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -ne 0 ]
 }
 
@@ -85,7 +85,7 @@ CASE_SENTINEL='XCaseX7q3z'
     mk_repo other
     printf '%s\n' "${SENTINEL}" > "${ANON_WORDS_FILE}"
     printf '%s\n' "$(printf '%s' "${SENTINEL}" | tr '[:lower:]' '[:upper:]')" > upper.txt
-    ANON_SCAN_PATHS="$(pwd)/upper.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/upper.txt" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -ne 0 ]
 }
 
@@ -102,7 +102,7 @@ CASE_SENTINEL='XCaseX7q3z'
     mk_repo other
     printf '(?-i)XTokX[0-9]{4}\n%s\n' "${SENTINEL}" > "${ANON_WORDS_FILE}"
     printf '%s\n' "$(printf '%s' "${SENTINEL}" | tr '[:lower:]' '[:upper:]')" > upper.txt
-    ANON_SCAN_PATHS="$(pwd)/upper.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/upper.txt" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -ne 0 ]
 }
 
@@ -110,10 +110,10 @@ CASE_SENTINEL='XCaseX7q3z'
     mk_repo other
     printf '(?-i)XTokX[0-9]{4}\n%s\n' "${SENTINEL}" > "${ANON_WORDS_FILE}"
     printf 'xtokx1234\n' > lower.txt
-    ANON_SCAN_PATHS="$(pwd)/lower.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/lower.txt" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -eq 0 ]
     printf 'XTokX1234\n' > exact.txt
-    ANON_SCAN_PATHS="$(pwd)/exact.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/exact.txt" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -ne 0 ]
 }
 
@@ -121,7 +121,7 @@ CASE_SENTINEL='XCaseX7q3z'
     mk_repo other
     printf 'XAltOneX|XAltTwoX\n' > "${ANON_WORDS_FILE}"
     printf 'the second: xalttwox\n' > second.txt
-    ANON_SCAN_PATHS="$(pwd)/second.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/second.txt" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -ne 0 ]
 }
 
@@ -133,14 +133,14 @@ CASE_SENTINEL='XCaseX7q3z'
 @test "anon-scan: a leak inside a .csv is caught" {
     mk_repo other
     printf 'id,comment\n1,"mentions %s"\n' "${SENTINEL}" > data.csv
-    ANON_SCAN_PATHS="$(pwd)/data.csv" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/data.csv" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -ne 0 ]
 }
 
 @test "anon-scan: a leak inside a .ipynb output cell is caught" {
     mk_repo other
     printf '{"cells":[{"outputs":[{"text":["path of %s"]}]}]}\n' "${SENTINEL}" > nb.ipynb
-    ANON_SCAN_PATHS="$(pwd)/nb.ipynb" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/nb.ipynb" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -ne 0 ]
 }
 
@@ -153,7 +153,7 @@ CASE_SENTINEL='XCaseX7q3z'
     mk_repo synforger
     printf '%s\nbroken(\n' "${SENTINEL}" > "${ANON_WORDS_FILE}"
     echo "leak ${SENTINEL}" > leak.txt
-    ANON_SCAN_PATHS="$(pwd)/leak.txt" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/leak.txt" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -eq 2 ]
     [[ "$output" == *"does not compile"* ]]
 }
@@ -163,7 +163,7 @@ CASE_SENTINEL='XCaseX7q3z'
     base="$(git rev-parse HEAD)"
     echo "leak ${SENTINEL}" > leak.txt && git add leak.txt && commit_bypassing_hooks "feat: leaky"
     printf '%s\nbroken(\n' "${SENTINEL}" > "${ANON_WORDS_FILE}"
-    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh" --range "${base}..HEAD"
+    run bash "${GUARD_ROOT}/scanners/words/anon-audit-deep.sh" --range "${base}..HEAD"
     [ "$status" -eq 2 ]
     [[ "$output" == *"does not compile"* ]]
 }
@@ -202,7 +202,7 @@ STUB
     mk_repo synforger
     export STUB_SENTINEL="${SENTINEL}"
     setup_gh_stub
-    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    run bash "${GUARD_ROOT}/scanners/words/anon-audit-deep.sh"
     [ "$status" -ne 0 ]
     [[ "$output" == *"GitHub PR/Issue text"* ]]
 }
@@ -211,7 +211,7 @@ STUB
     mk_repo synforger
     export STUB_SENTINEL=""
     setup_gh_stub
-    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    run bash "${GUARD_ROOT}/scanners/words/anon-audit-deep.sh"
     [ "$status" -eq 0 ]
 }
 
@@ -253,7 +253,7 @@ STUB
 @test "deep audit: an erroring GitHub API call is a finding, not a clean source" {
     mk_repo synforger
     setup_gh_stub_api_error
-    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    run bash "${GUARD_ROOT}/scanners/words/anon-audit-deep.sh"
     [ "$status" -ne 0 ]
     [[ "$output" == *"UNREACHABLE"* ]]
 }
@@ -261,7 +261,7 @@ STUB
 @test "deep audit: a repo no credential can resolve is a finding, not a clean source" {
     mk_repo synforger
     setup_gh_stub_unresolvable
-    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    run bash "${GUARD_ROOT}/scanners/words/anon-audit-deep.sh"
     [ "$status" -ne 0 ]
     [[ "$output" == *"UNREACHABLE"* ]]
 }
@@ -291,14 +291,14 @@ STUB
     mk_repo synforger
     export STUB_SENTINEL="${SENTINEL}"
     setup_gh_stub_noisy_stderr
-    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    run bash "${GUARD_ROOT}/scanners/words/anon-audit-deep.sh"
     [ "$status" -eq 0 ]
 }
 
 @test "deep audit: a failing GitHub call still shows why it failed" {
     mk_repo synforger
     setup_gh_stub_api_error
-    run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+    run bash "${GUARD_ROOT}/scanners/words/anon-audit-deep.sh"
     [ "$status" -ne 0 ]
     [[ "$output" == *"HTTP 403"* ]]
 }
@@ -310,14 +310,14 @@ STUB
 @test "anon-scan: a word inside an Office document is found" {
     mk_repo other
     mk_office "$(pwd)/deck.pptx" "${SENTINEL}"
-    ANON_SCAN_PATHS="$(pwd)/deck.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/deck.pptx" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -ne 0 ]
 }
 
 @test "anon-scan: an Office document is named by its own path, not a scratch file" {
     mk_repo other
     mk_office "$(pwd)/deck.pptx" "${SENTINEL}"
-    ANON_SCAN_PATHS="$(pwd)/deck.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/deck.pptx" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [[ "$output" == *"deck.pptx"* ]]
     [[ "$output" != *"anon-office"* ]]
 }
@@ -325,14 +325,14 @@ STUB
 @test "anon-scan: an Office document with nothing to hide stays clean" {
     mk_repo other
     mk_office "$(pwd)/clean.pptx" "an ordinary heading"
-    ANON_SCAN_PATHS="$(pwd)/clean.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/clean.pptx" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -eq 0 ]
 }
 
 @test "anon-scan: a file that cannot be opened as an Office document is not called clean" {
     mk_repo other
     printf 'not a zip at all\n' > broken.pptx
-    ANON_SCAN_PATHS="$(pwd)/broken.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/broken.pptx" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -ne 0 ]
     [[ "$output" == *"NOT scanned"* ]]
 }
@@ -344,7 +344,7 @@ STUB
     ( cd "${work}" && zip -q -r "$(pwd)/../empty.pptx" . ) 2>/dev/null || true
     zip -q -j "$(pwd)/empty.pptx" "${work}/image.bin"
     rm -rf "${work}"
-    ANON_SCAN_PATHS="$(pwd)/empty.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/empty.pptx" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -ne 0 ]
     [[ "$output" == *"no XML part"* ]]
 }
@@ -352,7 +352,7 @@ STUB
 @test "anon-scan: a hit inside an Office document points at one element, not the whole part" {
     mk_repo other
     mk_office "$(pwd)/deck.pptx" "${SENTINEL}"
-    ANON_SCAN_PATHS="$(pwd)/deck.pptx" run bash "${GUARD_ROOT}/scanners/anon-scan.sh"
+    ANON_SCAN_PATHS="$(pwd)/deck.pptx" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
     [ "$status" -ne 0 ]
     longest=$(printf '%s\n' "$output" | awk '{ if (length($0) > m) m = length($0) } END { print m }')
     [ "$longest" -lt 500 ]
@@ -363,7 +363,7 @@ STUB
 # audit then reports only what appears later. New history carrying a known word is still red.
 
 known_file() { echo "${BATS_TEST_TMPDIR}/known/repo.known"; }
-audit() { run bash "${GUARD_ROOT}/scanners/anon-audit-deep.sh" "$@"; }
+audit() { run bash "${GUARD_ROOT}/scanners/words/anon-audit-deep.sh" "$@"; }
 # leak_in_history <name> — a commit that adds the sentinel and one that removes it again.
 leak_in_history() {
     echo "text ${SENTINEL}" > "$1.txt" && git add "$1.txt" && commit_bypassing_hooks "feat: $1"

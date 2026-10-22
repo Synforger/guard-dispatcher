@@ -19,14 +19,14 @@
 # A remote-sha of all zeros = new branch on the remote.
 # A local-sha  of all zeros = branch delete (skipped, no diff to scan).
 #
-# Range calculation: scanners/dest-known.py (`range`) alone decides which
+# Range calculation: scanners/destinations/dest-known.py (`range`) alone decides which
 # commits each ref sends and whether the push rewrites history; see its
 # docstring.
 # =============================================================================
 set -eu
 
-# shellcheck source=lib/dispatcher-common.sh
-. "$(dirname "$0")/lib/dispatcher-common.sh"
+# shellcheck source=_internal/dispatcher-common.sh
+. "$(dirname "$0")/_internal/dispatcher-common.sh"
 
 # Capture the ref lines before anything else consumes stdin — both the
 # repo-local hook and the baseline loop below need them.
@@ -66,7 +66,7 @@ MSG
     exit 1
 fi
 
-# What a push sends is decided in scanners/dest-known.py alone: which commits go out, whether the
+# What a push sends is decided in scanners/destinations/dest-known.py alone: which commits go out, whether the
 # push rewrites history, and what of it the destination already holds. No check below reads the
 # history on its own; each is handed the same range and the same folder.
 dest_tool="$(dispatcher::locate_scanner "dest-known.py" || true)"
@@ -90,7 +90,7 @@ any_leak=0
 # What the destination's history already holds, fetched once and only when a check needs it.
 # A history rewritten to take a word out gives every commit a new hash, colleagues' too: they are
 # no longer on any remote, so the identity check takes them for commits made here, and the whole
-# history is scanned as if all of it were leaving. scanners/dest-known.py writes what the
+# history is scanned as if all of it were leaving. scanners/destinations/dest-known.py writes what the
 # destination holds into one folder, and every check of a rewritten push leaves out the same
 # things: authors and committers it already carries, files whose blob it already holds, commit
 # texts it already has. What the rewrite made new is checked as before.
@@ -267,7 +267,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 To scrub the leak in place before push (rewrites the outgoing range
 so the public record shows neither the leak nor a repair scar):
 
-    bash ${fixer:-<guard>/scanners/anon-fix.sh} --range ${revspec}
+    bash ${fixer:-<guard>/scanners/words/anon-fix.sh} --range ${revspec}
 
 Or export ANON_FIX_AUTO=1 to have this hook do it for you automatically.
 HINT

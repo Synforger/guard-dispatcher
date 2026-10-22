@@ -1,11 +1,11 @@
 #!/usr/bin/env bats
-# agent-hooks/claude-code/outgoing.py + scanners/send-scan.py (through area-guard.py) — what a tool or a network command
+# agent-hooks/claude-code/outgoing.py + scanners/destinations/send-scan.py (through area-guard.py) — what a tool or a network command
 # sends out is judged like a push: its payload against the areas its destination is outside of.
 #
 # A throwaway HOME holds a company folder with a client inside it; each holds one made-up
 # document. Every call feeds the hook the JSON Claude Code sends before a tool runs.
 
-load helpers
+load ../../_internal/helpers
 
 HOOK="${GUARD_ROOT}/agent-hooks/claude-code/area-guard.py"
 CLIENT_TEXT="the calibration table reads seventeen at dawn"
@@ -605,7 +605,7 @@ def fake_run(cmd, **kw):
     raise subprocess.TimeoutExpired(cmd=cmd, timeout=kw.get('timeout'))
 subprocess.run = fake_run
 reason = m.check('WebFetch', {'url': 'https://example.com', 'prompt': 'hello'}, '${BATS_TEST_TMPDIR}',
-                 Path('${GUARD_ROOT}/scanners/send-scan.py'))
+                 Path('${GUARD_ROOT}/scanners/destinations/send-scan.py'))
 print(reason)
 "
     [[ "$output" == *"did not finish within 180s"* ]]
@@ -617,7 +617,7 @@ print(reason)
     printf '* company\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
     run python3 -c "
 import importlib.util, subprocess
-spec = importlib.util.spec_from_file_location('send_scan', '${GUARD_ROOT}/scanners/send-scan.py')
+spec = importlib.util.spec_from_file_location('send_scan', '${GUARD_ROOT}/scanners/destinations/send-scan.py')
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 from pathlib import Path
 
@@ -635,7 +635,7 @@ print(m.judge('anything', Path('${BATS_TEST_TMPDIR}/payload.txt')))
     printf '* company\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
     run python3 -c "
 import importlib.util, subprocess
-spec = importlib.util.spec_from_file_location('send_scan', '${GUARD_ROOT}/scanners/send-scan.py')
+spec = importlib.util.spec_from_file_location('send_scan', '${GUARD_ROOT}/scanners/destinations/send-scan.py')
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 from pathlib import Path
 
@@ -652,7 +652,7 @@ print(m.judge('anything', Path('${BATS_TEST_TMPDIR}/payload.txt')))
     printf 'harmless\n' > "${BATS_TEST_TMPDIR}/payload.txt"
     run python3 -c "
 import importlib.util, subprocess
-spec = importlib.util.spec_from_file_location('send_scan', '${GUARD_ROOT}/scanners/send-scan.py')
+spec = importlib.util.spec_from_file_location('send_scan', '${GUARD_ROOT}/scanners/destinations/send-scan.py')
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 from pathlib import Path
 
@@ -1134,9 +1134,9 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
 
 @test "send-scan: --where says when a destination's sends need an order" {
     held
-    run python3 "${GUARD_ROOT}/scanners/send-scan.py" --where "${SLACK}"
+    run python3 "${GUARD_ROOT}/scanners/destinations/send-scan.py" --where "${SLACK}"
     [ "${output}" = "company order" ]
-    run python3 "${GUARD_ROOT}/scanners/send-scan.py" --where WebSearch
+    run python3 "${GUARD_ROOT}/scanners/destinations/send-scan.py" --where WebSearch
     [ "${output}" = "outside" ]
 }
 

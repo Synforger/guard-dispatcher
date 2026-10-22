@@ -98,7 +98,7 @@ if [ -n "${RANGE}" ] && { [ -n "${KNOWN}" ] || [ -n "${RECORD}" ]; }; then
     echo "error: --known / --record-known audit the whole repository; --range is a push range" >&2
     exit 2
 fi
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # The scan target is the repository the caller stands in — not the guard
 # checkout this script lives in. Hooks invoke scanners with cwd already at
 # the target repo root; direct callers may be anywhere inside the repo.
@@ -118,8 +118,8 @@ if [ -z "${PROJECT_ROOT}" ]; then
 fi
 cd "${PROJECT_ROOT}"
 
-# shellcheck source=setup-lib.sh
-source "${SCRIPT_DIR}/setup-lib.sh"
+# shellcheck source=../_internal/setup-lib.sh
+source "${SCRIPT_DIR}/../_internal/setup-lib.sh"
 
 # Word list resolution (operator master first — the guard checkout itself
 # never carries the real list):
@@ -136,7 +136,7 @@ if [ -z "${WORDS_FILE}" ]; then
     WORDS_FILE="${WORDS_FILE/#\$HOME/${HOME}}"
 fi
 if [ -z "${WORDS_FILE}" ]; then
-    MASTER_WORDS="$(python3 "${SCRIPT_DIR}/guard_places.py" master-words)"
+    MASTER_WORDS="$(python3 "${SCRIPT_DIR}/../../_common/guard_places.py" master-words)"
     if [ -f "${MASTER_WORDS}" ]; then
         WORDS_FILE="${MASTER_WORDS}"
     else
@@ -185,12 +185,12 @@ if [ -n "${RANGE}" ]; then
     printf '\n=== deep audit: push range mode (%s, %s commits) ===\n' "${RANGE}" "${n_commits}" >&2
 fi
 
-# range mode で何が送られるかは scanners/dest-known.py 1 本が決める (= source 2/3/6 は自分で
+# range mode で何が送られるかは scanners/destinations/dest-known.py 1 本が決める (= source 2/3/6 は自分で
 # git log を読まない)。 書き換えた履歴の push では、 pre-push が送り先の中身を書いた folder を
 # GUARD_DEST_KNOWN で渡し、 送り先が既に持つ物 (= blob・commit の文・作者の名前とアドレス) が外れる。
 # 書き換えで新しくできた物は今どおり検査する
-DEST_KNOWN=(python3 "${SCRIPT_DIR}/dest-known.py")
-if [ -n "${RANGE}" ] && [ ! -f "${SCRIPT_DIR}/dest-known.py" ]; then
+DEST_KNOWN=(python3 "${SCRIPT_DIR}/../destinations/dest-known.py")
+if [ -n "${RANGE}" ] && [ ! -f "${SCRIPT_DIR}/../destinations/dest-known.py" ]; then
     log_fail "dest-known.py is missing beside this scanner: what the push sends cannot be decided"
     exit 2
 fi

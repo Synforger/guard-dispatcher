@@ -53,7 +53,7 @@ fi
 GUARD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCANNER="${REPO_ROOT}/.tooling/local-ci/anon-scan.sh"
 if [ ! -f "${SCANNER}" ]; then
-    SCANNER="${GUARD_ROOT}/scanners/anon-scan.sh"
+    SCANNER="${GUARD_ROOT}/scanners/words/anon-scan.sh"
 fi
 if [ ! -f "${SCANNER}" ]; then
     echo "error: anon-scan.sh not found (repo-local or guard bundled)" >&2

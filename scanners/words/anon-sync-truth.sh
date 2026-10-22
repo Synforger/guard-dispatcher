@@ -20,13 +20,13 @@
 
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=setup-lib.sh
-source "${SCRIPT_DIR}/setup-lib.sh"
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=../_internal/setup-lib.sh
+source "${SCRIPT_DIR}/../_internal/setup-lib.sh"
 
-TRUTH_PATH="$(python3 "${SCRIPT_DIR}/guard_places.py" master-words)"
+TRUTH_PATH="$(python3 "${SCRIPT_DIR}/../../_common/guard_places.py" master-words)"
 TARGET_PATH="${SCRIPT_DIR}/anon-words.txt"
-EXAMPLE_PATH="${SCRIPT_DIR}/anon-words.example.txt"
+EXAMPLE_PATH="${SCRIPT_DIR}/../../configs/anon-words.example.txt"
 
 if [ -f "${TRUTH_PATH}" ]; then
     cp "${TRUTH_PATH}" "${TARGET_PATH}"

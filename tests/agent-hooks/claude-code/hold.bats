@@ -6,7 +6,7 @@
 # A made-up transcript is written row by row, as Claude Code writes it, and handed to the hook
 # as `transcript_path`.
 
-load helpers
+load ../../_internal/helpers
 
 HOOK="${GUARD_ROOT}/agent-hooks/claude-code/area-guard.py"
 NEAR="Message from another session, relayed by the client:"

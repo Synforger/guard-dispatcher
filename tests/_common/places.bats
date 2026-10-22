@@ -1,12 +1,12 @@
 #!/usr/bin/env bats
-# scanners/guard_places.py — where the guard keeps its settings, marks and caches.
+# _common/guard_places.py — where the guard keeps its settings, marks and caches.
 #
 # A throwaway HOME, and a throwaway platform root inside it. The same fixture is laid out the
 # flat way and under the root, and the entry guard must judge both the same.
 
-load helpers
+load ../_internal/helpers
 
-PLACES="${GUARD_ROOT}/scanners/guard_places.py"
+PLACES="${GUARD_ROOT}/_common/guard_places.py"
 HOOK="${GUARD_ROOT}/agent-hooks/claude-code/area-guard.py"
 
 setup() {

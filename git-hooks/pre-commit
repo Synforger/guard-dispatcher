@@ -17,8 +17,8 @@
 # =============================================================================
 set -eu
 
-# shellcheck source=lib/dispatcher-common.sh
-. "$(dirname "$0")/lib/dispatcher-common.sh"
+# shellcheck source=_internal/dispatcher-common.sh
+. "$(dirname "$0")/_internal/dispatcher-common.sh"
 
 local_status=0
 dispatcher::run_local_hook "pre-commit" "$@" || local_status=$?

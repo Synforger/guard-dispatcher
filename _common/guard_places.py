@@ -1,7 +1,7 @@
 """Where the guard keeps its settings, its marks and its caches: the one table every part of the guard reads.
 
 The hooks and the scanners import it; a shell script asks for one place with
-`python3 scanners/guard_places.py <name>`, which prints its path.
+`python3 _common/guard_places.py <name>`, which prints its path.
 
 With `AGENT_PLATFORM_ROOT` set, everything sits under that root, in a folder per job:
 

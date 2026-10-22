@@ -30,4 +30,4 @@ jobs:
       - name: Install bats, GNU parallel and pdftotext
         run: sudo apt-get update -q && sudo apt-get install -y -q bats parallel poppler-utils
       - name: Dispatcher bats suite
-        run: bats --jobs "$(getconf _NPROCESSORS_ONLN)" tests/
+        run: bats -r --jobs "$(getconf _NPROCESSORS_ONLN)" tests/

@@ -2,7 +2,7 @@
 
 Called by `area-guard.py` before each tool call. This file only reads Claude Code's calls: it
 finds the sends in them and what each carries, and hands each (destination, payload) to the
-judgement in `scanners/send-scan.py`, which decides as for a push (see there for
+judgement in `scanners/destinations/send-scan.py`, which decides as for a push (see there for
 `destinations.txt`).
 
 - A tool that sends to a service (an MCP tool, the Artifact tools) is named by the tool; its
@@ -212,7 +212,7 @@ class Send(NamedTuple):
 @functools.lru_cache(maxsize=None)
 def corpus_module(send_scan: Path):
     """The private-document scan as a module: Office and PDF text is taken out in that one place."""
-    spec = importlib.util.spec_from_file_location("corpus_scan", send_scan.parent / "corpus-scan.py")
+    spec = importlib.util.spec_from_file_location("corpus_scan", send_scan.parents[1] / "corpus/corpus-scan.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

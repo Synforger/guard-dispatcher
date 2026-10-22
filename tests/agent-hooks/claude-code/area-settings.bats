@@ -3,7 +3,7 @@
 # the area only, a line that would reach outside it is not read and is named by `--settings`, and
 # the machine's own files come first.
 
-load helpers
+load ../../_internal/helpers
 
 CLIENT_TEXT="the calibration table reads seventeen at dawn"
 COMPANY_TEXT="quarterly planning keeps the bench schedule"
@@ -24,8 +24,8 @@ client  ${CLIENT}
 EOF
 }
 
-corpus() { run python3 "${GUARD_ROOT}/scanners/corpus-scan.py" "$@"; }
-send() { run python3 "${GUARD_ROOT}/scanners/send-scan.py" "$@"; }
+corpus() { run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" "$@"; }
+send() { run python3 "${GUARD_ROOT}/scanners/destinations/send-scan.py" "$@"; }
 
 @test "area settings: a sub-area inside the area joins the areas; a line reaching outside is not read" {
     cat > "${OWN}/areas.txt" <<EOF
@@ -35,7 +35,7 @@ _exempt    ${WORK}/meetings
 EOF
     run python3 -c "
 import importlib.util, sys
-s = importlib.util.spec_from_file_location('c', '${GUARD_ROOT}/scanners/corpus-scan.py')
+s = importlib.util.spec_from_file_location('c', '${GUARD_ROOT}/scanners/corpus/corpus-scan.py')
 m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
 print(' '.join(sorted(m.load_areas())))"
     [[ "$output" == *"lab"* ]]
@@ -133,7 +133,7 @@ EOF
     run python3 -c "
 import importlib.util
 from pathlib import Path
-s = importlib.util.spec_from_file_location('c', '${GUARD_ROOT}/scanners/corpus-scan.py')
+s = importlib.util.spec_from_file_location('c', '${GUARD_ROOT}/scanners/corpus/corpus-scan.py')
 m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
 print(' '.join(sorted(m.load_areas(Path('${BATS_TEST_TMPDIR}/config-link/areas.txt')))))"
     [[ "$output" == *"lab"* ]]

@@ -157,9 +157,10 @@ dispatcher::guard_root() {
 
 # Locate a scanner by name. Resolution order:
 #   1. repo-local  <repo-root>/.tooling/local-ci/<name>   (repo override)
-#   2. bundled     <guard-root>/scanners/<name>           (machine default)
+#   2. bundled     <guard-root>/scanners/<role>/<name>    (machine default)
 # Emits the path on stdout when found, nothing otherwise. Callers decide
-# whether an absent scanner is fatal.
+# whether an absent scanner is fatal. A caller names the scanner alone, so
+# the folder of its role is found here.
 dispatcher::locate_scanner() {
     local name="$1"
 
@@ -171,10 +172,15 @@ dispatcher::locate_scanner() {
     fi
 
     local bundled
-    bundled="$(dispatcher::guard_root)/scanners/${name}"
-    if [ -f "${bundled}" ]; then
-        printf '%s' "${bundled}"
-    fi
+    for bundled in "$(dispatcher::guard_root)"/scanners/*/"${name}"; do
+        case "${bundled}" in
+            */_internal/*) continue ;;
+        esac
+        if [ -f "${bundled}" ]; then
+            printf '%s' "${bundled}"
+            return 0
+        fi
+    done
 }
 
 dispatcher::locate_anon_scanner() { dispatcher::locate_scanner "anon-scan.sh"; }
