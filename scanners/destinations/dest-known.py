@@ -25,6 +25,8 @@ its remote-tracking refs say.
     dest-known.py range <remote> <local sha> <remote sha> [^<tip>...]
                                             "rewritten" or "follows", then the revspec of the
                                             commits that go out; nothing when none do
+    dest-known.py ranges <remote>           the same for every ref line pre-push reads (on stdin)
+                                            together: one revspec of all they send
     dest-known.py build <dir> <ref>...      write what the refs hold into <dir>
     dest-known.py patch <dir> <rev>...      "+++ b/<path>" for every file a commit touches and
                                             "+<line>" for every line it adds to a file whose blob
@@ -111,6 +113,36 @@ def push_range(remote: str, local: str, remote_sha: str, scanned: list[str]) -> 
     return rewritten, spec
 
 
+def push_ranges(remote: str, ref_lines: list[str]) -> tuple[bool, str] | None:
+    """(rewritten, revspec) of what all the pushed refs send together, or None when nothing goes out.
+
+    Every commit a ref's own range leaves out is one the destination holds, so leaving out all of
+    them at once drops nothing new: the union is each tip less everything any ref leaves out."""
+    tips: list[str] = []
+    bounds: list[str] = []
+    rewritten = False
+    for line in ref_lines:
+        words = line.split()
+        if len(words) != 4 or words[1] == ZERO:
+            continue
+        decided = push_range(remote, words[1], words[3], [])
+        if not decided:
+            continue
+        rewritten = rewritten or decided[0]
+        spec = decided[1]
+        if ".." in spec:
+            base, tip = spec.split("..", 1)
+            spec = f"{tip} ^{base}"
+        for word in spec.split():
+            if word.startswith("^"):
+                bounds.append(word)
+            else:
+                tips.append(word)
+    if not tips:
+        return None
+    return rewritten, " ".join(dict.fromkeys(tips + bounds))
+
+
 def history(folder: Path | None, revs: list[str]) -> list[tuple[str, str | None, list[tuple[str, str]], list[str]]]:
     """(sha, text, added lines as (path, line), paths) of each commit of revs, as it is sent: a text
     <folder> holds comes as None, and a file whose blob it holds adds no line.
@@ -183,13 +215,16 @@ def addresses(folder: Path | None, revs: list[str]) -> None:
 
 
 def main(argv: list[str]) -> int:
-    commands = {"range", "build", "patch", "messages", "authors", "addresses"}
+    commands = {"range", "ranges", "build", "patch", "messages", "authors", "addresses"}
     if not argv or argv[0] not in commands or len(argv) < (4 if argv[0] == "range" else 2):
         sys.stderr.write(__doc__ or "")
         return 2
     command = argv[0]
-    if command == "range":
-        decided = push_range(argv[1], argv[2], argv[3], argv[4:])
+    if command in ("range", "ranges"):
+        if command == "range":
+            decided = push_range(argv[1], argv[2], argv[3], argv[4:])
+        else:
+            decided = push_ranges(argv[1], sys.stdin.read().splitlines())
         if decided:
             sys.stdout.write(f"{'rewritten' if decided[0] else 'follows'}\n{decided[1]}\n")
         return 0
