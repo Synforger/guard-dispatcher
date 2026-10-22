@@ -66,6 +66,15 @@ own, only Read / Grep / Glob and a question to the operator run. Whoever sits at
 can have such a message written, so nothing in it moves the agent's hands before the operator has
 seen it.
 
+A session may hand work to a child of its own (`children/`): the client registers the child's tab,
+and the child is held to the places its parent declared, to the areas its parent had read, and to
+talking to its parent only. A child that mends a tool, a repository that publishes outside every
+area, starts with nothing but its task.
+
+    area-guard.py child add --child TAB --parent TAB [--writes FILE]
+    area-guard.py child check --parent TAB [--writes FILE] --text FILE
+    area-guard.py marks SESSION
+
 Nothing is printed when a call passes, so nothing lands in the agent's context. A refusal is one
 line. Marks are kept in `<marks>/<session_id>.json` (`~/.cache/area-guard/`, or
 `<root>/state/guard/marks/` under a platform root), so they outlive compaction.
@@ -95,6 +104,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import children  # noqa: E402
 import guard_places  # noqa: E402
 
 CONFIG = guard_places.settings_folder()
@@ -1348,6 +1359,16 @@ def handoff_commit_refusal(repo: Path, areas) -> str | None:
     return None
 
 
+def publishes_outside(place: Path, areas) -> bool:
+    """Whether the repository at this place, in no area, publishes outside every area: a public
+    repository, or one `destinations.txt` declares outside."""
+    root = repo_root(place)
+    if root is None or area_of(place, areas) is not None:
+        return False
+    url = push_url(root, None)
+    return bool(url) and destination(root, ["--dest", url])[0] is None
+
+
 def may_write(target: Path, marks: set[str], areas) -> bool:
     """A marked session may write a file inside a git repository when the repository is allowed
     where it sits, and -- for one in no area -- when what it pushes to is not outside every area
@@ -1363,10 +1384,7 @@ def may_write(target: Path, marks: set[str], areas) -> bool:
         held_here = carried(target, areas)
         if not held_here or has_remote(root) or not allowed(target, marks, areas, held_here):
             return False
-    if area_of(target, areas) is not None:   # inside an area, or the exempt notes
-        return True
-    url = push_url(root, None)
-    return not url or destination(root, ["--dest", url])[0] is not None
+    return area_of(target, areas) is not None or not publishes_outside(target, areas)   # in an area, or the exempt notes
 
 
 BYPASS_ENV = re.compile(r"(?<![\w-])(GH_GUARD_SKIP|GUARD_[A-Z_]+|ANON_WORDS_FILE|HUSKY"
@@ -1591,6 +1609,37 @@ def ask(argv: list[str]) -> int:
     return 1 if refused or kept_here else 0
 
 
+def child_guard() -> children.command.Guard:
+    """What `child add`, `child check` and `marks` ask of this guard."""
+    areas = load_areas()
+    peers = outgoing_module().peers_module()
+    return children.command.Guard(
+        is_off=OFF.exists,
+        has_areas=lambda: bool(areas),
+        own_marks=lambda session: set(load_state(session)["areas"]),
+        may_write=lambda place, marks: may_write(place, marks, areas),
+        publishes=lambda place: publishes_outside(place, areas),
+        scan=lambda text, marks: peers.scan("session:child", text, sorted(marks)),
+        real=real)
+
+
+def child_refusal(child: dict, tool: str, args: dict, cwd: str, written: str, transcript: str | None) -> str | None:
+    """The one-line refusal for a call of a registered child that writes outside the places its
+    parent declared, or reaches a tab or a session other than its parent."""
+    command = args.get("command", "")
+    files = [Path(written)] if tool in WRITES else write_targets(command, cwd) if tool == "Bash" else []
+    repos = [target for target, _ in sends_of(command, cwd)] if tool == "Bash" else []
+    note = os.environ.get("PWA_NOTE")
+    if why := children.rules.place_refusal(child, files, repos, repo_root, real(note) if note else None):
+        return why
+    peers = outgoing_module().peers_module()
+    parent_session = children.registry.session_of(child["parent"])
+    return children.rules.contact_refusal(
+        child, tool, args, command,
+        is_parent=lambda to: parent_session is not None and parent_session in peers.receivers(to),
+        is_own=lambda to: peers.subagent(to, transcript))
+
+
 def work_folder() -> Path | None:
     folder = os.environ.get(WORK_FOLDER)
     return real(folder) if folder else None
@@ -1622,6 +1671,8 @@ def deny(reason: str) -> None:
 
 def main() -> int:
     if len(sys.argv) > 1:
+        if sys.argv[1] in children.command.COMMANDS:
+            return children.command.run(sys.argv[1:], child_guard())
         return ask(sys.argv[1:])
     event = json.load(sys.stdin)
     if OFF.exists():
@@ -1633,8 +1684,13 @@ def main() -> int:
     if tool not in HELD_RUNS and order_module().held(event.get("transcript_path")):
         deny(HELD)
         return 0
+    tab = os.environ.get("PWA_SID")
+    if areas:
+        children.registry.save_session(tab, session)
+    child = children.registry.registration_of(tab) if areas else None
     state = load_state(session) if areas else {"areas": [], "tabs": {}}
-    marks = set(state["areas"])
+    read_marks = set(state["areas"])
+    marks = children.registry.held_marks(child, read_marks)
     # Switching the guards off or around is refused even on a machine with no areas, but on the
     # operator's yes to this very call: the marks, which keep areas apart, never.
     if tool == "Bash" and (reason := bypass(args.get("command", ""), cwd, areas)):
@@ -1644,6 +1700,9 @@ def main() -> int:
             deny(f"area-guard: an agent does not switch the guards off or around ({reason})"
                  + ("" if reason == MARKS_REWRITE else f": {why}"))
             return 0
+    if tool == "Bash" and children.rules.runs_registration(args.get("command", "")):
+        deny("area-guard: an agent does not register a child: the client does, once it has opened the child's tab")
+        return 0
     written = str(real(args.get("file_path") or args.get("notebook_path") or "", cwd)) if tool in WRITES else ""
     if written.endswith("/agent-off") and (why := approval(tool, args, event, [Path(written)], areas)):
         deny(f"area-guard: an agent does not switch the entry guard off: {why}")
@@ -1682,6 +1741,10 @@ def main() -> int:
                  f"(code written into a command counts as writing every path it names)"
                  + (f": {why}" if why else ""))
             return 0
+
+    if child is not None and (why := child_refusal(child, tool, args, cwd, written, transcript)):
+        deny(why)
+        return 0
 
     def private_area(path: Path) -> str | None:
         area = area_of(real(path), areas)
@@ -1764,7 +1827,7 @@ def main() -> int:
              f"Ask a session that works there")
         return 0
     if new - marks:
-        state["areas"] = sorted(marks | new)
+        state["areas"] = sorted(read_marks | new)
         save_state(session, state)
     return 0
 

@@ -513,6 +513,16 @@ leak_in_history() {
     [ "$status" -ne 0 ]
 }
 
+@test "weekly audit: an argument the run does not take stops it before anything is audited" {
+    export HOME="${BATS_TEST_TMPDIR}/home"
+    mkdir -p "${HOME}/.config/guard-dispatcher"
+    printf 'REPOS_GLOB="%s"\n' "${BATS_TEST_TMPDIR}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh" --help
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"usage: weekly-audit.sh"* ]]
+    ! ls "${HOME}"/.local/state/guard-dispatcher/weekly-audit-*.log 2>/dev/null
+}
+
 @test "weekly audit: a repository inside an area is audited though no glob lists it" {
     mk_repo synforger
     export STUB_SENTINEL=""

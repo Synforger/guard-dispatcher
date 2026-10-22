@@ -1,0 +1,14 @@
+{
+  "name": "guard-dispatcher",
+  "description": "Skills that go with guard-dispatcher.",
+  "owner": {
+    "name": "Synforger"
+  },
+  "plugins": [
+    {
+      "name": "guard-dispatcher",
+      "source": "./",
+      "description": "Skills for keeping the guard's settings."
+    }
+  ]
+}

@@ -47,7 +47,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import guard_places  # noqa: E402
+from children import registry  # noqa: E402
 
 STATE = guard_places.marks_folder()
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/destinations/send-scan.py"
@@ -87,12 +89,14 @@ def running() -> list[dict]:
 
 
 def marks(session: str) -> list[str]:
-    """The areas a session has read inside: what the entry guard keeps for it."""
+    """The areas a session is held to: what the entry guard keeps for it, and for a child what its
+    parent had read when the child was registered."""
     try:
         data = json.loads((STATE / f"{session}.json").read_text())
     except (OSError, ValueError):
-        return []
-    return sorted(data if isinstance(data, list) else data.get("areas") or [])
+        data = []
+    own = set(data if isinstance(data, list) else data.get("areas") or [])
+    return sorted(registry.marks_of(session, own))
 
 
 def receivers(to: str) -> list[str]:
@@ -112,6 +116,27 @@ def subagent(to: str, transcript: str | None) -> bool:
     return (Path(transcript).with_suffix("") / "subagents" / f"agent-{to}.jsonl").is_file()
 
 
+def scan(name: str, payload: Path, areas: list[str]) -> tuple[int, str]:
+    """(exit status, the line why) for a message to the destination `name`, whose session has read
+    inside `areas`: the send scan's judgement of the text in `payload`."""
+    try:
+        r = subprocess.run(["python3", str(SEND_SCAN), "--dest", name, "--text", str(payload),
+                            "--session-areas", ",".join(areas)],
+                           capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        return 2, (f"not sent to {name}: the send scan did not finish within 180s -- refused because "
+                   f"it could not be judged in time, not because of what it found")
+    except OSError:
+        return 2, f"not sent to {name}: the send scan could not run"
+    if r.returncode == 0:
+        return 0, ""
+    for line in r.stderr.splitlines():      # which run was hit, ahead of the one line why
+        if line.startswith("    "):
+            print(line, file=sys.stderr)
+    why = (r.stderr.strip().splitlines() or ["the send scan refused it"])[-1].removeprefix("send-scan: ")
+    return (1 if r.returncode == 1 else 2), why
+
+
 def judge(to: str, payload: Path) -> tuple[int, str]:
     """(exit status, the line why) for a message to `to`. A name no session here carries is a
     session elsewhere (another machine, the cloud) as far as this machine can tell: it is judged
@@ -119,24 +144,12 @@ def judge(to: str, payload: Path) -> tuple[int, str]:
     name = f"session:{REF.sub('', to.strip())}"
     found = receivers(to)
     for areas in [marks(s) for s in found] or [[]]:
-        try:
-            r = subprocess.run(["python3", str(SEND_SCAN), "--dest", name, "--text", str(payload),
-                                "--session-areas", ",".join(areas)],
-                               capture_output=True, text=True, timeout=180)
-        except subprocess.TimeoutExpired:
-            return 2, (f"not sent to {name}: the send scan did not finish within 180s -- refused because "
-                       f"it could not be judged in time, not because of what it found")
-        except OSError:
-            return 2, f"not sent to {name}: the send scan could not run"
-        if r.returncode != 0:
-            for line in r.stderr.splitlines():      # which run was hit, ahead of the one line why
-                if line.startswith("    "):
-                    print(line, file=sys.stderr)
-            why = (r.stderr.strip().splitlines() or ["the send scan refused it"])[-1].removeprefix("send-scan: ")
+        status, why = scan(name, payload, areas)
+        if status:
             if not found:
                 why += (". No session running on this machine has that name, so it is taken to be one "
                         "elsewhere; this session's own subagent is named by its agent id")
-            return (1 if r.returncode == 1 else 2), why
+            return status, why
     return 0, ""
 
 
