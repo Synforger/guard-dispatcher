@@ -1556,9 +1556,17 @@ def ask(argv: list[str]) -> int:
     the script runs, not where the session stands. A relative path here resolves from the caller's
     working directory. Exit 0: every path may be written (also with the entry guard off, with no
     areas, and for a session with no marks, but for the guard's own settings and a transcript, judged as
-    an Edit of them is). Exit 1: one line per refused path on stderr. Exit 2: usage."""
+    an Edit of them is). Exit 1: one line per refused path on stderr. Exit 2: usage.
+
+    `reach`: the areas a session of `GUARD_WORK_FOLDER` may read inside, one name per line in name
+    order; nothing when no work folder is named. Exit 0."""
+    if argv[:1] == ["reach"]:
+        names = reach(load_areas()) or set()
+        if names:
+            print("\n".join(sorted(names)))
+        return 0
     if len(argv) < 3 or argv[0] != "may-write" or not argv[1]:
-        print("usage: area-guard.py may-write <session_id> <path>...", file=sys.stderr)
+        print("usage: area-guard.py may-write <session_id> <path>... | reach", file=sys.stderr)
         return 2
     if OFF.exists():
         return 0

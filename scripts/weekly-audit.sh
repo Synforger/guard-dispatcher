@@ -21,12 +21,15 @@
 #
 # Known findings (optional, operator-private):
 #   $HOME/.config/guard-dispatcher/known/<repo folder name>.known
-#   written by `weekly-audit.sh --accept <repo>...`; a repository with one is
-#   audited for what appeared after it was recorded (anon-audit-deep.sh --known)
+#   written by `weekly-audit.sh --accept [--as-of <UTC time>] <repo>...`; a repository
+#   with one is audited for what appeared after it was recorded, or after the
+#   time given (anon-audit-deep.sh --known / --record-known --as-of)
 #
 # Output:
 #   - full log:  $HOME/.local/state/guard-dispatcher/weekly-audit-<date>.log
-#                (<root>/state/guard/audit/ under a platform root)
+#                (<root>/state/guard/audit/ under a platform root). Each repository
+#                opens with `--- <repo> (<sweep>[, known findings accepted], area <name>) ---`:
+#                the innermost area holding it, `-` for one outside every area
 #   - findings:  $MESSAGE_DIR/<date>-weekly-anon-audit.md  (only on findings)
 #
 # Exit:
@@ -46,15 +49,21 @@ STATE_DIR="$(python3 "${PLACES}" audit-logs)"
 # reports only what appears after the recording; see anon-audit-deep.sh --known.
 KNOWN_DIR="$(python3 "${PLACES}" known)"
 
-# weekly-audit.sh --accept <repo>... — record each repository's current findings as known.
-# For findings that will not be rewritten (history, PR text); a file in the tree is fixed instead.
+# weekly-audit.sh --accept [--as-of <UTC time>] <repo>... — record each repository's findings as
+# known: the current ones, or those that had gone out before the time given. For findings that will
+# not be rewritten (history, PR text); a file in the tree is fixed instead.
 if [ "${1:-}" = "--accept" ]; then
     shift
-    [ $# -gt 0 ] || { echo "usage: weekly-audit.sh --accept <repo>..." >&2; exit 2; }
+    as_of=()
+    if [ "${1:-}" = "--as-of" ]; then
+        as_of=(--as-of "${2:-}")
+        shift 2 || shift
+    fi
+    [ $# -gt 0 ] || { echo "usage: weekly-audit.sh --accept [--as-of <UTC time>] <repo>..." >&2; exit 2; }
     status=0
     for repo in "$@"; do
         known="${KNOWN_DIR}/$(basename "$(cd "${repo}" && pwd)").known"
-        (cd "${repo}" && bash "${SCANNER}" --record-known "${known}") || status=1
+        (cd "${repo}" && bash "${SCANNER}" --record-known "${known}" ${as_of[@]+"${as_of[@]}"}) || status=1
     done
     exit "${status}"
 fi
@@ -69,7 +78,9 @@ source "${CONF}"
 
 # Every repository inside an area is audited as well, found from areas.txt: one put in an area
 # tomorrow is in the next audit without anyone listing it. A listed glob covers only what someone
-# remembered to list, and a client's repository outside it went unaudited for weeks.
+# remembered to list, and a client's repository outside it went unaudited for weeks. Each comes
+# as `<area>\t<repo>`, the area the innermost one holding it, so its findings reach the sessions
+# that read there.
 area_repos() {
     python3 - "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" <<'PY'
 import importlib.util, os, sys
@@ -82,34 +93,40 @@ except ValueError:
     sys.exit(0)
 SKIP = {"node_modules", ".build", "DerivedData", "Pods",
         "third_party", "third-party", "_deps", ".fetchcontent-cache"}
-for name, roots in areas.items():
-    if name in module.UNSCANNED:
-        continue
+scanned = {name: roots for name, roots in areas.items() if name not in module.UNSCANNED}
+def innermost(path):
+    holding = [(len(str(root)), name) for name, roots in scanned.items() for root in roots
+               if path == str(root) or path.startswith(str(root).rstrip(os.sep) + os.sep)]
+    return max(holding)[1] if holding else "-"
+for name, roots in scanned.items():
     for root in roots:
         for here, dirs, files in os.walk(root):
             # Someone else's code cloned in (third_party, CMake's fetched sources) is not text the
             # agent wrote, and its history holds other people's words: it is left out
             dirs[:] = [d for d in dirs if d not in SKIP]
             if ".git" in dirs or ".git" in files:
-                print(here)
+                print(f"{innermost(here)}\t{here}")
                 dirs.remove(".git") if ".git" in dirs else None
 PY
 }
 
 repos=()
+repo_areas=()
 seen=" "
+# add_repo <repo> <area> — the first listing of a repository names its area.
 add_repo() {
     local real
     real="$(cd "$1" 2>/dev/null && pwd -P)" || return 0
     case "${seen}" in *" ${real} "*) return 0 ;; esac
     seen="${seen}${real} "
     repos+=("$1")
+    repo_areas+=("$2")
 }
-# shellcheck disable=SC2086 — the glob is the point
-for repo in ${REPOS_GLOB:-}; do add_repo "${repo}"; done
 if [ "${AREA_REPOS:-1}" != 0 ]; then
-    while IFS= read -r repo; do add_repo "${repo}"; done < <(area_repos)
+    while IFS=$'\t' read -r area repo; do add_repo "${repo}" "${area}"; done < <(area_repos)
 fi
+# shellcheck disable=SC2086 — the glob is the point
+for repo in ${REPOS_GLOB:-}; do add_repo "${repo}" -; done
 if [ "${#repos[@]}" -eq 0 ]; then
     echo "error: no repository to audit: set REPOS_GLOB in ${CONF}, or define areas" >&2
     exit 2
@@ -134,7 +151,8 @@ summary=""
 
 {
     echo "=== weekly anon audit: ${stamp} ($(date '+%H:%M:%S')) ==="
-    for repo in "${repos[@]}"; do
+    for i in "${!repos[@]}"; do
+        repo="${repos[$i]}"
         [ -d "${repo}" ] || continue
         git -C "${repo}" rev-parse --git-dir >/dev/null 2>&1 || continue
 
@@ -152,7 +170,7 @@ summary=""
         fi
 
         echo ""
-        echo "--- ${repo} (${sweep}${known_note}) ---"
+        echo "--- ${repo} (${sweep}${known_note}, area ${repo_areas[$i]}) ---"
         if (cd "${repo}" && bash "${SCANNER}" ${since_args[@]+"${since_args[@]}"}) 2>&1; then
             echo "--- ${repo}: clean ---"
             printf '%s' "${run_started}" > "${state_file}"
