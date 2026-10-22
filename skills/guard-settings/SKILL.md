@@ -30,7 +30,7 @@ command:
 ```
 ````
 
-The call passes once when the operator's next message says yes (`はい`, `お願い`, `OK`, ...), and only for a session that may read where it acts: a setting of `areas/<area>/`, or a repository inside an area, from a session that reads inside that area. A call that differs from the shown one by a letter does not pass, nor does a yes in a turn a relayed message opened. Rewriting the marks or a transcript never passes. The same holds for a command that switches the hooks around (`--no-verify`, a hooksPath setting); taking a repository's own `core.hooksPath` away needs no yes, since it puts the repository back under the machine's hooks. `python3 <guard>/agent-hooks/claude-code/area-guard.py may-write <session id> <path>` answers whether a write would pass on its own.
+The call passes once when the operator's next message says yes (`はい`, `お願い`, `OK`, ...), and only for a session that may read where it acts: a setting of `areas/<area>/`, or a repository inside an area, from a session that reads inside that area. A call that differs from the shown one by a letter does not pass (a Bash call's `description`, `timeout` and `run_in_background` are not compared: they change neither what runs nor where), nor does a yes in a turn a relayed message opened. Rewriting the marks or a transcript never passes. The same holds for a command that switches the hooks around (`--no-verify`, a hooksPath setting); taking a repository's own `core.hooksPath` away needs no yes, since it puts the repository back under the machine's hooks. `python3 <guard>/agent-hooks/claude-code/area-guard.py may-write <session id> <path>` answers whether a write would pass on its own.
 
 ## What a session can read
 
