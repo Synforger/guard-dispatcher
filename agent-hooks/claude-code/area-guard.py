@@ -834,10 +834,141 @@ def kept_by(command: str, cwd: str, transcript: str | None,
 
 
 def bash_marks(command: str, cwd: str, areas) -> list[Path]:
-    """What a Bash command reads from: its folder always, and the area paths it names unless
-    it only checks them."""
+    """What a Bash command reads from: its folder always, the area paths it names unless
+    it only checks them, and the roots of the areas inside a folder it reads recursively."""
     named = [] if path_only(command) else mentioned_paths(command, areas)
-    return [*named, real(cwd)]
+    return [*named, real(cwd), *roots_under(recursive_reads(command, cwd), areas)]
+
+
+# The programs that read the contents of every file under the folders they are given. A program
+# that lists names only (`ls -R`, `tree`, `du`, a `find` that runs nothing) reads no contents.
+GREPS = {"grep", "egrep", "fgrep", "ggrep"}
+ALWAYS_RECURSIVE = {"rg", "ag", "ack"}
+RECURSIVE_COPIES = {"cp", "rsync", "scp", "zip", "tar", "ditto"}
+# Options that take the next word as their value, by program: that word is no folder to read.
+VALUED = {
+    "grep": {"-e", "-f", "-m", "-A", "-B", "-C", "-d", "-D", "--regexp", "--file", "--max-count",
+             "--after-context", "--before-context", "--context", "--directories", "--devices"},
+    "rg": {"-e", "-f", "-g", "-t", "-T", "-m", "-A", "-B", "-C", "-j", "-M", "-E", "--regexp", "--file",
+           "--glob", "--iglob", "--type", "--type-not", "--max-count", "--threads", "--encoding"},
+    "find": set(),
+    "copy": {"-e", "-f", "-C", "-T", "-x", "--exclude", "--include", "--files-from", "--rsh"},
+}
+FIND_RUNS = {"-exec", "-execdir", "-ok", "-okdir"}
+
+
+def _grep_recursive(words: list[str]) -> bool:
+    for at, word in enumerate(words):
+        if word in ("--recursive", "--dereference-recursive", "--directories=recurse", "--recurse"):
+            return True
+        if word in ("-d", "--directories") and at + 1 < len(words) and words[at + 1] == "recurse":
+            return True
+        if re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*", word):
+            return True
+    return False
+
+
+def _copy_recursive(tool: str, words: list[str]) -> bool:
+    if tool in ("rsync", "ditto"):
+        return True
+    if tool == "tar":
+        mode = next((w for w in words if not w.startswith("--")), "")
+        return "c" in mode.lstrip("-") or "r" in mode.lstrip("-") or "u" in mode.lstrip("-")
+    return any(re.fullmatch(r"-[A-Za-z]*[rRa][A-Za-z]*", w) or w in ("--recursive", "--archive") for w in words)
+
+
+def _operands(words: list[str], valued: set[str]) -> list[str]:
+    """The words of a program's arguments that are no option and no option's value (`--` ends options)."""
+    found, skip, ended = [], False, False
+    for word in words:
+        if skip:
+            skip = False
+        elif ended or not word.startswith("-") or word == "-":
+            found.append(word)
+        elif word == "--":
+            ended = True
+        elif word in valued:
+            skip = True
+    return found
+
+
+def _excluded_dirs(words: list[str]) -> list[str]:
+    """The folder names `grep --exclude-dir` (and rg's `--glob '!<dir>'`) keeps out of the walk."""
+    names = []
+    for at, word in enumerate(words):
+        if word.startswith("--exclude-dir="):
+            names.append(word.split("=", 1)[1])
+        elif word == "--exclude-dir" and at + 1 < len(words):
+            names.append(words[at + 1])
+    return [n.strip("'\"").rstrip("/") for n in names if n]
+
+
+def recursive_reads(command: str, cwd: str, depth: int = 0) -> list[tuple[Path, list[str]]]:
+    """The folders a Bash command reads every file under, each with the folder names its walk
+    leaves out: what a recursive grep, rg, a `find` that runs a command on what it finds (or hands
+    it to xargs), or a recursive copy is given, and the command's folder when it is given nothing.
+    A shell's `-c` string is followed the same way."""
+    line, _ = split_heredocs(spell_home(command))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return []
+    found: list[tuple[Path, list[str]]] = []
+    for index, (words, _, _, ended_by) in enumerate(steps):
+        rest = words
+        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT):
+            rest = rest[1:]
+        if not rest:
+            continue
+        tool, args = os.path.basename(rest[0]), rest[1:]
+        if SHELL_CODE.fullmatch(tool) and depth < NESTED:
+            for at, word in enumerate(args[:-1]):
+                if re.fullmatch(r"-[A-Za-z]*c", word):
+                    found += recursive_reads(args[at + 1], cwd, depth + 1)
+                    break
+            continue
+        given: list[str] | None = None
+        if tool in GREPS and _grep_recursive(args):
+            operands = _operands(args, VALUED["grep"])
+            pattern_given = any(w in ("-e", "-f", "--regexp", "--file") or w.startswith(("--regexp=", "--file="))
+                                for w in args)
+            given = operands if pattern_given else operands[1:]
+        elif tool in ALWAYS_RECURSIVE:
+            operands = _operands(args, VALUED["rg"])
+            pattern_given = any(w in ("-e", "-f", "--regexp", "--file") for w in args)
+            given = operands if pattern_given else operands[1:]
+        elif tool == "find":
+            runs = any(w in FIND_RUNS for w in args)
+            piped = ended_by == "|" and index + 1 < len(steps) and steps[index + 1][0][:1] == ["xargs"]
+            if runs or piped:
+                given = list(itertools.takewhile(lambda w: not w.startswith(("-", "(", "!")), args))
+        elif tool in RECURSIVE_COPIES and _copy_recursive(tool, args):
+            operands = _operands(args, VALUED["copy"])
+            # The last word of cp / rsync / scp / ditto is where it copies to. An archive's name and
+            # tar's mode word are no folders, so the folders among tar's and zip's words are what it reads.
+            given = operands[:-1] if tool in ("cp", "rsync", "scp", "ditto") else operands
+        if given is None:
+            continue
+        excluded = _excluded_dirs(args)
+        for name in given or ["."]:
+            folder = real(name, cwd)
+            if folder.is_dir():
+                found.append((folder, excluded))
+    return found
+
+
+def roots_under(folders: list[tuple[Path, list[str]]], areas) -> list[Path]:
+    """The roots of the areas that lie inside the folders given, past the folder names each walk
+    leaves out (an area the folder itself is inside is named by the folder already)."""
+    found = []
+    for folder, excluded in folders:
+        for name, root in areas:
+            if name in (EXEMPT, NO_AREA) or folder not in root.parents:
+                continue
+            between = root.relative_to(folder).parts
+            if not any(fnmatch.fnmatchcase(part, pattern) for part in between for pattern in excluded):
+                found.append(root)
+    return found
 
 
 def remote_marks(command: str, cwd: str) -> set[str]:
@@ -1460,6 +1591,11 @@ def main() -> int:
         for key in ("file_path", "path", "notebook_path"):
             if args.get(key):
                 touched.append(real(args[key], cwd))
+        if tool == "Grep":
+            # Grep walks the folder it is given (its own folder when none): every area inside it is read.
+            folder = real(args.get("path") or cwd, cwd)
+            if folder.is_dir():
+                touched += roots_under([(folder, [])], areas)
     elif tool == "Bash":
         command = args.get("command", "")
         touched += bash_marks(command, cwd, areas)
