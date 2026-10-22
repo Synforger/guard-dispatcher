@@ -223,6 +223,11 @@ documents themselves. Everything it reads is configured on this machine only:
 ~/.config/guard/areas/<area>/           the settings an area keeps for itself (see below)
 ```
 
+The path of a folder that holds the roots of two or more areas (written from your home
+folder, two folders deep or more) is fine to send without a line in `allow.txt`: every
+area's documents name where the areas live, so a run over that path is no area's text.
+What follows it in a line (an area's own folders and files, and any prose) is still compared.
+
 #### Settings an area keeps for itself
 
 An area can keep its own `areas.txt`, `destinations.txt`, `allow.txt`, `ignore.txt`

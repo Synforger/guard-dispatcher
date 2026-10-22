@@ -1286,6 +1286,21 @@ sys.exit(0 if want and want == have else 1)
     [ "$status" -eq 0 ]
 }
 
+@test "corpus: the path of a folder that holds several areas is no area's text, and what follows it still is" {
+    local place
+    place="$(cd -P "${WORK}" && pwd)"   # as the areas are read: links resolved
+    [ "${#place}" -ge 40 ]              # long enough to hold a whole run of its own
+    printf 'the archive moved to %s/shared/drive last spring\n' "${place}" >> "${CLIENT}/received/notes.md"
+    mk_repo other
+    commit_line "the new notes live under ${place}/other/place now"
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "see ${place}/clients/acme/received/notes.md: ${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client text"* ]]
+}
+
 @test "corpus: a scan says how long it took, clean or not" {
     mk_repo other
     commit_line "nothing private"
