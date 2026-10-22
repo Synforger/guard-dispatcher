@@ -672,9 +672,26 @@ def load_carries(areas: dict[str, list[Path]], source: Path | None = None) -> di
     return carries
 
 
+# Set by git for a hook, and by a command run in a linked worktree: they name the repository the
+# command runs in, and they win over `git -C <folder>` (`git rev-parse --local-env-vars`).
+REPOSITORY_GIT_VARS = frozenset((
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY", "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE", "GIT_PREFIX", "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR"))
+
+
+def git_in(folder: str | Path, *args: str, text: bool = False) -> subprocess.CompletedProcess:
+    """A git command about the repository at `folder`, whichever repository a hook that runs this
+    scan sits in: with the hook's own GIT_DIR, every published repository was read as that one and
+    the table of public text lost all their text."""
+    environment = {k: v for k, v in os.environ.items() if k not in REPOSITORY_GIT_VARS}
+    return subprocess.run(["git", "-C", str(folder), *args], capture_output=True, text=text, env=environment)
+
+
 def has_remote(repo: Path) -> bool:
     """A repository with a remote has somewhere to send what it holds."""
-    listed = subprocess.run(["git", "-C", str(repo), "remote"], capture_output=True, text=True)
+    listed = git_in(repo, "remote", text=True)
     return listed.returncode != 0 or bool(listed.stdout.strip())
 
 
@@ -835,7 +852,7 @@ class Repos:
 
     def tracked(self, repo: Path) -> set[str]:
         if repo not in self.names:
-            out = subprocess.run(["git", "-C", str(repo), "ls-files", "-z"], capture_output=True).stdout
+            out = git_in(repo, "ls-files", "-z").stdout
             self.names[repo] = {n.decode("utf-8", "replace") for n in out.split(b"\0") if n}
         return self.names[repo]
 
@@ -903,12 +920,11 @@ def published_files(parent: Path):
     """
     for gitdir in sorted(parent.glob("*/.git")) + sorted(parent.glob("*/*/.git")):
         repo = str(gitdir.parent)
-        head = subprocess.run(["git", "-C", repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-                              capture_output=True, text=True).stdout.strip()
+        head = git_in(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD", text=True).stdout.strip()
         if not head:
             continue
         # -z: a name is given as it is, whatever characters it holds (quoted, `git show` would not find it).
-        listing = subprocess.run(["git", "-C", repo, "ls-tree", "-r", "-z", head], capture_output=True)
+        listing = git_in(repo, "ls-tree", "-r", "-z", head)
         for row in listing.stdout.decode("utf-8", "replace").split("\0"):
             meta, _, name = row.partition("\t")
             words = meta.split()
@@ -916,7 +932,7 @@ def published_files(parent: Path):
                 continue
 
             def read(repo: str = repo, head: str = head, name: str = name) -> str | None:
-                blob = subprocess.run(["git", "-C", repo, "show", f"{head}:{name}"], capture_output=True)
+                blob = git_in(repo, "show", f"{head}:{name}")
                 if blob.returncode != 0 or len(blob.stdout) > MAX_FILE or b"\0" in blob.stdout[:8192]:
                     return None
                 return blob.stdout.decode("utf-8", "replace")
@@ -942,7 +958,7 @@ def walked_files(root: Path):
 
 def tracked_paths(repo: Path) -> list[Path]:
     """The files a repository tracks, less those under a folder SKIP_DIRS names."""
-    r = subprocess.run(["git", "-C", str(repo), "ls-files", "-z"], capture_output=True)
+    r = git_in(repo, "ls-files", "-z")
     if r.returncode != 0:
         return []
     names = [n for n in r.stdout.decode("utf-8", "replace").split("\0") if n]
@@ -1032,11 +1048,9 @@ def published_heads(source: Path) -> dict[str, str]:
         parent = expand(entry.split(None, 1)[1])
         for gitdir in sorted(parent.glob("*/.git")) + sorted(parent.glob("*/*/.git")):
             repo = str(gitdir.parent)
-            head = subprocess.run(["git", "-C", repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-                                  capture_output=True, text=True).stdout.strip()
+            head = git_in(repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD", text=True).stdout.strip()
             if head:
-                heads[repo] = subprocess.run(["git", "-C", repo, "rev-parse", head],
-                                             capture_output=True, text=True).stdout.strip()
+                heads[repo] = git_in(repo, "rev-parse", head, text=True).stdout.strip()
     return heads
 
 
@@ -1688,7 +1702,7 @@ def github_repo(url: str) -> str | None:
 
 
 def remote_repos(folder: Path) -> set[str]:
-    out = subprocess.run(["git", "-C", str(folder), "remote", "-v"], capture_output=True, text=True).stdout
+    out = git_in(folder, "remote", "-v", text=True).stdout
     return {slug for line in out.splitlines() if len(line.split()) >= 2
             and (slug := github_repo(line.split()[1]))}
 
