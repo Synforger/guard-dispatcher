@@ -1286,6 +1286,24 @@ sys.exit(0 if want and want == have else 1)
     [ "$status" -eq 0 ]
 }
 
+@test "corpus: the path of a folder that holds several areas is no area's text, and what follows it still is" {
+    # A folder whose path holds a whole run of its own, written as the areas are read (links resolved).
+    local place
+    place="$(cd -P "${BATS_TEST_TMPDIR}" && pwd)/the-folder-every-area-of-the-company-lives-in"
+    mkdir -p "${place}/org/clients/acme"
+    printf '%s\nthe archive moved to %s/shared/drive last spring\n' "${CLIENT_TEXT}" "${place}" \
+        > "${place}/org/clients/acme/notes.md"
+    printf 'company %s/org\nclient  %s/org/clients/acme\n' "${place}" "${place}" > "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo other
+    commit_line "the new notes live under ${place}/other/place now"
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "see ${place}/org/clients/acme/notes.md: ${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client text"* ]]
+}
+
 @test "corpus: a scan says how long it took, clean or not" {
     mk_repo other
     commit_line "nothing private"

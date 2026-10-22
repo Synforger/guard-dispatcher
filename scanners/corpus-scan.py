@@ -469,6 +469,28 @@ def kept_allowed(name: str, areas: dict[str, list[Path]]) -> list[str]:
     return [line for _, _, line in kept_lines("allow.txt", areas, of=name)]
 
 
+def shared_places(areas: dict[str, list[Path]]) -> list[str]:
+    """The paths of the folders that hold the roots of two or more areas, as they are written from
+    HOME when they lie in it, longest first: taken out of a line before it is compared with any
+    area's documents. Every area's documents name where the areas live, so a run over such a path
+    is no area's text; what follows it (an area's own folders and files) is still compared. A path
+    of one folder is left in: a short name taken out of a line would break the runs of prose that
+    hold it."""
+    home = Path.home()
+    roots = [root for rs in areas.values() for root in rs]
+    places = set()
+    for root in roots:
+        for folder in (root, *root.parents):
+            if folder == home or folder == folder.parent:
+                break
+            if sum(1 for other in roots if other == folder or folder in other.parents) < 2:
+                continue
+            written = folder.relative_to(home) if folder.is_relative_to(home) else folder.relative_to(folder.anchor)
+            if len(written.parts) >= 2:
+                places.add(normalize(str(written)))
+    return sorted(places, key=len, reverse=True)
+
+
 def kept_ignored(areas: dict[str, list[Path]]) -> list[Path]:
     """Folders an area keeps out of its own walk (no document of it there): only inside its folders."""
     out = []
@@ -2124,7 +2146,7 @@ def main(argv: list[str] | None = None) -> int:
     except NotBuilt as not_built:
         say(f"NOT JUDGED — {not_built}")
         return 2
-    allowed = [normalize(p) for p in read_lines(guard_places.setting("allow.txt"))]
+    allowed = shared_places(areas) + [normalize(p) for p in read_lines(guard_places.setting("allow.txt"))]
     public = background_prints()
     found = []
     for name in checked:
