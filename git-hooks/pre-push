@@ -9,7 +9,8 @@
 #   2. On every repo except an explicit `exempt`, parse the captured ref
 #      ranges and run `.tooling/local-ci/anon-audit-deep.sh --range` on each
 #      outgoing commit range + scan the ref name. Default-on. Missing
-#      scanner = hard fail.
+#      scanner = hard fail. A push of several refs is first checked once
+#      over all they send together; only a red sends it ref by ref.
 #   3. Protected-branch and author-identity enforcement stay scoped to
 #      synforger / enforced / no-remote — `other` repos are scanned but keep
 #      their own push flow and committer identities.
@@ -115,6 +116,91 @@ load_dest() {
     fi
     git for-each-ref --format='%(refname)' "${ns}" | while read -r ref; do git update-ref -d "${ref}"; done
 }
+# refused_protected <remote ref> <remote sha> — whether the push-flow rule refuses this ref: PR
+# merges happen server-side, so a direct local push to main/develop is a process violation. The
+# initial push that creates the branch on the remote is the one legitimate case, and a remote with
+# no pull requests at all has no such flow to bypass. GUARD_ALLOW_PROTECTED_PUSH=1 is the audited
+# escape hatch.
+refused_protected() {
+    [ "${enforce_identity}" = "1" ] \
+        && dispatcher::merges_through_prs "${push_url}" \
+        && dispatcher::protected_branch "$1" \
+        && [ "$2" != "${zero}" ] \
+        && [ "${GUARD_ALLOW_PROTECTED_PUSH:-0}" != "1" ]
+}
+
+# outgoing_ids — the addresses of the outgoing commits (${revs[@]}) no remote holds, less the
+# destination's, the allowed identities and GitHub's bot accounts.
+outgoing_ids() {
+    local ids
+    ids="$(python3 "${dest_tool}" addresses "${dest_known}" "${revs[@]}")" || return 1
+    printf '%s\n' "${ids}" | grep -v '^$' \
+        | grep -Fxvf <(printf '%s\n' "${allowed_emails}") \
+        | grep -Ev "$(dispatcher::history_identity_exempt_re)" || true
+}
+
+# at_once — every check run once over what all the refs send together. Each run of a check costs a
+# start of its own, and a rewritten history goes out as dozens of refs over one history: run per
+# ref, the checks outlasted the remote, which closed the connection before the pack was sent. It
+# stops at the first red without saying why; the ref-by-ref pass below then names the ref, the
+# reason and the repair.
+at_once() {
+    local local_ref local_sha remote_ref remote_sha names ref_scanner corpus plan change revspec dest_env bad_ids
+    names="$(mktemp)"
+    while read -r local_ref local_sha remote_ref remote_sha; do
+        { [ -z "${local_ref}" ] || [ "${local_sha}" = "${zero}" ]; } && continue
+        refused_protected "${remote_ref}" "${remote_sha}" && { rm -f "${names}"; return 1; }
+        printf '%s\n' "${local_ref}" >> "${names}"
+    done <<< "${ref_lines}"
+    if [ "${corpus_only}" = "0" ]; then
+        ref_scanner="$(dispatcher::locate_anon_scanner || true)"
+        if [ -z "${ref_scanner}" ] || ! ANON_SCAN_PATHS="${names}" bash "${ref_scanner}" >/dev/null 2>&1; then
+            rm -f "${names}"
+            return 1
+        fi
+    fi
+    rm -f "${names}"
+
+    plan="$(printf '%s\n' "${ref_lines}" | python3 "${dest_tool}" ranges "${remote_name}")" || return 1
+    [ -z "${plan}" ] && return 0
+    { read -r change; read -r revspec; } <<< "${plan}"
+    dest_env=""
+    if [ "${change}" = rewritten ]; then
+        load_dest
+        dest_env="${dest_known}"
+    fi
+
+    if [ "${enforce_identity}" = "1" ]; then
+        read -ra revs <<< "${revspec}"
+        bad_ids="$(outgoing_ids)" || return 1
+        if [ -n "${bad_ids}" ] && [ "${dest_loaded}" = 0 ]; then
+            load_dest
+            [ -n "${dest_known}" ] && { bad_ids="$(outgoing_ids)" || return 1; }
+        fi
+        [ -n "${bad_ids}" ] && return 1
+    fi
+
+    if [ "${GUARD_CORPUS_SKIP:-0}" != "1" ]; then
+        corpus="$(dispatcher::locate_scanner "corpus-scan.py" || true)"
+        [ -n "${corpus}" ] || return 1
+        GUARD_DEST_KNOWN="${dest_env}" python3 "${corpus}" --range "${revspec}" --dest "${push_url}" || return 1
+    fi
+    [ "${corpus_only}" = "1" ] && return 0
+
+    printf '[pre-push] anon-audit-deep --range %s (%s refs at once)\n' "${revspec}" "$(grep -c . <<< "${ref_lines}")" >&2
+    GUARD_DEST_KNOWN="${dest_env}" bash "${scanner}" --range "${revspec}" || return 1
+}
+
+if [ "$(grep -c . <<< "${ref_lines}")" -gt 1 ]; then
+    at_once_log="$(mktemp)"
+    if at_once > "${at_once_log}" 2>&1; then
+        cat "${at_once_log}" >&2
+        rm -f "${at_once_log}"
+        exit "${local_status}"
+    fi
+    rm -f "${at_once_log}"
+fi
+
 # Tips of the refs this push has already scanned clean, as ^<sha>. A new ref
 # counts them as published: every tag of a history pushed to an empty remote
 # would otherwise re-scan that whole history once per tag.
@@ -130,16 +216,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         continue
     fi
 
-    # Protected-branch guard: PR merges happen server-side, so a direct
-    # local push to main/develop is a process violation. The initial push
-    # that creates the branch on the remote is the one legitimate case, and a
-    # remote with no pull requests at all has no such flow to bypass.
-    # GUARD_ALLOW_PROTECTED_PUSH=1 is the audited escape hatch.
-    if [ "${enforce_identity}" = "1" ] \
-        && dispatcher::merges_through_prs "${push_url}" \
-        && dispatcher::protected_branch "${remote_ref}" \
-        && [ "${remote_sha}" != "${zero}" ] \
-        && [ "${GUARD_ALLOW_PROTECTED_PUSH:-0}" != "1" ]; then
+    if refused_protected "${remote_ref}" "${remote_sha}"; then
         printf '[pre-push] direct push to %s refused (use a PR; set GUARD_ALLOW_PROTECTED_PUSH=1 to override once)\n' "${remote_ref}" >&2
         any_leak=1
         continue
@@ -193,15 +270,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # from the org and now pushed on to another remote (a machine over ssh), has its own right author.
     if [ "${enforce_identity}" = "1" ]; then
         read -ra revs <<< "${revspec}"
-        # outgoing_ids — the addresses of the outgoing commits no remote holds, less the
-        # destination's, the allowed identities and GitHub's bot accounts
-        outgoing_ids() {
-            local ids
-            ids="$(python3 "${dest_tool}" addresses "${dest_known}" "${revs[@]}")" || return 1
-            printf '%s\n' "${ids}" | grep -v '^$' \
-                | grep -Fxvf <(printf '%s\n' "${allowed_emails}") \
-                | grep -Ev "$(dispatcher::history_identity_exempt_re)" || true
-        }
         if ! bad_ids="$(outgoing_ids)"; then
             printf '[pre-push] dest-known.py could not read the authors of %s — refusing the push\n' "${revspec}" >&2
             exit 1

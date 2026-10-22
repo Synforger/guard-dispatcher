@@ -522,3 +522,59 @@ stranger_commit() {
     [ "$status" -eq 1 ]
     [[ "${output}" == *"stranger@example.com"* ]]
 }
+
+# mk_lines <leaking line> — five lines off the seed, one commit each, the given one carrying a word
+# of the list. Sets seed and refs (the pre-push lines of a push that creates them all).
+mk_lines() {
+    local i
+    seed="$(git rev-parse HEAD)"
+    refs=()
+    for i in 1 2 3 4 5; do
+        git switch -q -c "b${i}" "${seed}"
+        if [ "${i}" = "$1" ]; then echo "${SENTINEL}" > "b${i}.txt"; else echo "b${i}" > "b${i}.txt"; fi
+        git add "b${i}.txt" && commit_bypassing_hooks "feat: b${i}"
+        refs+=("refs/heads/b${i} $(git rev-parse HEAD) refs/heads/b${i} ${ZERO_SHA}")
+    done
+}
+
+@test "pre-push: a push of several clean refs is checked once over all they send" {
+    mk_repo synforger
+    mk_lines none
+    run_pre_push "${refs[@]}"
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s\n' "${output}" | grep -c 'anon-audit-deep --range')" -eq 1 ]
+    [[ "${output}" == *"(5 refs at once)"* ]]
+}
+
+@test "pre-push: a red in a push of several refs is named ref by ref" {
+    mk_repo synforger
+    mk_lines 3
+    run_pre_push "${refs[@]}"
+    [ "$status" -eq 1 ]
+    [[ "${output}" == *"(ref refs/heads/b3)"* ]]
+    [[ "${output}" != *"refs at once"* ]]
+}
+
+@test "pre-push: a direct push to develop among several refs is still refused" {
+    mk_repo synforger
+    mk_lines none
+    run_pre_push "${refs[@]}" "refs/heads/develop $(git rev-parse b1) refs/heads/develop ${seed}"
+    [ "$status" -eq 1 ]
+    [[ "${output}" == *"direct push to refs/heads/develop refused"* ]]
+}
+
+@test "pre-push: a rewritten history sent as several refs leaves out what its destination holds, all at once" {
+    rewrite_under_colleague
+    run bash -c "printf '%s\n' 'refs/heads/develop ${new} refs/heads/develop ${old}' 'refs/tags/v1 ${new} refs/tags/v1 ${ZERO_SHA}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${dest}'"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"(2 refs at once)"* ]]
+    [[ "$output" != *"hit(s)"* ]]
+    # what the rewrite made new on one of the refs is still caught, and named by its ref
+    echo "fresh ${SENTINEL}" > fresh.txt && git add fresh.txt
+    fresh="$(git commit-tree "$(git write-tree)" -p "${new}" -m "feat: a fresh file")"
+    run bash -c "printf '%s\n' 'refs/heads/develop ${new} refs/heads/develop ${old}' 'refs/heads/side ${fresh} refs/heads/side ${ZERO_SHA}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${dest}'"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"git history blob: 1 hit(s)"* ]]
+    [[ "$output" == *"(ref refs/heads/side)"* ]]
+    [ -z "$(git for-each-ref refs/guard-dest)" ]
+}
