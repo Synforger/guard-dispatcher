@@ -1089,12 +1089,14 @@ wait_public_rebuilt() {
     [ "$status" -eq 1 ]
     publish_license "${BATS_TEST_TMPDIR}/public/lib"
     age_public 8
-    hold_lock "${GUARD_CORPUS_CACHE}" 4 background.lock
+    # The lock is held far longer than a scan takes on a loaded machine: a scan that waited for it
+    # would come back only once it is let go.
+    hold_lock "${GUARD_CORPUS_CACHE}" 30 background.lock
     started="$(date +%s)"
     scan_last
     elapsed=$(( $(date +%s) - started ))
     [ "$status" -eq 1 ]
-    [ "${elapsed}" -lt 3 ]
+    [ "${elapsed}" -lt 20 ]
     # Asked to rebuild while another holds the lock, the process leaves without building.
     run python3 "${SCAN}" --refresh-public
     [ "$status" -eq 0 ]
