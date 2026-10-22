@@ -183,8 +183,10 @@ SIGNS = re.compile(r"[\W_]{%d,}" % LATIN_RUN)
 # site: "https://drive.google.com/drive/folders/" plus one character is a whole run, and any document
 # holding any folder link holds it. The head ends at the first folder with a digit in it: an id names
 # a thing, and a run over it is still a copy.
-# A command's options (`--format=csv`, `-i`) are written the same by everyone who runs the tool. A run
-# that is half or more of them is how a command is called, not anyone's text.
+# A command's options (`--format=csv`, `-i`) are written the same by everyone who runs the tool.
+# A run that is half or more of what everyone writes the same (options and the heads of links) is how a
+# command is called or where a link points, not anyone's text: `: https://drive.google.com/drive/folders`
+# is the same after whatever sentence leads into it.
 OPTION = re.compile(r"(?<!\S)--?[A-Za-z][^\s]*")
 URL_HEAD = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/]+(?:/[A-Za-z._~-]*)*/", re.IGNORECASE)
 MAX_AGE = int(os.environ.get("GUARD_CORPUS_MAX_AGE", str(6 * 3600)))
@@ -729,20 +731,20 @@ def windows(text: str):
     # head of a link.
     silent = sorted([(m.start(), m.end() - LATIN_RUN) for m in SIGNS.finditer(text)]
                     + [(m.start(), m.end() - 1) for m in URL_HEAD.finditer(text)])
-    # How many characters before each position belong to a command's options.
-    options = [0] * (len(text) + 1)
-    for m in OPTION.finditer(text):
+    # How many characters before each position belong to a command's options or to the head of a link.
+    common = [0] * (len(text) + 1)
+    for m in [*OPTION.finditer(text), *URL_HEAD.finditer(text)]:
         for k in range(m.start(), m.end()):
-            options[k + 1] = 1
+            common[k + 1] = 1
     for k in range(len(text)):
-        options[k + 1] += options[k]
+        common[k + 1] += common[k]
     at = 0
     for i in range(len(text) - LATIN_RUN + 1):
         while at < len(silent) and silent[at][1] < i:
             at += 1
         if at < len(silent) and silent[at][0] <= i:
             continue
-        if (options[i + LATIN_RUN] - options[i]) * 2 >= LATIN_RUN:
+        if (common[i + LATIN_RUN] - common[i]) * 2 >= LATIN_RUN:
             continue
         long = text[i:i + LATIN_RUN]
         if not mostly_japanese(long[:RUN]):

@@ -1333,6 +1333,24 @@ write_text() {
     bash_in "${H}" "grep -n someword ${PERSONAL}/README.md"; passed
 }
 
+@test "area-guard: a recursive read of a relative folder reads where the command stands after a cd" {
+    export GUARD_WORK_FOLDER="${PERSONAL}"
+    # from the folder that holds the areas, a walk of `.` after a cd into a folder without areas reads nothing
+    bash_in "${H}" "cd ${PERSONAL} && grep -rln someword --include='*.py' ."; passed
+    bash_in "${H}" "cd ${PERSONAL} && bash -c 'grep -R someword .'"; passed
+    bash_in "${H}" "cd ${PERSONAL}; find . -type f | xargs cat"; passed
+    # and from a folder without areas, a cd into the folder that holds them walks them
+    bash_in "${PERSONAL}" "cd ${H} && grep -rn someword ."; denied
+    [[ "${output}" == *"reads inside client, company"* ]]
+    bash_in "${PERSONAL}" "cd ${H}; rg someword"; denied
+    bash_in "${PERSONAL}" "cd ${H} && cd - && cd ${H} && find . -type f -exec cat {} +"; denied
+    # a subshell gives the place back, popd too, and a cd whose target cannot be read leaves it where it stood
+    bash_in "${H}" "(cd ${PERSONAL}); grep -rn someword ."; denied
+    bash_in "${H}" "pushd ${PERSONAL} && popd && grep -rn someword ."; denied
+    bash_in "${H}" "cd \$SOMEWHERE && grep -rn someword ."; denied
+    bash_in "${PERSONAL}" "cd ${PERSONAL} && (cd ${H} && grep -rn someword .)"; denied
+}
+
 @test "area-guard: the areas a work folder's guard-reads.txt names are read too" {
     export GUARD_WORK_FOLDER="${PERSONAL}"
     printf 'client   # the client this tool is built for\n' > "${PERSONAL}/guard-reads.txt"

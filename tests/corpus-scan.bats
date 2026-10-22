@@ -508,6 +508,17 @@ client_code() {
     [ "$status" -eq 0 ]
 }
 
+@test "corpus: the head of a link after a colon is still the head every link shares" {
+    printf '資料の置き場: https://drive.google.com/drive/folders/1Qz9XkLmNoPqRsTuVwXyZaBcDeFgHiJk\n' > "${CLIENT}/received/notes.md"
+    mk_repo other
+    commit_line "返事の絵を置きました（第 2 版）： https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz01234"
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "see: https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz01234 (the folder)"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
 @test "corpus: a sentence copied with its link is still caught" {
     printf 'The weights sit in https://drive.google.com/drive/folders/1Qz9XkLmNoPqRsTuVwXyZaBcDeFgHiJk for every run.\n' > "${CLIENT}/received/notes.md"
     mk_repo other
