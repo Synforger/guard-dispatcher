@@ -40,7 +40,7 @@
 
 set -uo pipefail
 
-GUARD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GUARD_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCANNER="${GUARD_ROOT}/scanners/words/anon-audit-deep.sh"
 PLACES="${GUARD_ROOT}/_common/guard_places.py"
 CONF="$(python3 "${PLACES}" weekly-audit.conf)"

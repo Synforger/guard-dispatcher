@@ -41,8 +41,8 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GUARD_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD_ROOT="$(cd -P "${SCRIPT_DIR}/.." && pwd)"
 HOOKS_SRC="${GUARD_ROOT}/git-hooks"
 TARGET_DIR="${HOME}/.git-hooks"
 

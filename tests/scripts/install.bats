@@ -91,6 +91,22 @@ JSON
     [ "${status}" -eq 0 ]
 }
 
+@test "install: a script run through the installed scripts link finds the clone it belongs to" {
+    clone_to "${H}/src"
+    run bash "${H}/src/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    run bash "${H}/.git-hooks/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    [ "$(readlink "${H}/.git-hooks/scripts")" = "${H}/src/scripts" ]
+    [ "$(readlink "${H}/.git-hooks/scanners/anon-scan.sh")" = "${H}/src/scanners/words/anon-scan.sh" ]
+    mk_repo synforger
+    export GUARD_CONFIG_DIR="${H}/guard-config"
+    run bash "${H}/.git-hooks/scripts/weekly-audit.sh" --accept --as-of 2026-10-19T15:00:00Z "$(pwd)"
+    [[ "${output}" != *"No such file"* && "${output}" != *"can't open file"* ]]
+    [ -f "${GUARD_CONFIG_DIR}/audit/known/$(basename "$(pwd)").known" ] || \
+        [ -f "${H}/.config/guard-dispatcher/known/$(basename "$(pwd)").known" ]
+}
+
 @test "install: pre-compiles the clone's bytecode so the hook does not recompile on every call" {
     clone_to "${H}/src"
     run bash "${H}/src/scripts/install.sh"

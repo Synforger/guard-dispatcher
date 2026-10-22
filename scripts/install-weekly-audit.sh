@@ -19,7 +19,7 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LABEL="com.guard-dispatcher.weekly-audit"
 PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
 PLACES="${SCRIPT_DIR}/../_common/guard_places.py"
