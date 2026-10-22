@@ -42,16 +42,23 @@ of, on every machine.
 
 Separately, and on every machine, a Bash command that switches the guards off or around
 (skip variables, `--no-verify`, a hooksPath / exempt setting, clearing the marks, sending from a
-repository the hooks do not reach) is refused: the operator types those, the agent does not.
+repository the hooks do not reach) is refused. Taking a repository's own hooksPath away is not
+such a command: the machine's hooks cover the repository again.
 
-What the guard judges from is the operator's to write as well: the agent writes nothing in the
-guard's settings folder (`$GUARD_CONFIG_DIR`: where the areas are, what is public, what is fine
-to send, where a destination sits, what counts as an order), nor removes it, nor writes a
-session's transcript (`~/.claude*/projects/**/*.jsonl`), through Edit / Write or the shell.
-Reading the settings, and copying them out, pass. The operator may hand some of the settings to
-the agent (`agent-writes.txt`, one name per line, `*` for all): a session that has read inside no
-area, counting the call itself, writes those. The grant itself, `orders.txt` and `agent-off`
-stay the operator's whatever the grant says.
+What the guard judges from is kept the same way: the agent writes nothing in the guard's settings
+folder (`$GUARD_CONFIG_DIR`: where the areas are, what is public, what is fine to send, where a
+destination sits, what counts as an order), nor removes it, nor writes a session's transcript
+(`~/.claude*/projects/**/*.jsonl`), through Edit / Write or the shell. Reading the settings, and
+copying them out, pass. The operator may hand some of the settings to the agent
+(`agent-writes.txt`, one name per line, `*` for all): a session that has read inside no area,
+counting the call itself, writes those.
+
+Both pass on the operator's yes, with no command for the operator to type (`approval`): the agent
+shows the very call in a ```guard block and asks, and the operator's next message says yes
+(order.py). It passes only for a session that may read where the call acts: a repository or a
+folder inside an area, or a setting of `areas/<area>/`, from a session that reads inside that
+area. Rewriting the marks or a transcript never passes: the marks keep areas apart, and a
+transcript is what the yes is read from.
 
 A message relayed from a session on another machine holds the session it came into, on every
 machine (`order.py`, the `>>` lines of `orders.txt`): until the operator types a message of their
@@ -768,8 +775,9 @@ def write_targets(command: str, cwd: str) -> list[Path]:
 
 
 # What the guard judges from: the whole of its settings folder, and a session's transcript (an order
-# for a send is read from it). The operator writes these. An agent that could would draw an area
-# around what it wants to send, call a phrase fine to send, or make an order itself.
+# for a send is read from it). They change on the operator's yes (`approval`), a transcript never. An
+# agent that could write them on its own would draw an area around what it wants to send, call a
+# phrase fine to send, or make an order itself.
 SETTINGS_WHY = "what the guard lets through is judged from it"
 TRANSCRIPT_WHY = "an order for a send is judged from it"
 TRANSCRIPT = re.compile(r"\.claude[^/]*/projects/.+\.jsonl", re.I)
@@ -1375,12 +1383,26 @@ CONFIG_READS = {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--get-c
 CONFIG_WRITES = {"--unset", "--unset-all", "--add", "--replace-all", "--rename-section", "--remove-section",
                  "--edit", "-e", "set", "unset", "rename-section", "remove-section", "edit"}
 CONFIG_TAKES_VALUE = {"-f", "--file", "--blob", "--type", "--default", "--comment", "--value"}
+CONFIG_UNSETS = {"--unset", "--unset-all", "unset"}
+# Where a write lands other than the repository's own config: the machine's guard itself lives there.
+CONFIG_ELSEWHERE = {"--global", "--system", "-f", "--file", "--blob"}
+HOOKS_PATH = "core.hookspath"
+
+
+def returns_to_global_hooks(flags: set[str], positional: list[str]) -> bool:
+    """Whether a `git config` takes a repository's own core.hooksPath away and nothing else, so the
+    repository falls back to the machine's hooks: the guard covers it again."""
+    verb = positional[:1]
+    keys = positional[1:] if set(verb) & CONFIG_UNSETS else positional
+    return bool((flags | set(verb)) & CONFIG_UNSETS) and not flags & CONFIG_ELSEWHERE \
+        and bool(keys) and keys[0].casefold() == HOOKS_PATH
 
 
 def config_writes_guard_key(command: str) -> bool:
     """True when any `git config` in the command writes core.hooksPath, guard.scope or
     guard.exemptPrefix. Each invocation is judged on its own words, so a read beside a write
-    does not excuse the write."""
+    does not excuse the write. Taking a repository's own core.hooksPath away is no such write
+    (`returns_to_global_hooks`)."""
     words = shell_words(command)
     start = 0
     for i, w in enumerate(words):
@@ -1397,12 +1419,15 @@ def config_writes_guard_key(command: str) -> bool:
             if skip:
                 skip = False
             elif a in CONFIG_TAKES_VALUE:
+                flags.add(a)
                 skip = True
             elif a.startswith("-"):
                 flags.add(a.split("=", 1)[0])
             else:
                 positional.append(a)
         verb = positional[:1]
+        if returns_to_global_hooks(flags, positional):
+            continue
         if flags & CONFIG_WRITES or set(verb) & CONFIG_WRITES:
             return True
         if flags & CONFIG_READS or set(verb) & CONFIG_READS:
@@ -1459,12 +1484,36 @@ def marks_names() -> set[str]:
     return {".cache/area-guard", "state/guard/marks", str(STATE), str(real(STATE))}
 
 
+MARKS_REWRITE = "removes or rewrites the entry guard's marks"
+
+
+def setting_area(path: Path) -> str | None:
+    """The area a path of the guard's settings belongs to (`areas/<area>/...`), or None."""
+    name = settings_name(path)
+    parts = name.split(os.sep) if name else []
+    return parts[1] if len(parts) > 2 and parts[0] == "areas" else None
+
+
+def approval(tool: str, args: dict, event: dict, places: list[Path], areas) -> str | None:
+    """None when the operator said yes to this very call and every place it acts on lies where
+    this session may read; else why it does not pass. The agent shows the call in a ```guard block
+    and asks (order.py): the operator answers in the chat, and types no command."""
+    reachable = reach(areas)
+    acted = {a for p in places if (a := setting_area(p) or area_of(real(p), areas)) and a != EXEMPT}
+    if reachable is not None and (beyond := acted - reachable):
+        return (f"it acts inside {', '.join(sorted(beyond))}, which this session does not read "
+                f"(it works in {work_folder()}). Ask a session that works there")
+    why, found = order_module().ordered(tool, args, event, kind=order_module().CHANGE)
+    return why or order_module().spend(found, event, STATE)
+
+
 def bypass(command: str, cwd: str, areas) -> str | None:
-    """Why a command switches the guards off or around, or None. The operator may; the agent may not."""
+    """Why a command switches the guards off or around, or None. It passes on the operator's yes
+    (`approval`), but for the marks."""
     expanded = spell_home(command)
     marks = "|".join(re.escape(name) for name in sorted(marks_names()))
     if re.search(rf"\b(rm|mv|cp|truncate|tee|touch|ln)\b[^|;&]*(?:{marks})|>\s*\S*(?:{marks})", expanded):
-        return "removes or rewrites the entry guard's marks"
+        return MARKS_REWRITE
     if re.search(r"\b(mv|cp|tee|touch|ln|install)\b[^|;&]*agent-off|>\s*\S*agent-off", expanded):
         return "switches the entry guard off"
     if re.search(r"\b(rm|mv|unlink|ln)\b[^|;&]*\.git-hooks(/agent-hooks)?/?(\s|$|[;&|])", expanded):
@@ -1578,14 +1627,18 @@ def main() -> int:
         return 0
     state = load_state(session) if areas else {"areas": [], "tabs": {}}
     marks = set(state["areas"])
-    # Switching the guards off or around is refused even on a machine with no areas
+    # Switching the guards off or around is refused even on a machine with no areas, but on the
+    # operator's yes to this very call: the marks, which keep areas apart, never.
     if tool == "Bash" and (reason := bypass(args.get("command", ""), cwd, areas)):
-        deny(f"area-guard: an agent does not switch the guards off or around ({reason}). "
-             f"If it is needed, tell the operator why; the operator does it by hand")
-        return 0
+        command = args.get("command", "")
+        places = [real(cwd), *mentioned_paths(command, areas), *(t for t, _ in sends_of(command, cwd))]
+        if reason == MARKS_REWRITE or (why := approval(tool, args, event, places, areas)):
+            deny(f"area-guard: an agent does not switch the guards off or around ({reason})"
+                 + ("" if reason == MARKS_REWRITE else f": {why}"))
+            return 0
     written = str(real(args.get("file_path") or args.get("notebook_path") or "", cwd)) if tool in WRITES else ""
-    if written.endswith("/agent-off"):
-        deny("area-guard: an agent does not switch the entry guard off. If it is needed, tell the operator why")
+    if written.endswith("/agent-off") and (why := approval(tool, args, event, [Path(written)], areas)):
+        deny(f"area-guard: an agent does not switch the entry guard off: {why}")
         return 0
     if tool in WRITES and any(name in written for name in marks_names()):
         deny("area-guard: an agent does not rewrite the entry guard's marks")
@@ -1608,11 +1661,19 @@ def main() -> int:
         writer |= remote_marks(command, cwd)
     what = kept(Path(written), transcript, writer) if tool in WRITES else \
         kept_by(args.get("command", ""), cwd, transcript, writer) if tool == "Bash" else None
+    # The guard's settings change on the operator's yes; a transcript, which judges that yes, never.
     if what:
-        deny(f"area-guard: an agent does not write or remove {what[0]}: {what[1]} "
-             f"(code written into a command counts as writing every path it names). "
-             f"If it needs changing, tell the operator why")
-        return 0
+        is_setting = what[1].startswith(SETTINGS_WHY)
+        if tool in WRITES:
+            paths = [Path(written)]
+        else:
+            paths = [p for found in named(args.get("command", ""), cwd) for p in found if in_settings(p)]
+        why = approval(tool, args, event, paths or [real(cwd)], areas) if is_setting else None
+        if not is_setting or why:
+            deny(f"area-guard: an agent does not write or remove {what[0]}: {what[1]} "
+                 f"(code written into a command counts as writing every path it names)"
+                 + (f": {why}" if why else ""))
+            return 0
 
     def private_area(path: Path) -> str | None:
         area = area_of(real(path), areas)

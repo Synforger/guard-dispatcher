@@ -6,6 +6,7 @@
 # document. Every call feeds the hook the JSON Claude Code sends before a tool runs.
 
 load ../../_internal/helpers
+load ../../_internal/transcript
 
 HOOK="${GUARD_ROOT}/agent-hooks/claude-code/area-guard.py"
 CLIENT_TEXT="the calibration table reads seventeen at dawn"
@@ -730,19 +731,6 @@ held() {
     : > "${T}"
     PROMPT=0
 }
-row() { jq -c -n "$@" >> "${T}"; }
-# said <text> — a message the operator types: it opens a turn, and a new prompt.
-said() {
-    PROMPT=$((PROMPT + 1))
-    row --arg t "$1" --arg p "p${PROMPT}" '{type: "user", uuid: ("u-" + $p), promptId: $p, origin: {kind: "human"},
-                                           message: {role: "user", content: $t}}'
-}
-# queued <text> — a message the operator types while the agent works.
-queued() {
-    row --arg t "$1" --arg u "q-${RANDOM}" '{type: "attachment", uuid: $u, attachment: {type: "queued_command",
-                                           commandMode: "prompt", origin: {kind: "human"}, prompt: $t}}'
-}
-replied() { row --arg t "$1" '{type: "assistant", message: {role: "assistant", content: [{type: "text", text: $t}]}}'; }
 # show <channel> <message> [tool] — the agent shows a call in a send block.
 show() {
     replied "$(printf 'This is what I would send.\n\n```send\ntool: %s\nchannel_id: %s   the team channel\nmessage:\n%s\n```\n' \

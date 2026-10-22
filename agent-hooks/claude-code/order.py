@@ -1,4 +1,5 @@
-"""The operator's order for a send: judged from the session's transcript (Claude Code side).
+"""The operator's order for a send, and the operator's yes to a change of the guard: judged from
+the session's transcript (Claude Code side).
 
 A destination declared with `order` in destinations.txt (see scanners/destinations/send-scan.py) takes a send
 only when all of these hold, read from the transcript Claude Code keeps for the session:
@@ -48,6 +49,13 @@ it orders nothing, and a turn it opened takes no order. This holds only while ag
 reach the client's own way of typing as the operator: declare that endpoint `block` in
 destinations.txt (a `local:` or `tmux:` name, see outgoing.py).
 
+The same holds for a call the entry guard keeps for the operator (a change of the guard's settings
+or of the hooks, see area-guard.py), with two differences. The agent shows it in a ```guard block
+and asks; the operator's last message answers yes: it holds one of the approving phrases, the
+lines of orders.txt starting with `+` (with none, the built-in `APPROVALS`), with the same
+cancelling tails. A send is ordered and a change approved apart: a ```send block takes no yes, and
+a ```guard block no order.
+
 A line starting with `>>` is how a message relayed from a session on another machine opens. It is
 a relayed message like any other, and it also holds the session it came into (`held`): whoever
 sits at that other machine can have such a message written, so until the operator types a message
@@ -70,7 +78,8 @@ import guard_places  # noqa: E402
 
 ORDERS = guard_places.setting("orders.txt")
 # A fence of three or more backticks, closed by one of the same length.
-BLOCK = re.compile(r"^(`{3,})send[ \t]*\n(.*?)^\1[ \t]*$", re.S | re.M)
+SEND, CHANGE = "send", "guard"
+BLOCKS = {kind: re.compile(rf"^(`{{3,}}){kind}[ \t]*\n(.*?)^\1[ \t]*$", re.S | re.M) for kind in (SEND, CHANGE)}
 KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):(.*)$")
 # Quoted text and pasted text are what someone else wrote or what is to be sent, not an order.
 QUOTED = re.compile(r"「[^」]*」|『[^』]*』|<pasted_content[^>]*>.*?</pasted_content[^>]*>", re.S)
@@ -79,7 +88,11 @@ PASTED_OPENING = re.compile(r"^\s*<pasted_content[^>\n]*>\s*")
 SENTENCE_END = re.compile(r"[。．！!\n]")
 # A tool whose last part says it drafts keeps the text in the operator's own account.
 DRAFT = re.compile(r"(^|_)drafts?(_|$)", re.I)
-SHOW = "Show the call in a ```send block and wait for the operator's order"
+SHOW = {SEND: "Show the call in a ```send block and wait for the operator's order",
+        CHANGE: "Show the call in a ```guard block (`tool: Bash`, then `command:` and the command on "
+                "the lines after it), ask the operator, and wait for their yes"}
+# What an operator answers when asked whether a change may be made, when orders.txt names none.
+APPROVALS = ("はい", "お願い", "どうぞ", "いいよ", "いいです", "やって", "変えて", "外して", "OK", "ok", "yes", "Yes")
 # How much of a transcript is read at a time when it is read from its end.
 TAIL_PIECE = 256 * 1024
 
@@ -88,15 +101,18 @@ def is_draft(tool: str) -> bool:
     return bool(DRAFT.search(tool.rsplit("__", 1)[-1]))
 
 
-def settings() -> tuple[list[str], list[str], list[str], list[str]]:
+def settings() -> tuple[list[str], list[str], list[str], list[str], list[str]]:
     """(order phrases, cancelling tails, openings of a relayed message, those of them that open a
-    message from another machine) from orders.txt; none when it is missing."""
+    message from another machine, approving phrases) from orders.txt; none when it is missing."""
     if not ORDERS.is_file():
-        return [], [], [], []
-    orders, tails, relays, far = [], [], [], []
+        return [], [], [], [], []
+    orders, tails, relays, far, approvals = [], [], [], [], []
     for line in ORDERS.read_text(encoding="utf-8").splitlines():
         line = line.split("#", 1)[0].strip()
-        if line.startswith(">>"):
+        if line.startswith("+"):
+            if line[1:].strip():
+                approvals.append(line[1:].strip())
+        elif line.startswith(">>"):
             if line[2:].strip():
                 relays.append(line[2:].strip())
                 far.append(line[2:].strip())
@@ -105,7 +121,7 @@ def settings() -> tuple[list[str], list[str], list[str], list[str]]:
                 (tails if line[0] == "!" else relays).append(line[1:].strip())
         elif line:
             orders.append(line)
-    return orders, tails, relays, far
+    return orders, tails, relays, far, approvals or list(APPROVALS)
 
 
 def phrases() -> tuple[list[str], list[str]]:
@@ -130,8 +146,19 @@ def from_another_machine(text: str) -> bool:
 
 def orders_a_send(text: str) -> bool:
     orders, tails = phrases()
+    return holds_phrase(text, orders, tails)
+
+
+def approves_a_change(text: str) -> bool:
+    found = settings()
+    return holds_phrase(text, found[4], found[1])
+
+
+def holds_phrase(text: str, wanted: list[str], tails: list[str]) -> bool:
+    """Whether a message says one of the phrases, outside quotes, in a sentence that does not ask
+    and does not go on with a cancelling tail."""
     text = QUOTED.sub("", text)
-    for phrase in orders:
+    for phrase in wanted:
         start = 0
         while (at := text.find(phrase, start)) >= 0:
             start = at + len(phrase)
@@ -245,9 +272,9 @@ def typed(row: dict) -> str | None:
     return None if text is None or relayed(text) else text
 
 
-def shown_calls(text: str) -> list[dict[str, str]]:
+def shown_calls(text: str, kind: str = SEND) -> list[dict[str, str]]:
     calls = []
-    for _, body in BLOCK.findall(text):
+    for _, body in BLOCKS[kind].findall(text):
         fields: dict[str, str] = {}
         lines = body.splitlines()
         for i, line in enumerate(lines):
@@ -295,8 +322,11 @@ class Ordered(NamedTuple):
     failed: set[str]   # calls since the order that the transcript shows refused or failed
 
 
-def ordered(tool: str, args: dict, event: dict | None) -> tuple[str | None, Ordered | None]:
-    """(why this send has no order from the operator, None), or (None, the order it has)."""
+def ordered(tool: str, args: dict, event: dict | None, kind: str = SEND) -> tuple[str | None, Ordered | None]:
+    """(why this call has no order from the operator, None), or (None, the order it has). `kind` is
+    SEND for a send the operator orders, CHANGE for a change of the guard the operator approves."""
+    show = SHOW[kind]
+    what, none = ("orders a send", "orders no send") if kind == SEND else ("approves a change", "approves no change")
     event = event or {}
     history = rows(event.get("transcript_path"))
     if not history:
@@ -313,20 +343,20 @@ def ordered(tool: str, args: dict, event: dict | None) -> tuple[str | None, Orde
                    and (t := entered(r)) is not None), None)
     if opened is not None and relayed(opened):
         return ("this turn was opened by a message relayed from another session, not by the operator, "
-                f"and only the operator orders a send. {SHOW}"), None
+                f"and only the operator {what}. {show}"), None
     holds = history[last].get("promptId") == prompt if history[last].get("type") == "user" \
         else any(r.get("type") == "user" and r.get("promptId") == prompt for r in history)
     if not prompt or not holds:
         return ("the session's transcript does not hold the operator's latest message yet, so the "
                 "order cannot be seen. Try the call again"), None
-    if not orders_a_send(message):
-        return f"the operator's last message orders no send ({ORDERS}). {SHOW}", None
+    if not (orders_a_send(message) if kind == SEND else approves_a_change(message)):
+        return f"the operator's last message {none} ({ORDERS}). {show}", None
     shown = [c for r in history[before + 1:last] if r.get("type") == "assistant"
-             for c in shown_calls(text_of(content(r)))]
+             for c in shown_calls(text_of(content(r)), kind)]
     matching = sum(1 for c in shown if same(c, tool, args))
     if not matching:
-        return ("this call is not one the agent showed just before the operator's order (a ```send "
-                f"block with the same tool and the same input). {SHOW}"), None
+        return (f"this call is not one the agent showed just before the operator's answer (a ```{kind} "
+                f"block with the same tool and the same input). {show}"), None
     failed = {b.get("tool_use_id") for r in history[last + 1:] if r.get("type") == "user"
               for b in content(r) if b.get("type") == "tool_result" and b.get("is_error")}
     given = {k: s for k, v in args.items() if (s := value(v)) is not None}

@@ -475,8 +475,11 @@ step earlier, before each tool call, from the same `areas.txt`:
   or around is refused: `--no-verify`, `git commit -n`, the skip variables,
   `git -c core.hooksPath=…`, setting `core.hooksPath` / `guard.scope` /
   `guard.exemptPrefix`, clearing the marks, creating the off switch, removing
-  the installed hooks, or sending from a repository the git hooks do not reach. The operator types
-  those; the agent does not.
+  the installed hooks, or sending from a repository the git hooks do not reach. Each passes on
+  the operator's yes (see *A change the operator approves* below), but clearing the marks.
+  Taking a repository's own `core.hooksPath` away (`--unset` in the repository's config) is not
+  refused at all: it puts the repository back under the machine's hooks. The same unset in the
+  global or system config, or in a file named with `--file`, is refused like any other change.
 - On every machine too, the agent writes nothing in the guard's settings folder
   (`~/.config/guard/`: `areas.txt`, `allow.txt`, `background.txt`, `ignore.txt`,
   `patterns/`, `destinations.txt`, `orders.txt`, `handoff.txt`, and a file put there tomorrow),
@@ -486,7 +489,27 @@ step earlier, before each tool call, from the same `areas.txt`:
   the transcript (see *A send the operator orders* below). An agent that could
   write them would draw an area around what it wants to send, call a phrase fine
   to send, or make an order itself. Reading them and copying them out pass; a
-  change is the operator's to make, on the agent's telling why.
+  change of the settings passes on the operator's yes, a change of a transcript never.
+- **A change the operator approves**: the agent shows the very call in a
+  `guard` block and asks; the operator answers in the chat, and types no command.
+
+  ````
+  ```guard
+  tool: Bash
+  command:
+  git config core.hooksPath .githooks
+  ```
+  ````
+
+  The call passes once when the operator's next message says yes (`はい`, `お願い`,
+  `OK`, ...; the `+` lines of `orders.txt` replace that list), in a sentence that
+  does not ask and does not go on with one of the file's cancelling tails, and
+  when the session may read where the call acts: a repository or a folder inside
+  an area, or a setting of `areas/<area>/`, only from a session that reads inside
+  that area. It is judged as an order for a send is (one block, one call; a call
+  that differs by one letter does not pass; a turn a relayed message opened takes
+  no yes), and a block shown for a send is no block for a change. With no
+  `orders.txt`, nothing is approved.
 - **The operator may hand the upkeep of some settings to the agent**, when the
   settings grow with every area and every false alarm: `agent-writes.txt` names
   them, one per line (`destinations.txt`, `patterns/`, `*` for all). A session
@@ -494,9 +517,9 @@ step earlier, before each tool call, from the same `areas.txt`:
   call itself (`cat <area file> >> allow.txt` is refused: the mark is kept after
   the call). Drawing an area around a send needs reading inside the area first,
   and a session that has done so writes none of them. The grant itself,
-  `orders.txt` and `agent-off` stay the operator's whatever the grant says: an
-  agent that wrote those would grant itself, order its own sends, or switch the
-  guard off. `may-write` answers for the settings as an Edit of them is judged.
+  `orders.txt` and `agent-off` are never granted: an agent that wrote those on
+  its own would grant itself, order its own sends, or switch the guard off. They
+  change on the operator's yes alone. `may-write` answers for the settings as an Edit of them is judged.
   A line may name areas after the setting (`areas/company/ company hub`): then a
   session whose every mark is one of those areas, or lies within one of them,
   writes it too. The session that gathers the company keeps the company's own
@@ -1003,7 +1026,7 @@ What the guard is for is in *What it watches*; these lie outside it.
   `GUARD_CORPUS_WALK_WAIT` (seconds a scan waits for a full walk or a build it started, default 60),
   `GUARD_VISIBILITY_TTL` (seconds a repository's visibility is remembered).
 - An AI agent is held to none of these: the agent entry guard refuses any
-  command that carries them (the operator types them, the agent does not).
+  command that carries them, but on the operator's yes to that very command.
 - Full uninstall:
   `git config --global --unset core.hooksPath && rm -rf ~/.git-hooks`,
   `rm ~/.local/bin/gh`, and the `area-guard.py` entry in each Claude Code

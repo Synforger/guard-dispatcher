@@ -315,7 +315,7 @@ hub_repo() {
 }
 
 @test "area-guard: writing a guard key is refused, even beside a read" {
-    for command in "git config set core.hooksPath .husky" "git config --unset core.hooksPath" \
+    for command in "git config set core.hooksPath .husky" "git config --global --unset core.hooksPath" \
                    "git config --replace-all guard.scope exempt" "git config --add guard.exemptPrefix ~/x" \
                    "git config --file .git/config core.hooksPath /dev/null" \
                    "git config --type=path core.hooksPath /dev/null" \
@@ -327,6 +327,28 @@ hub_repo() {
         bash_in "${PERSONAL}" "${command}"
         denied || { echo "not refused: ${command}"; return 1; }
     done
+}
+
+@test "area-guard: taking a repository's own hooksPath away passes, and the machine's hooks cover it again" {
+    for command in "git config --unset core.hooksPath" "git config --local --unset core.hooksPath" \
+                   "git config --unset-all core.hooksPath" "git config unset core.hooksPath" \
+                   "git config unset --all core.hooksPath" "git config --worktree --unset core.hooksPath" \
+                   "git -C ${PERSONAL} config --unset core.hooksPath" "git config --unset core.hookspath"; do
+        bash_in "${PERSONAL}" "${command}"
+        passed || { echo "refused: ${command}"; return 1; }
+    done
+    for command in "git config --global --unset core.hooksPath" "git config --system --unset core.hooksPath" \
+                   "git config --file ~/.gitconfig --unset core.hooksPath" "git config -f ~/.gitconfig --unset core.hooksPath" \
+                   "git config unset --global core.hooksPath" "git config --unset guard.scope" \
+                   "git config --unset guard.exemptPrefix" "git config --unset core.hooksPath; git config core.hooksPath .husky"; do
+        bash_in "${PERSONAL}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    git -C "${PERSONAL}" config core.hooksPath .husky
+    bash_in "${PERSONAL}" "git config --unset core.hooksPath"; passed
+    git -C "${PERSONAL}" config --unset core.hooksPath
+    origin "${PERSONAL}" o/r
+    bash_in "${PERSONAL}" "git commit -m x"; passed
 }
 
 @test "area-guard: clearing the marks is refused" {
