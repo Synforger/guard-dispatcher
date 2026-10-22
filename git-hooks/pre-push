@@ -78,6 +78,12 @@ fi
 zero='0000000000000000000000000000000000000000'
 remote_name="${1:-origin}"
 push_url="${2:-}"
+# The push-flow rules follow where the push goes too, not only where origin points: a clone made
+# from a bundle or a local path has an origin that names no host, and its push still lands in the
+# org's repository.
+if [ "${enforce_identity}" = "0" ] && dispatcher::is_synforger_url "${push_url}"; then
+    enforce_identity=1
+fi
 allowed_emails="$(dispatcher::allowed_emails)"
 any_leak=0
 

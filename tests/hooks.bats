@@ -171,7 +171,7 @@ setup() {
     git add ok.txt
     git -c user.email=someone-else@example.com commit -q -m "feat: third-party author"
     head="$(git rev-parse HEAD)"
-    run_pre_push "refs/heads/feature/x ${head} refs/heads/feature/x ${base}"
+    run_pre_push_to "$(git remote get-url origin)" "refs/heads/feature/x ${head} refs/heads/feature/x ${base}"
     [ "$status" -eq 0 ]
 }
 
@@ -202,6 +202,17 @@ setup() {
     run_pre_push_to "github-work:org/repo.git" "refs/heads/develop ${head} refs/heads/develop ${base}"
     [ "$status" -eq 1 ]
     [[ "$output" == *"refused"* ]]
+}
+
+@test "pre-push: direct push to develop is refused when only the destination is the org's" {
+    # A clone made from a bundle or a local path: origin names no host.
+    mk_repo other
+    base="$(git rev-parse HEAD)"
+    echo "more" > more.txt && git add more.txt && commit_bypassing_hooks "feat: clean"
+    head="$(git rev-parse HEAD)"
+    run_pre_push_to "git@github.com:Synforger/some-tool.git" "refs/heads/develop ${head} refs/heads/develop ${base}"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"direct push to refs/heads/develop refused"* ]]
 }
 
 @test "pre-push: initial branch-creating push to main is allowed" {

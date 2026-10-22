@@ -51,6 +51,14 @@
 # useful for a private state directory whose contents include the very
 # words the master list flags. Set once on the machine and every clone/init
 # under that tree inherits the opt-out.
+# Is this the URL of a repository of the Synforger org? Accepts both HTTPS
+# (github.com/Synforger/…) and SSH (git@github.com:Synforger/…) forms, including custom
+# host aliases like `github-synforger`. Case-insensitive to tolerate the org name being
+# written in any case.
+dispatcher::is_synforger_url() {
+    printf '%s' "${1:-}" | grep -Eqi '(github[^/:]*[/:])synforger/'
+}
+
 dispatcher::detect_repo_kind() {
     local scope
     scope="$(git config --get guard.scope 2>/dev/null || true)"
@@ -92,10 +100,7 @@ dispatcher::detect_repo_kind() {
         return 0
     fi
 
-    # Accept both HTTPS (github.com/Synforger/…) and SSH (git@github.com:Synforger/…)
-    # forms, including custom host aliases like `github-synforger`. Case-insensitive
-    # to tolerate the org name being written in any case.
-    if printf '%s' "${url}" | grep -Eqi '(github[^/:]*[/:])synforger/'; then
+    if dispatcher::is_synforger_url "${url}"; then
         echo "synforger"
         return 0
     fi
