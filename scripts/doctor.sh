@@ -65,7 +65,7 @@ check_global() {
 
     # Machine axis: the strongest hooks are useless without the operator
     # master word list — a machine can be "armed" and still scan nothing.
-    local truth="${ANON_TRUTH_PATH:-${HOME}/.config/anon-words/master.txt}"
+    local truth; truth="$(python3 "${GUARD_ROOT}/scanners/guard_places.py" master-words)"
     if [ -f "${truth}" ]; then
         printf '  %s✓%s operator master present (%s)\n' "${GRN}" "${NC}" "${truth}"
     else
@@ -74,7 +74,7 @@ check_global() {
     fi
 
     # Private documents are optional: a machine without areas is told so, not failed.
-    local areas="${GUARD_CONFIG_DIR:-${HOME}/.config/guard}/areas.txt"
+    local areas; areas="$(python3 "${GUARD_ROOT}/scanners/guard_places.py" areas.txt)"
     if [ -f "${areas}" ]; then
         printf '  %s✓%s private areas defined (%s)\n' "${GRN}" "${NC}" "${areas}"
         # Counts only: doctor runs under bootstrap, install and agents, and an area's name or a
@@ -92,7 +92,7 @@ check_global() {
 check_agent() {
     local areas="$1"
     local hook="${EXPECTED_HOOKS_DIR}/agent-hooks/claude-code/area-guard.py"
-    local off="${GUARD_CONFIG_DIR:-${HOME}/.config/guard}/agent-off"
+    local off; off="$(python3 "${GUARD_ROOT}/scanners/guard_places.py" agent-off)"
     if [ -f "${hook}" ] && [ -e "${off}" ]; then
         printf '  %s-%s agent entry guard installed, switched OFF by the operator (%s; remove it to switch on)\n' "${YEL}" "${NC}" "${off}"
     elif [ -f "${hook}" ]; then
@@ -195,7 +195,7 @@ check_repo() {
     # master (scanners prefer the master, but a repo-local scanner override
     # would read its neighbour). Warn on drift so the copy gets removed or
     # refreshed.
-    local truth="${ANON_TRUTH_PATH:-${HOME}/.config/anon-words/master.txt}"
+    local truth; truth="$(python3 "${GUARD_ROOT}/scanners/guard_places.py" master-words)"
     local repo_words="${repo}/.tooling/local-ci/anon-words.txt"
     if [ -f "${truth}" ] && [ -f "${repo_words}" ]; then
         if ! diff -q "${truth}" "${repo_words}" >/dev/null 2>&1; then

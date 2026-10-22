@@ -38,7 +38,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # never carries the real list):
 #   1. $ANON_WORDS_FILE            explicit override
 #   2. `git config guard.wordlist` scope-specific list (conditional include)
-#   3. $HOME/.config/anon-words/master.txt   operator master (bootstrap-machine standard)
+#   3. the operator master (bootstrap-machine standard; guard_places.py master-words)
 #   4. $SCRIPT_DIR/anon-words.txt  repo-local synced copy (legacy / repo override)
 WORDS_FILE="${ANON_WORDS_FILE:-}"
 if [ -z "${WORDS_FILE}" ]; then
@@ -49,8 +49,9 @@ if [ -z "${WORDS_FILE}" ]; then
     WORDS_FILE="${WORDS_FILE/#\$HOME/${HOME}}"
 fi
 if [ -z "${WORDS_FILE}" ]; then
-    if [ -f "${HOME}/.config/anon-words/master.txt" ]; then
-        WORDS_FILE="${HOME}/.config/anon-words/master.txt"
+    MASTER_WORDS="$(python3 "${SCRIPT_DIR}/guard_places.py" master-words)"
+    if [ -f "${MASTER_WORDS}" ]; then
+        WORDS_FILE="${MASTER_WORDS}"
     else
         WORDS_FILE="${SCRIPT_DIR}/anon-words.txt"
     fi

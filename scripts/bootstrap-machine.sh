@@ -34,7 +34,7 @@ GUARD_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # shellcheck source=../scanners/setup-lib.sh
 source "${GUARD_ROOT}/scanners/setup-lib.sh"
 
-TRUTH_PATH="${ANON_TRUTH_PATH:-${HOME}/.config/anon-words/master.txt}"
+TRUTH_PATH="$(python3 "${GUARD_ROOT}/scanners/guard_places.py" master-words)"
 
 echo "=== bootstrap-machine: arming this machine ==="
 

@@ -63,13 +63,15 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
-DESTINATIONS = CONFIG / "destinations.txt"
+sys.path.insert(0, str(HERE))
+import guard_places  # noqa: E402
+
+DESTINATIONS = guard_places.setting("destinations.txt")
 CORPUS = HERE / "corpus-scan.py"
 ANON = HERE / "anon-scan.sh"
 # The operator's word lists: master.txt, and one per area that has its own readers (`company.txt`
 # for the company, which works under real names but keeps the operator's handles out).
-WORD_LISTS = Path(os.environ.get("ANON_TRUTH_PATH", Path.home() / ".config/anon-words/master.txt")).parent
+WORD_LISTS = guard_places.words_folder()
 OUTSIDE = "outside"
 BLOCK = "block"
 UNDECLARED = "undeclared"
@@ -105,7 +107,7 @@ def corpus_module():
 
 def area_names() -> set[str]:
     module = corpus_module()
-    areas = CONFIG / "areas.txt"
+    areas = guard_places.setting("areas.txt")
     try:
         return set(module.load_areas(areas)) - module.UNSCANNED if areas.is_file() else set()
     except ValueError as error:
@@ -136,7 +138,7 @@ def rules() -> list[tuple[str, str, bool]]:
     module = corpus_module()
     if module.area_folders():
         try:
-            out += module.kept_destinations(module.load_areas(CONFIG / "areas.txt"))
+            out += module.kept_destinations(module.load_areas(guard_places.setting("areas.txt")))
         except ValueError as error:
             raise Broken(str(error)) from error
     return out
@@ -151,7 +153,7 @@ def remote_place(name: str) -> tuple[str, str | None]:
     spec = importlib.util.spec_from_file_location("corpus_scan", CORPUS)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    areas = CONFIG / "areas.txt"
+    areas = guard_places.setting("areas.txt")
     try:
         remote = module.load_remote_areas(areas) if areas.is_file() else []
     except ValueError as error:
@@ -198,7 +200,7 @@ def judge(name: str, payload: Path, reading: bool = False, handles: Path | None 
     if destination == BLOCK:
         return 1, f"{name} is blocked for sending ({DESTINATIONS}); reading through it still works"
     place = "outside every area" if destination == OUTSIDE else f"in {destination}"
-    env = {**os.environ, "GUARD_CONFIG_DIR": str(CONFIG)}
+    env = dict(os.environ)
     # A destination outside every area gets the operator's word list; one inside an area gets that
     # area's own list when the machine has one (a service the company reads takes real names, not
     # the operator's handles), and none otherwise.
@@ -266,12 +268,12 @@ def judge_session(name: str, payload: Path, read_inside: list[str]) -> tuple[int
     except Broken as broken:
         return 2, f"{broken}; nothing is sent until it is fixed"
     if stale := sorted(set(read_inside) - known):
-        return 2, (f"not sent to {name}: it has read inside {', '.join(stale)}, which {CONFIG / 'areas.txt'} "
+        return 2, (f"not sent to {name}: it has read inside {', '.join(stale)}, which {guard_places.setting('areas.txt')} "
                    f"no longer names, so where it sits cannot be judged")
     place = f"a session that has read inside {', '.join(sorted(read_inside))}" if read_inside \
         else "a session that has read inside no area"
     status, why = documents(name, place, ",".join(sorted(read_inside)) or "OUTSIDE", payload,
-                            {**os.environ, "GUARD_CONFIG_DIR": str(CONFIG)},
+                            dict(os.environ),
                             "Replace the text with words of your own")
     if status:
         return status, why

@@ -7,7 +7,8 @@
 # local time, then loads it. Idempotent: re-running replaces the agent and
 # re-points it at the checkout you ran it from.
 #
-# Prerequisite: $HOME/.config/guard-dispatcher/weekly-audit.conf must exist
+# Prerequisite: the weekly audit's config must exist
+# ($HOME/.config/guard-dispatcher/weekly-audit.conf, or <root>/config/guard/audit/ under a platform root)
 # (see weekly-audit.sh header) — the installer refuses to register a job
 # that would only ever exit with a config error.
 #
@@ -21,8 +22,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LABEL="com.guard-dispatcher.weekly-audit"
 PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
-STATE_DIR="${HOME}/.local/state/guard-dispatcher"
-CONF="${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+PLACES="${SCRIPT_DIR}/../scanners/guard_places.py"
+STATE_DIR="$(python3 "${PLACES}" audit-logs)"
+CONF="$(python3 "${PLACES}" weekly-audit.conf)"
+# launchd does not read the shell's profile, so the job is handed the platform root the installer saw.
+ROOT_ENTRY=""
+if [ -n "${AGENT_PLATFORM_ROOT:-}" ]; then
+    ROOT_ENTRY="<key>AGENT_PLATFORM_ROOT</key>
+        <string>${AGENT_PLATFORM_ROOT}</string>"
+fi
 
 if [ ! -f "${CONF}" ]; then
     echo "error: create ${CONF} first (see weekly-audit.sh header for the format)" >&2
@@ -49,6 +57,7 @@ cat > "${PLIST}" <<PLIST
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        ${ROOT_ENTRY}
     </dict>
     <key>StartCalendarInterval</key>
     <dict>

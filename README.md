@@ -80,7 +80,8 @@ Scanners read one PCRE fragment per line from the first of:
 
 1. `$ANON_WORDS_FILE` (explicit override)
 2. `git config guard.wordlist` (scope-specific list — see *Local scope opt-in* below)
-3. `$HOME/.config/anon-words/master.txt` (recommended location)
+3. the operator master: `$ANON_TRUTH_PATH`, else `$HOME/.config/anon-words/master.txt`
+   (recommended location; `<root>/config/guard/exit/words/master.txt` under a platform root)
 4. a repo-local `.tooling/local-ci/anon-words.txt` (legacy)
 
 The word list is private operator data — it is never committed
@@ -94,6 +95,30 @@ lowercased, so it belongs on a `cs:` line.
 
 Each line is matched as a group of its own: a flag written inside a line
 (`(?-i)`, for one) ends with that line and never reaches the lines below it.
+
+### Places
+
+The guard keeps its settings, its marks and its caches in six places in `$HOME`. When
+`AGENT_PLATFORM_ROOT` names a platform root, the same files sit under that root instead, in a
+folder per job; `scanners/guard_places.py` is the one table every part reads (a script asks it
+for a place: `python3 scanners/guard_places.py marks`).
+
+| On its own | Under `<root>` |
+|---|---|
+| `~/.config/guard/areas.txt`, `areas/`, `ignore.txt`, `patterns/` | `config/guard/boundaries/` (same names) |
+| `~/.config/guard/background.txt` | `config/guard/boundaries/public.txt` |
+| `~/.config/guard/agent-writes.txt`, `agent-off`, `handoff.txt` | `config/guard/entry/` |
+| `~/.config/guard/allow.txt`, `destinations.txt`, `orders.txt` | `config/guard/exit/` |
+| `~/.config/anon-words/` (the word lists) | `config/guard/exit/words/` |
+| `~/.config/guard-dispatcher/weekly-audit.conf`, `known/` | `config/guard/audit/` |
+| `~/.cache/area-guard/` (the marks) | `state/guard/marks/` |
+| `~/.local/state/guard-dispatcher/` (the audit's logs) | `state/guard/audit/` |
+| `~/.cache/guard-corpus/` (the tables of the areas' text) | `cache/guard/corpus/` |
+
+A variable that names one place — `GUARD_CONFIG_DIR` (the settings, kept in one flat folder),
+`AREA_GUARD_STATE`, `GUARD_CORPUS_CACHE`, `ANON_TRUTH_PATH` — wins over the root for that place.
+The operator's grant (`agent-writes.txt`) names settings the flat way under a root as well. The
+sections below spell the places the first way.
 
 ## Scope
 
@@ -978,13 +1003,15 @@ scanners/           the judgement the entry points call: anon-scan,
                     anon-audit-deep (11-source audit), anon-fix (history
                     scrub), anon-sync-truth, corpus-scan (private documents),
                     send-scan (a payload bound for a declared destination, or
-                    for another session),
+                    for another session), guard_places (where every
+                    setting, mark and cache sits),
                     setup-lib, anon-words.example.txt
 scripts/            setting up and checking a machine: bootstrap-machine.sh,
                     install.sh, doctor.sh, pr-create.sh,
                     weekly-audit.sh, install-weekly-audit.sh
 tests/              bats suite (dispatcher helpers, all three hooks,
-                    scanners, gh shim, agent hook, install and doctor)
+                    scanners, gh shim, agent hook, install and doctor,
+                    places with and without a platform root)
 _archive/           retired parts kept for reference, never installed into a
                     working path (see _archive/README.md)
 ```

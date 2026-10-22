@@ -46,7 +46,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-STATE = Path(os.environ.get("AREA_GUARD_STATE", Path.home() / ".cache/area-guard"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scanners"))
+import guard_places  # noqa: E402
+
+STATE = guard_places.marks_folder()
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/send-scan.py"
 # ` [3fa9c1]` after a name tells two sessions of one name apart; the files do not hold it.
 REF = re.compile(r"\s*\[[0-9A-Za-z]+\]\s*$")

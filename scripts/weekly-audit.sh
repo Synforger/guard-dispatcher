@@ -10,6 +10,7 @@
 #
 # Configuration (operator-private, never committed) at:
 #   $HOME/.config/guard-dispatcher/weekly-audit.conf
+#   (<root>/config/guard/audit/ under a platform root; scanners/guard_places.py holds every place)
 #
 #   REPOS_GLOB="<glob of repos to audit>"          # repositories outside every area
 #   AREA_REPOS=0                                   # optional — leave out the repositories
@@ -25,6 +26,7 @@
 #
 # Output:
 #   - full log:  $HOME/.local/state/guard-dispatcher/weekly-audit-<date>.log
+#                (<root>/state/guard/audit/ under a platform root)
 #   - findings:  $MESSAGE_DIR/<date>-weekly-anon-audit.md  (only on findings)
 #
 # Exit:
@@ -35,13 +37,14 @@
 
 set -uo pipefail
 
-CONF="${HOME}/.config/guard-dispatcher/weekly-audit.conf"
-STATE_DIR="${HOME}/.local/state/guard-dispatcher"
 GUARD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCANNER="${GUARD_ROOT}/scanners/anon-audit-deep.sh"
+PLACES="${GUARD_ROOT}/scanners/guard_places.py"
+CONF="$(python3 "${PLACES}" weekly-audit.conf)"
+STATE_DIR="$(python3 "${PLACES}" audit-logs)"
 # Findings accepted as known, one file per repository (named after its folder). The audit then
 # reports only what appears after the recording; see anon-audit-deep.sh --known.
-KNOWN_DIR="${HOME}/.config/guard-dispatcher/known"
+KNOWN_DIR="$(python3 "${PLACES}" known)"
 
 # weekly-audit.sh --accept <repo>... — record each repository's current findings as known.
 # For findings that will not be rewritten (history, PR text); a file in the tree is fixed instead.

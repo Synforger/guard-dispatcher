@@ -61,11 +61,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import NamedTuple
 
-CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
-ORDERS = CONFIG / "orders.txt"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scanners"))
+import guard_places  # noqa: E402
+
+ORDERS = guard_places.setting("orders.txt")
 # A fence of three or more backticks, closed by one of the same length.
 BLOCK = re.compile(r"^(`{3,})send[ \t]*\n(.*?)^\1[ \t]*$", re.S | re.M)
 KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):(.*)$")

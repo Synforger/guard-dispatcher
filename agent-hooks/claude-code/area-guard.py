@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Keep an AI agent from carrying what it read out of an area (Claude Code PreToolUse hook).
 
-Areas are defined in `$GUARD_CONFIG_DIR/areas.txt` (default `~/.config/guard/`), the same file
+Areas are defined in `areas.txt` among the guard's settings (`scanners/guard_places.py` holds where:
+`~/.config/guard/`, or `<root>/config/guard/boundaries/` under a platform root), the same file
 the private-document scan reads, through the same parser (`scanners/corpus-scan.py`). A session
 that reads inside an area is marked with the area's name. A marked session may not write into a
 git repository outside its marks, nor commit, push or send through `gh` to a destination outside
@@ -59,7 +60,8 @@ can have such a message written, so nothing in it moves the agent's hands before
 seen it.
 
 Nothing is printed when a call passes, so nothing lands in the agent's context. A refusal is one
-line. Marks are kept in `~/.cache/area-guard/<session_id>.json`, so they outlive compaction.
+line. Marks are kept in `<marks>/<session_id>.json` (`~/.cache/area-guard/`, or
+`<root>/state/guard/marks/` under a platform root), so they outlive compaction.
 
 A script the agent runs is not read: the guard sees the command that starts it, not what it
 writes. A script that writes where its arguments say asks before it writes:
@@ -85,17 +87,20 @@ import shlex
 import sys
 from pathlib import Path
 
-CONFIG = Path(os.environ.get("GUARD_CONFIG_DIR", Path.home() / ".config/guard"))
-AREAS = CONFIG / "areas.txt"
-HANDOFF = CONFIG / "handoff.txt"
-STATE = Path(os.environ.get("AREA_GUARD_STATE", Path.home() / ".cache/area-guard"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scanners"))
+import guard_places  # noqa: E402
+
+CONFIG = guard_places.settings_folder()
+AREAS = guard_places.setting("areas.txt")
+HANDOFF = guard_places.setting("handoff.txt")
+STATE = guard_places.marks_folder()
 # The operator's switch: while this file exists the entry guard passes every call. Installing or
 # updating the guard leaves it as it is, so switching off holds until the operator removes it.
-OFF = CONFIG / "agent-off"
+OFF = guard_places.setting("agent-off")
 # The operator's grant: the settings an agent that has read inside no area may write, one name per
 # line (a file, a folder, a glob; `*` for all). Never the grant itself, what orders a send, or the
 # switch: an agent that wrote those would grant itself, order its own sends, or switch the guard off.
-GRANT = CONFIG / "agent-writes.txt"
+GRANT = guard_places.setting("agent-writes.txt")
 OPERATOR_ONLY = (GRANT.name, "orders.txt", OFF.name)
 CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus-scan.py"
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/send-scan.py"
@@ -761,7 +766,7 @@ def settings_name(path: Path) -> str | None:
     for folder in {str(CONFIG), str(real(CONFIG))}:
         for spelled in {str(path), str(real(path))}:
             if spelled.casefold().startswith(folder.casefold() + os.sep):
-                return spelled[len(folder) + 1:].casefold()
+                return guard_places.flat_name(spelled[len(folder) + 1:].casefold())
     return None
 
 
@@ -989,7 +994,7 @@ def destination(target: Path, dest_args: list[str]) -> tuple[Path | None, str | 
         try:
             r = subprocess.run(["python3", str(CORPUS), "--where", "--repo", str(target), *args],
                                capture_output=True, text=True, timeout=60,
-                               env={**os.environ, "GUARD_CONFIG_DIR": str(CONFIG)})
+                               env=dict(os.environ))
         except subprocess.TimeoutExpired:
             return target, "where the destination sits did not finish within 60s, not that it was found outside every area"
         except OSError:
@@ -1273,10 +1278,16 @@ def has_remote(repo: Path) -> bool:
     return r.returncode != 0 or bool(r.stdout.strip())
 
 
+def marks_names() -> set[str]:
+    """How a path to the folder of marks may be spelled: the usual tails, and this machine's folder itself."""
+    return {".cache/area-guard", "state/guard/marks", str(STATE), str(real(STATE))}
+
+
 def bypass(command: str, cwd: str, areas) -> str | None:
     """Why a command switches the guards off or around, or None. The operator may; the agent may not."""
     expanded = spell_home(command)
-    if re.search(r"\b(rm|mv|cp|truncate|tee|touch|ln)\b[^|;&]*\.cache/area-guard|>\s*\S*\.cache/area-guard", expanded):
+    marks = "|".join(re.escape(name) for name in sorted(marks_names()))
+    if re.search(rf"\b(rm|mv|cp|truncate|tee|touch|ln)\b[^|;&]*(?:{marks})|>\s*\S*(?:{marks})", expanded):
         return "removes or rewrites the entry guard's marks"
     if re.search(r"\b(mv|cp|tee|touch|ln|install)\b[^|;&]*agent-off|>\s*\S*agent-off", expanded):
         return "switches the entry guard off"
@@ -1400,7 +1411,7 @@ def main() -> int:
     if written.endswith("/agent-off"):
         deny("area-guard: an agent does not switch the entry guard off. If it is needed, tell the operator why")
         return 0
-    if tool in WRITES and ".cache/area-guard" in written:
+    if tool in WRITES and any(name in written for name in marks_names()):
         deny("area-guard: an agent does not rewrite the entry guard's marks")
         return 0
     if (home := work_folder()) is not None:
