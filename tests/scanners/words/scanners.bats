@@ -555,3 +555,33 @@ leak_in_history() {
     run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
     [ "$status" -eq 2 ]
 }
+
+@test "weekly audit: a repository inside an area that the git hooks hold to no word list is left out" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    leak_in_history old
+    local repo kind held
+    repo="$(pwd)"
+    mkdir -p "${GUARD_CONFIG_DIR}"
+    printf 'client %s\n' "$(dirname "${repo}")" > "${GUARD_CONFIG_DIR}/areas.txt"
+    git -C "${repo}" config guard.scope enforced
+    for kind in corpus exempt; do
+        held="$(dirname "${repo}")/notes-${kind}"
+        mkdir -p "${held}"
+        git -C "${held}" init -q
+        git -C "${held}" config guard.scope "${kind}"
+        (cd "${held}" && leak_in_history "${kind}")
+    done
+    export HOME="${BATS_TEST_TMPDIR}/home"
+    mkdir -p "${HOME}/.config/guard-dispatcher"
+    printf '# the area holds every repository\n' > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -ne 0 ]
+    local log
+    log="$(cat "${HOME}"/.local/state/guard-dispatcher/weekly-audit-*.log)"
+    [[ "${log}" == *"left out: "*"/notes-corpus (guard.scope corpus)"* ]]
+    [[ "${log}" == *"left out: "*"/notes-exempt (guard.scope exempt)"* ]]
+    [[ "${log}" == *"$(basename "${repo}"): FINDINGS"* ]]
+    [ "$(grep -c "=== source 1/11" <<< "${log}")" -eq 1 ]
+}
