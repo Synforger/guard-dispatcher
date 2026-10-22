@@ -67,6 +67,12 @@ if [ "${1:-}" = "--accept" ]; then
     done
     exit "${status}"
 fi
+# The run itself takes no argument: one mistyped (a `--help`) would otherwise start a full audit.
+if [ $# -gt 0 ]; then
+    echo "usage: weekly-audit.sh                                      (the scheduled audit)" >&2
+    echo "       weekly-audit.sh --accept [--as-of <UTC time>] <repo>...  (record known findings)" >&2
+    exit 2
+fi
 
 if [ ! -f "${CONF}" ]; then
     echo "error: config not found at ${CONF}" >&2
