@@ -4,7 +4,7 @@
 A message one session sends another is a send like any other: the receiver may write where the
 sender may not. Where the receiver sits is not declared anywhere; it is what the entry guard
 already keeps: the areas that session has read inside (its marks, `area-guard.py`). A message
-is judged against them by `scanners/send-scan.py` (`--session-areas`):
+is judged against them by `scanners/destinations/send-scan.py` (`--session-areas`):
 
 - into a session that has read inside the areas the text comes from (or inside an area within
   them): passes, the receiver learns nothing it could not read;
@@ -46,11 +46,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scanners"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 import guard_places  # noqa: E402
 
 STATE = guard_places.marks_folder()
-SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/send-scan.py"
+SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/destinations/send-scan.py"
 # ` [3fa9c1]` after a name tells two sessions of one name apart; the files do not hold it.
 REF = re.compile(r"\s*\[[0-9A-Za-z]+\]\s*$")
 SESSION_ID = re.compile(r"^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$")
@@ -145,7 +145,7 @@ def covers(to: str, sender: str) -> bool:
     inside it, or works inside it (the company around the client it has read). A relaying client
     shows the sender's name (which says where it works) only then."""
     import importlib.util
-    spec = importlib.util.spec_from_file_location("corpus_scan", SEND_SCAN.with_name("corpus-scan.py"))
+    spec = importlib.util.spec_from_file_location("corpus_scan", SEND_SCAN.parents[1] / "corpus/corpus-scan.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     areas = module.load_areas()

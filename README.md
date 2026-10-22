@@ -35,9 +35,9 @@ purpose, and a gap is counted against it (see *Scan guarantee*).
 | PR | `scripts/pr-create.sh` | PR title/body scanned before `gh pr create` |
 | any `gh` send | `gh-shim/gh-guard.sh` (PATH shim) | argument vector, body/notes/template files and stdin payloads scanned before the CLI runs; read-only subcommands pass through |
 | AI agent tool call | `agent-hooks/claude-code/area-guard.py` (Claude Code PreToolUse hook) | a session that names the folder it works in reads only inside the areas that hold it; a session that read inside a private area cannot write a repository outside it, nor commit, push or send through `gh` there; no session can switch the guards off or around |
-| AI agent send (tool, network) | `agent-hooks/claude-code/outgoing.py` (called by the same hook) finds the send, `scanners/send-scan.py` judges it | what a tool sends to a service (MCP tools, Artifact) or a `curl` / `wget` sends with a body is scanned like a push, against the areas its declared destination is outside of; a destination can be blocked for sending outright |
+| AI agent send (tool, network) | `agent-hooks/claude-code/outgoing.py` (called by the same hook) finds the send, `scanners/destinations/send-scan.py` judges it | what a tool sends to a service (MCP tools, Artifact) or a `curl` / `wget` sends with a body is scanned like a push, against the areas its declared destination is outside of; a destination can be blocked for sending outright |
 | AI agent message to another session | `agent-hooks/claude-code/peers.py` (called by the same hook, and by a client that relays messages) | a message is judged by where the receiving session has read: text of an area it has not read inside is refused, words of the sender's own pass, in every direction |
-| repair | `scanners/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
+| repair | `scanners/words/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
 | health | `scripts/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
 
 Content scanning is **default-on for every repository** — the only way
@@ -53,8 +53,8 @@ cd guard-dispatcher
 bash scripts/bootstrap-machine.sh
 ```
 
-`bootstrap-machine.sh` symlinks the hooks (and the `scanners/`,
-`scripts/` and `agent-hooks/` directories, for stable paths) into
+`bootstrap-machine.sh` symlinks the hooks (the `scripts/` and `agent-hooks/` directories and
+each scanner, for stable paths) into
 `~/.git-hooks/`, points git's global `core.hooksPath` there, installs the
 `gh` shim, verifies your word list and external tools, and finishes with a
 doctor pass. It is idempotent.
@@ -85,7 +85,7 @@ Scanners read one PCRE fragment per line from the first of:
 4. a repo-local `.tooling/local-ci/anon-words.txt` (legacy)
 
 The word list is private operator data — it is never committed
-anywhere. See `scanners/anon-words.example.txt` for the format.
+anywhere. See `configs/anon-words.example.txt` for the format.
 
 Fragments are matched case-insensitively, so a name is caught however it is
 capitalised. Prefix a line `cs:` when the capitalisation *is* the meaning and
@@ -100,8 +100,8 @@ Each line is matched as a group of its own: a flag written inside a line
 
 The guard keeps its settings, its marks and its caches in six places in `$HOME`. When
 `AGENT_PLATFORM_ROOT` names a platform root, the same files sit under that root instead, in a
-folder per job; `scanners/guard_places.py` is the one table every part reads (a script asks it
-for a place: `python3 scanners/guard_places.py marks`).
+folder per job; `_common/guard_places.py` is the one table every part reads (a script asks it
+for a place: `python3 _common/guard_places.py marks`).
 
 | On its own | Under `<root>` |
 |---|---|
@@ -137,7 +137,7 @@ Every hook follows the same AND-composition:
    required:
    - repositories in the enforced organisation (edit
      `dispatcher::detect_repo_kind` in
-     `git-hooks/lib/dispatcher-common.sh` to set yours),
+     `git-hooks/_internal/dispatcher-common.sh` to set yours),
    - repositories with no remote (fail-safe),
    - repositories opted in locally via `git config guard.scope enforced`.
 
@@ -189,14 +189,14 @@ exemption is push-only: `pre-commit` still requires `user.email` to be on the
 allowed list, because the operator is never a bot.
 
 Scanners resolve repo-local first (`.tooling/local-ci/`), then fall
-back to this checkout's `scanners/` — so individual repositories need
+back to this checkout's `scanners/words/` — so individual repositories need
 no toolkit of their own, but can override it.
 
 ### Private documents
 
 A word list only holds what someone thought to write down. Text copied out of a
 real document — a sentence from a slide, a row of a table — is on no list.
-`scanners/corpus-scan.py` compares what a push (or a `gh` call) sends with the
+`scanners/corpus/corpus-scan.py` compares what a push (or a `gh` call) sends with the
 documents themselves. Everything it reads is configured on this machine only:
 
 ```
@@ -548,7 +548,7 @@ git and `gh` are not the only ways out: a tool can upload to a service (an MCP
 tool, the Artifact tools) and a command can post over the network. The same
 hook finds those sends (`agent-hooks/claude-code/outgoing.py`, which reads
 Claude Code's calls) and has each judged the way a push is judged, whatever the
-session read (`scanners/send-scan.py`, which any other entry point can call:
+session read (`scanners/destinations/send-scan.py`, which any other entry point can call:
 `send-scan.py --dest NAME --text FILE`, or `--where NAME`):
 
 - **What is scanned**: every string of the tool call and the contents of the
@@ -862,7 +862,7 @@ contract:
   author/committer name+email — and the pushed branch or tag name is
   scanned as well (`pre-push`). A new-branch push scans exactly the
   commits the remote does not already have. What a push sends is decided in
-  one place, `scanners/dest-known.py`: which commits go out, whether the push
+  one place, `scanners/destinations/dest-known.py`: which commits go out, whether the push
   rewrites history, and of a rewrite what the destination already holds. No
   check reads the history on its own. A rewritten history (a force push, or
   a whole history sent again) gets a new hash for every commit, colleagues'
@@ -1013,38 +1013,43 @@ What the guard is for is in *What it watches*; these lie outside it.
 
 ```
 git-hooks/          entry points git calls: pre-commit / commit-msg / pre-push
-                    dispatchers, lib/dispatcher-common.sh
+  _internal/        the dispatcher library they share (dispatcher-common.sh)
 gh-shim/            entry point PATH resolves as `gh`: gh-guard.sh
 agent-hooks/        entry points an AI agent calls before each tool:
                     claude-code/area-guard.py (with outgoing.py, the send guard,
                     order.py, the operator's order for a send, and peers.py,
                     another session as a destination)
-scanners/           the judgement the entry points call: anon-scan,
-                    anon-audit-deep (11-source audit), anon-fix (history
-                    scrub), anon-sync-truth, corpus-scan (private documents),
-                    send-scan (a payload bound for a declared destination, or
-                    for another session), guard_places (where every
-                    setting, mark and cache sits),
-                    setup-lib, anon-words.example.txt
+scanners/           the judgement the entry points call, one folder per role:
+  words/            the word lists: anon-scan, anon-pattern, anon-audit-deep
+                    (11-source audit), anon-fix (history scrub), anon-sync-truth
+  corpus/           text copied out of a private document: corpus-scan
+  destinations/     where a send goes: send-scan (a payload bound for a declared
+                    destination, or for another session), dest-known (what a
+                    push sends)
+  _internal/        setup-lib.sh, the logging the shell scripts share
+_common/            guard_places.py: where every setting, mark and cache sits
+                    (read by the hooks, the scanners and the scripts)
+configs/            anon-words.example.txt, the format of a word list
 scripts/            setting up and checking a machine: bootstrap-machine.sh,
                     install.sh, doctor.sh, pr-create.sh,
                     weekly-audit.sh, install-weekly-audit.sh
-tests/              bats suite (dispatcher helpers, all three hooks,
-                    scanners, gh shim, agent hook, install and doctor,
-                    places with and without a platform root)
-_archive/           retired parts kept for reference, never installed into a
-                    working path (see _archive/README.md)
+tests/              bats suite, the same tree as the parts it tests
+  _internal/        helpers.bash, the fixtures every test loads
 ```
+
+`install.sh` links each scanner into `~/.git-hooks/scanners/` under its name
+alone, so other repositories call `~/.git-hooks/scanners/anon-scan.sh`
+whichever folder holds it.
 
 ## Tests
 
 ```sh
 brew install bats-core parallel   # once
-bats --jobs "$(getconf _NPROCESSORS_ONLN)" tests/
+bats -r --jobs "$(getconf _NPROCESSORS_ONLN)" tests/
 ```
 
 The tests run in parallel, one per core (`--jobs` needs GNU parallel);
-`bats tests/` runs them one after another.
+`bats -r tests/` runs them one after another.
 
 Every test builds a throwaway git repo and a sentinel-only word list
 under the test tmpdir — no operator data is read and nothing outside

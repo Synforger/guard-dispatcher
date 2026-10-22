@@ -1,0 +1,247 @@
+#!/bin/bash
+set -euo pipefail
+
+# =============================================================================
+# Local Dev Platform - Anonymity Scanner (local)
+# =============================================================================
+# Scans the repository for personal identifiers and operator-internal stack
+# names that must never appear in committed files.
+#
+# Single source of truth: the forbidden-word list lives in `anon-words.txt`
+# (next to this script), one PCRE fragment per line. This scanner reads that
+# file, strips comments / blank lines, and joins the fragments with `|` to
+# build the (?i) case-insensitive pattern. The GitHub Action
+# (.github/workflows/anon-check.yml) runs THIS SAME script, so the CI and the
+# pre-commit hook can never drift — there is no second copy of the pattern.
+#
+# Word boundaries + negative lookaheads in the word list keep accessibility
+# attributes (`aria-label`, `aria-hidden`) and npm package names (`aria-query`,
+# `ark-*`) out of the false-positive lane.
+#
+# Called from two places:
+#   - .githooks/pre-commit       (= staged-file scan before each commit)
+#   - .tooling/os/<os>/lint.sh   (= full-tree scan via `task lint`)
+#
+# Exit code:
+#   0 = clean
+#   1 = personal identifier found
+#   2 = word list missing / empty (configuration error)
+#
+# Optional env:
+#   ANON_SCAN_PATHS  newline-separated subset of files to scan (used by the
+#                    pre-commit hook to limit the scan to staged files).
+#                    Empty = scan the whole tree.
+# =============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# Word list resolution (operator master first — the guard checkout itself
+# never carries the real list):
+#   1. $ANON_WORDS_FILE            explicit override
+#   2. `git config guard.wordlist` scope-specific list (conditional include)
+#   3. the operator master (bootstrap-machine standard; guard_places.py master-words)
+#   4. $SCRIPT_DIR/anon-words.txt  repo-local synced copy (legacy / repo override)
+WORDS_FILE="${ANON_WORDS_FILE:-}"
+if [ -z "${WORDS_FILE}" ]; then
+    # Scope-specific list via `git config guard.wordlist` (set through a
+    # conditional include alongside guard.scope; `~` is expanded here).
+    WORDS_FILE="$(git config --get guard.wordlist 2>/dev/null || true)"
+    WORDS_FILE="${WORDS_FILE/#\~/${HOME}}"
+    WORDS_FILE="${WORDS_FILE/#\$HOME/${HOME}}"
+fi
+if [ -z "${WORDS_FILE}" ]; then
+    MASTER_WORDS="$(python3 "${SCRIPT_DIR}/../../_common/guard_places.py" master-words)"
+    if [ -f "${MASTER_WORDS}" ]; then
+        WORDS_FILE="${MASTER_WORDS}"
+    else
+        WORDS_FILE="${SCRIPT_DIR}/anon-words.txt"
+    fi
+fi
+
+if [ ! -f "${WORDS_FILE}" ]; then
+    echo "error: word list not found at ${WORDS_FILE}" >&2
+    exit 2
+fi
+
+# Build the PCRE alternation from the word list. The parsing lives in
+# anon-pattern.sh so this scanner and the deep audit cannot drift apart on
+# what a line in the list means.
+# shellcheck source=anon-pattern.sh
+source "${SCRIPT_DIR}/anon-pattern.sh"
+
+if ! ANON_PATTERN="$(build_anon_pattern "${WORDS_FILE}")"; then
+    echo "error: ${WORDS_FILE} contains no patterns" >&2
+    exit 2
+fi
+export ANON_PATTERN
+
+# Fail-closed compile probe. The per-file perl already exits non-zero on a
+# compile error (treated as "found"), but that reports a leak that does not
+# exist, per scanned file. Refusing up front with exit 2 keeps the failure
+# a loud configuration error instead — and keeps the semantics identical to
+# anon-audit-deep.sh, whose piped perl would otherwise fail open.
+if ! perl -CSD -MUnicode::Normalize -MEncode -e \
+        'my $pat = NFKC(decode_utf8($ENV{ANON_PATTERN})); qr/(?i)$pat/' 2>/dev/null; then
+    echo "error: word list does not compile as PCRE (${WORDS_FILE}) — fix the broken fragment" >&2
+    exit 2
+fi
+
+# Files / dirs that legitimately contain string fragments matching the
+# pattern (build artefacts, lockfiles, and the policy files that define the
+# pattern itself).
+EXCLUDES=(
+    '.git'
+    'node_modules'
+    'dist'
+    'build'
+    '.venv'
+    'venv'
+    '__pycache__'
+    '.next'
+    'logs'             # runtime log dir (= gitignored) — local PATH / sid noise
+    'target'           # rust build artefacts
+    '.gradle'          # kotlin build artefacts
+    'obj'              # csharp build artefacts (= dotnet)
+    'bin'              # csharp build artefacts (= dotnet)
+    'DerivedData'      # swift / Xcode build artefacts
+)
+EXCLUDE_GLOBS=(
+    '*.lock'
+    'package-lock.json'
+    'yarn.lock'
+    'Cargo.lock'      # rust lockfile — pinned versions only, no secrets
+    '*.min.js'
+    'anon-check.yml'  # the workflow file is allowed to reference the scanner
+    'anon-words.txt'  # the word list is the pattern definition itself
+    'guards.toml'     # a guard's own configuration has to spell what it bans
+    'config.json'     # gitignored per-deriver config (= config.example.json is public)
+)
+
+scan_with_perl() {
+    local file="$1"
+    # An Office document is scanned through a temporary file holding its unpacked
+    # XML; report the document the author knows, not the scratch file.
+    local label="${2:-$1}"
+    # NFKC folds full-width / compatibility characters to their canonical
+    # form before matching, so a full-width rendering of a listed name
+    # (`Ｎａｍｅ` -> `Name`) and half-width katakana can no longer slip past a
+    # half-width word list. `(?i)` still folds case. Match on the normalized
+    # form, print the original line.
+    ANON_LABEL="$label" perl -CSD -MUnicode::Normalize -MEncode -ne '
+              BEGIN { my $pat = NFKC(decode_utf8($ENV{ANON_PATTERN})); $re = qr/(?i)$pat/ }
+              if (NFKC($_) =~ /$re/) { print "$ENV{ANON_LABEL}:$.:$_"; $found = 1 }
+              END { exit($found ? 1 : 0) }' "$file"
+}
+
+# An Office document is a zip: its text lives in the XML parts inside it, and a
+# plain scan reads the compressed bytes — never a single word of the content.
+# Until this existed those files reported clean without being looked at, while
+# the raw bytes also flooded the run with "Malformed UTF-8" from the matcher.
+scan_office() {
+    local path="$1" unpacked status=0
+    # Two different failures, asked separately: a file that is not a zip at all,
+    # and a zip holding no text. Folding them together made "unzip found nothing
+    # matching *.rels" look like "this file is unreadable".
+    if ! unzip -l "$path" >/dev/null 2>&1; then
+        # ⚠ Never report an unreadable document as clean.
+        echo "${path}: could not be opened as an Office document; NOT scanned" >&2
+        return 1
+    fi
+    unpacked="$(mktemp -t anon-office.XXXXXX)" || return 0
+    # Only the text-bearing parts. Media is skipped: it is the same binary
+    # problem one level down, and an image carries no word-list hit.
+    # One element per line. An Office part is a single line of XML thousands of
+    # characters long, and a hit printed as that whole line tells the author
+    # nothing about where it is. Attributes stay on the line they belong to,
+    # because file names and authorship live in them.
+    unzip -p "$path" '*.xml' '*.rels' 2>/dev/null \
+        | perl -pe 's/></>\n</g' > "$unpacked" || true
+    if [ ! -s "$unpacked" ]; then
+        rm -f "$unpacked"
+        echo "${path}: opened, but carries no XML part; NOT scanned" >&2
+        return 1
+    fi
+    scan_with_perl "$unpacked" "$path" || status=1
+    rm -f "$unpacked"
+    return "$status"
+}
+
+# Returns 0 if `basename($1)` is in EXCLUDE_GLOBS, 1 otherwise. Used to keep
+# the word list / scanner / policy README out of the false-positive lane both
+# in full-tree scans and in the staged-file mode driven by the pre-commit hook.
+is_excluded_basename() {
+    local base
+    base="$(basename "$1")"
+    for glob in "${EXCLUDE_GLOBS[@]}"; do
+        # shellcheck disable=SC2053
+        if [[ "${base}" == ${glob} ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+scan_paths=()
+if [ -n "${ANON_SCAN_PATHS:-}" ]; then
+    while IFS= read -r p; do
+        [ -z "$p" ] && continue
+        [ -f "$p" ] || continue
+        is_excluded_basename "$p" && continue
+        scan_paths+=("$p")
+    done <<< "${ANON_SCAN_PATHS}"
+elif command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+    # Full-tree mode in a git repo: scan only tracked files. This respects
+    # `.gitignore` automatically — runtime data dirs (= backend/data/,
+    # secrets/, logs/, .venv/) that hold real personal strings never enter
+    # the scan, which would otherwise produce noise + leak local paths into
+    # the scan output itself.
+    while IFS= read -r p; do
+        [ -z "$p" ] && continue
+        [ -f "$p" ] || continue
+        is_excluded_basename "$p" && continue
+        scan_paths+=("$p")
+    done < <(git ls-files)
+else
+    # Non-git fallback: walk the working tree with EXCLUDES.
+    find_args=(.)
+    for dir in "${EXCLUDES[@]}"; do
+        find_args+=(-not -path "*/${dir}/*")
+    done
+    for glob in "${EXCLUDE_GLOBS[@]}"; do
+        find_args+=(-not -name "${glob}")
+    done
+    find_args+=(-type f)
+    while IFS= read -r -d '' p; do
+        scan_paths+=("$p")
+    done < <(find "${find_args[@]}" -print0)
+fi
+
+found=0
+for path in "${scan_paths[@]}"; do
+    # Skip binary formats quickly. Text-bearing data formats stay IN scope:
+    # .csv holds free-text columns and .ipynb embeds outputs (usernames,
+    # local paths) — both have real leak surface, so they are scanned.
+    case "$path" in
+        *.png|*.jpg|*.jpeg|*.gif|*.pdf|*.zip|*.gz|*.tar|*.so|*.dylib|*.dll|*.exe|*.bin|*.npy)
+            continue
+            ;;
+        # Office documents are zips whose text is in the XML inside them.
+        *.pptx|*.potx|*.pptm|*.docx|*.dotx|*.docm|*.xlsx|*.xltx|*.xlsm)
+            if ! scan_office "$path"; then
+                found=1
+            fi
+            continue
+            ;;
+    esac
+    if ! scan_with_perl "$path"; then
+        found=1
+    fi
+done
+
+if [ "${found}" -ne 0 ]; then
+    echo ""
+    echo "Personal identifiers detected. Remove or move to gitignored config."
+    exit 1
+fi
+
+echo "anon-scan: clean"
+exit 0

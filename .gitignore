@@ -1,5 +1,5 @@
 # The word list is private operator data — never committed.
-scanners/anon-words.txt
+scanners/**/anon-words.txt
 anon-words.local.txt
 
 # Python bytecode written when the scanners are imported (tests, other guards).

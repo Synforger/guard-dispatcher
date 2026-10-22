@@ -1,6 +1,6 @@
 """The operator's order for a send: judged from the session's transcript (Claude Code side).
 
-A destination declared with `order` in destinations.txt (see scanners/send-scan.py) takes a send
+A destination declared with `order` in destinations.txt (see scanners/destinations/send-scan.py) takes a send
 only when all of these hold, read from the transcript Claude Code keeps for the session:
 
 1. The operator's last message orders a send: it holds one of the order phrases of
@@ -65,7 +65,7 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scanners"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 import guard_places  # noqa: E402
 
 ORDERS = guard_places.setting("orders.txt")

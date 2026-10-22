@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Keep an AI agent from carrying what it read out of an area (Claude Code PreToolUse hook).
 
-Areas are defined in `areas.txt` among the guard's settings (`scanners/guard_places.py` holds where:
+Areas are defined in `areas.txt` among the guard's settings (`_common/guard_places.py` holds where:
 `~/.config/guard/`, or `<root>/config/guard/boundaries/` under a platform root), the same file
-the private-document scan reads, through the same parser (`scanners/corpus-scan.py`). A session
+the private-document scan reads, through the same parser (`scanners/corpus/corpus-scan.py`). A session
 that reads inside an area is marked with the area's name. A marked session may not write into a
 git repository outside its marks, nor commit, push or send through `gh` to a destination outside
 them.
@@ -36,7 +36,7 @@ them.
   marked session may not write a repository there
 
 What a call sends out -- a tool that sends to a service, a `curl` / `wget` with a body -- is
-found by `outgoing.py` (next to this file) and judged like a push by `scanners/send-scan.py`: its
+found by `outgoing.py` (next to this file) and judged like a push by `scanners/destinations/send-scan.py`: its
 payload is scanned against the areas its destination (declared in `destinations.txt`) is outside
 of, on every machine.
 
@@ -87,7 +87,7 @@ import shlex
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scanners"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 import guard_places  # noqa: E402
 
 CONFIG = guard_places.settings_folder()
@@ -102,8 +102,8 @@ OFF = guard_places.setting("agent-off")
 # switch: an agent that wrote those would grant itself, order its own sends, or switch the guard off.
 GRANT = guard_places.setting("agent-writes.txt")
 OPERATOR_ONLY = (GRANT.name, "orders.txt", OFF.name)
-CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus-scan.py"
-SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/send-scan.py"
+CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus/corpus-scan.py"
+SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/destinations/send-scan.py"
 EXEMPT = "_exempt"
 NO_AREA = "_outside"
 READS = {"Read", "Grep", "Glob"}

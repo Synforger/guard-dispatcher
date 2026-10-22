@@ -22,7 +22,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LABEL="com.guard-dispatcher.weekly-audit"
 PLIST="${HOME}/Library/LaunchAgents/${LABEL}.plist"
-PLACES="${SCRIPT_DIR}/../scanners/guard_places.py"
+PLACES="${SCRIPT_DIR}/../_common/guard_places.py"
 STATE_DIR="$(python3 "${PLACES}" audit-logs)"
 CONF="$(python3 "${PLACES}" weekly-audit.conf)"
 # launchd does not read the shell's profile, so the job is handed the platform root the installer saw.

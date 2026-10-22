@@ -1,0 +1,1888 @@
+#!/usr/bin/env bats
+# Behavioural tests for corpus-scan.py: text copied out of a private document
+# must not leave the area the document lives in.
+#
+# Every test builds its own areas under $BATS_TEST_TMPDIR — a company, a client
+# nested inside it, and a personal repo outside both — so no operator document
+# is ever read. Sentences are made up and long enough to form 12-character runs.
+
+load ../../_internal/helpers
+
+# Japanese counts as copied from 12 characters (two thirds of them Japanese), any other text from 40
+# (twelve characters of English are two common words).
+CLIENT_TEXT="the calibration table reads seventeen at dawn"
+COMPANY_TEXT="quarterly planning keeps the bench schedule"
+CLIENT_JA="採寸表の三段目は夜明けに読み直すこと"
+
+setup() {
+    setup_words
+    export GUARD_CORPUS_MAX_AGE=0          # always rebuild: documents change inside a test
+    WORK="${BATS_TEST_TMPDIR}/work"
+    CLIENT="${WORK}/clients/acme"
+    mkdir -p "${CLIENT}/received" "${WORK}/meetings" "${GUARD_CONFIG_DIR}/patterns" \
+        "${BATS_TEST_TMPDIR}/public"
+    printf '# notes\n%s\n%s\n' "${CLIENT_TEXT}" "${CLIENT_JA}" > "${CLIENT}/received/notes.md"
+    printf '%s\n' "${COMPANY_TEXT}" > "${WORK}/meetings/plan.md"
+    cat > "${GUARD_CONFIG_DIR}/areas.txt" <<EOF
+company ${WORK}
+client  ${CLIENT}
+_exempt ${BATS_TEST_TMPDIR}/private
+EOF
+    printf '(?<![A-Za-z0-9])QX\\d{4}(?![0-9])\n' > "${GUARD_CONFIG_DIR}/patterns/client.txt"
+}
+
+# commit_line <text> — add one line in the current repo and commit it past the hooks.
+commit_line() {
+    printf '%s\n' "$1" >> sent.txt
+    git add sent.txt
+    commit_bypassing_hooks "add a line"
+}
+
+# scan_last — run the scanner over the newest commit of the current repo.
+scan_last() {
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD
+}
+
+# mk_repo_at <dir> — a fixture repo at a chosen place (areas are decided by place).
+mk_repo_at() {
+    mkdir -p "$1"
+    cd "$1" || return 1
+    git init -q .
+    git config user.email "${ALLOWED_EMAIL}"
+    git config user.name "Fixture"
+    git config commit.gpgsign false
+    echo seed > seed.txt
+    git add seed.txt
+    commit_bypassing_hooks seed
+}
+
+# --- a personal repo is outside every area -------------------------------------
+
+@test "corpus: a client sentence copied into a personal repo is caught" {
+    mk_repo other
+    commit_line "expected: ${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client text"* ]]
+}
+
+@test "corpus: a company sentence copied into a personal repo is caught" {
+    mk_repo other
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: text inside an Office document is read, not its compressed bytes" {
+    mk_office "${CLIENT}/received/deck.pptx" "第七頁は仮縫いの台帳を示している"
+    mk_repo other
+    commit_line "資料どおり: 第七頁は仮縫いの台帳を示している"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: a commit message is scanned too" {
+    mk_repo other
+    printf 'ok\n' > ok.txt
+    git add ok.txt
+    commit_bypassing_hooks "port ${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"message"* ]]
+}
+
+@test "corpus: a full-width re-typing is folded and still caught" {
+    mk_repo other
+    commit_line "ｔｈｅ ｃａｌｉｂｒａｔｉｏｎ ｔａｂｌｅ ｒｅａｄｓ ｓｅｖｅｎｔｅｅｎ ａｔ ｄａｗｎ"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: 12 copied characters of Japanese are caught, 11 pass" {
+    mk_repo other
+    commit_line "メモ: 三段目は夜明けに読み直す"
+    scan_last
+    [ "$status" -eq 1 ]
+    commit_line "メモ: 三段目は夜明けに読み"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: 12 characters count as Japanese from two thirds: six of Japanese around English pass, eight are caught" {
+    printf '%s\n' "接続の状態を見る via Drive api" >> "${CLIENT}/received/notes.md"
+    mk_repo other
+    commit_line "の状態を見る via D"
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "接続の状態を見る via"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: common English shorter than 40 characters passes" {
+    mk_repo other
+    commit_line "the calibration table reads seventeen"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a clean scan counts the areas it compared with and names none" {
+    mk_repo other
+    commit_line "nothing from any document"
+    scan_last
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"built in "*"s: 2 documents in 2 areas"* ]]
+    [[ "$output" == *"clean (3 lines against 2 areas)"* ]]
+    [[ "$output" != *company* ]]
+    [[ "$output" != *client* ]]
+}
+
+@test "corpus: an identifier of the client's shape is caught, a longer number is not" {
+    mk_repo other
+    commit_line "sample qx1234 again"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"shape"* ]]
+    commit_line "order QX12345 is a different thing"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+# --- where the repo lives decides what it may carry ------------------------------
+
+@test "corpus: a company repo may carry company text but not client text" {
+    mk_repo_at "${WORK}/repos/internal"
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: a client repo may carry its own text, not the company's around it" {
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    commit_line "${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: text the company's templates also hold is no area's, so a client repo may carry it" {
+    mkdir -p "${BATS_TEST_TMPDIR}/templates"
+    printf '%s\n' "${COMPANY_TEXT}" > "${BATS_TEST_TMPDIR}/templates/README.md"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/templates" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a template repository's tracked files in hidden folders are public too" {
+    mkdir -p "${BATS_TEST_TMPDIR}/templates/starter/.notes"
+    git -C "${BATS_TEST_TMPDIR}/templates/starter" init -q
+    printf '%s\n' "${COMPANY_TEXT}" > "${BATS_TEST_TMPDIR}/templates/starter/.notes/README.md"
+    git -C "${BATS_TEST_TMPDIR}/templates/starter" add .notes/README.md
+    printf '%s\n' "${BATS_TEST_TMPDIR}/templates" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a hidden folder outside a repository, or untracked in one, stays out of what is public" {
+    mkdir -p "${BATS_TEST_TMPDIR}/templates/.loose" "${BATS_TEST_TMPDIR}/templates/starter/.scratch"
+    printf '%s\n' "${COMPANY_TEXT}" > "${BATS_TEST_TMPDIR}/templates/.loose/README.md"
+    git -C "${BATS_TEST_TMPDIR}/templates/starter" init -q
+    printf '%s\n' "${COMPANY_TEXT}" > "${BATS_TEST_TMPDIR}/templates/starter/.scratch/README.md"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/templates" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a repository declared outside is outside every area, even private and cloned inside" {
+    seed_visibility acme/pipeline private
+    printf 'repo:acme/* outside\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    commit_line "${CLIENT_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"declared outside every area"* ]]
+}
+
+@test "corpus: an exempt repo is never scanned" {
+    mk_repo_at "${BATS_TEST_TMPDIR}/private/state"
+    commit_line "${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+# --- the destination decides, not the folder ---------------------------------------
+
+# mk_clone_at <dir> <owner/repo> — a fixture repo at a place, with a GitHub origin.
+mk_clone_at() {
+    mk_repo_at "$1"
+    git remote add origin "git@github.com:$2.git"
+}
+
+@test "corpus: a public destination is outside every area, wherever its clone lives" {
+    seed_visibility acme/pipeline public
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    base="$(git rev-parse HEAD)"
+    commit_line "${CLIENT_TEXT}"
+    head="$(git rev-parse HEAD)"
+    run_pre_push_to "git@github.com:acme/pipeline.git" "refs/heads/feature/x ${head} refs/heads/feature/x ${base}"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"is public on GitHub"* ]]
+    [[ "$output" == *"client text"* ]]
+}
+
+@test "corpus: a public company repo inside the company folder may not carry company text" {
+    seed_visibility acme/sdk public
+    mk_clone_at "${WORK}/repos/sdk" acme/sdk
+    commit_line "${COMPANY_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/sdk.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a private destination cloned inside the client may carry client text" {
+    seed_visibility acme/pipeline private
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    commit_line "${CLIENT_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a private destination with no clone on this machine is outside every area" {
+    seed_visibility acme/elsewhere private
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    commit_line "${CLIENT_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/elsewhere.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no clone on this machine"* ]]
+}
+
+@test "corpus: a destination GitHub cannot be asked about is treated as public" {
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/unasked
+    commit_line "${CLIENT_TEXT}"
+    FAIL_DIR="${BATS_TEST_TMPDIR}/nogh"; mkdir -p "${FAIL_DIR}"
+    printf '#!/bin/sh\nexit 1\n' > "${FAIL_DIR}/gh"; chmod +x "${FAIL_DIR}/gh"
+    https_proxy=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 PATH="${FAIL_DIR}:${PATH}" \
+        run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/unasked.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"is unknown on GitHub"* ]]
+}
+
+@test "corpus: a token in the environment that cannot see the repo does not hide gh's own accounts" {
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/scoped
+    commit_line "${CLIENT_TEXT}"
+    # gh answers 404 while GH_TOKEN is set (a token scoped to other repos) and
+    # "private" from its own account store once it is not.
+    FAKE_DIR="${BATS_TEST_TMPDIR}/scopedgh"; mkdir -p "${FAKE_DIR}"
+    printf '#!/bin/sh\n[ -n "$GH_TOKEN" ] && exit 1\necho true\n' > "${FAKE_DIR}/gh"; chmod +x "${FAKE_DIR}/gh"
+    GH_TOKEN=scoped https_proxy=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 PATH="${FAKE_DIR}:${PATH}" \
+        run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/scoped.git
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: --where names the clone of a private destination, OUTSIDE for a public one" {
+    seed_visibility acme/pipeline private
+    seed_visibility acme/sdk public
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --where --dest git@github-work:acme/pipeline.git
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"clients/acme/repos/pipeline" ]]
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --where --dest https://github.com/acme/sdk
+    [[ "$output" == *"OUTSIDE" ]]
+}
+
+# gh_shim — put gh-guard in front of a fake gh that only records that it ran.
+gh_shim() {
+    SHIM_DIR="${BATS_TEST_TMPDIR}/shim"; REAL_DIR="${BATS_TEST_TMPDIR}/real"
+    mkdir -p "${SHIM_DIR}" "${REAL_DIR}"
+    ln -sf "${GUARD_ROOT}/gh-shim/gh-guard.sh" "${SHIM_DIR}/gh"
+    printf '#!/usr/bin/env bash\ntouch "%s/ran"\n' "${BATS_TEST_TMPDIR}" > "${REAL_DIR}/gh"
+    chmod +x "${REAL_DIR}/gh"
+    GH_PATH="${SHIM_DIR}:${REAL_DIR}:${PATH}"
+}
+
+@test "gh-guard: client text sent from inside the client folder to a public repo is refused" {
+    seed_visibility someone/public-tool public
+    gh_shim
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    PATH="${GH_PATH}" run gh pr create -R someone/public-tool --title t --body "see: ${CLIENT_TEXT}"
+    [ "$status" -ne 0 ]
+    [ ! -f "${BATS_TEST_TMPDIR}/ran" ]
+}
+
+@test "gh-guard: a scan that breaks refuses the call as not judged, not as private text" {
+    seed_visibility someone/public-tool public
+    gh_shim
+    mk_repo other
+    PATH="${GH_PATH}" run gh pr create -R someone/public-tool --title t --body "nothing private here"
+    [ "$status" -eq 0 ]
+    rm -f "${BATS_TEST_TMPDIR}/ran"
+    export GUARD_CORPUS_MAX_AGE=3600
+    echo '[' > "${GUARD_CORPUS_CACHE}/docs/index.json"
+    PATH="${GH_PATH}" run gh pr create -R someone/public-tool --title t --body "still nothing private"
+    [ "$status" -ne 0 ]
+    [ ! -f "${BATS_TEST_TMPDIR}/ran" ]
+    [[ "$output" == *"could not judge this command"* ]]
+    [[ "$output" != *"carries text from a private area"* ]]
+}
+
+@test "gh-guard: an api call naming a public repo is judged by that repo" {
+    seed_visibility someone/public-tool public
+    gh_shim
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    PATH="${GH_PATH}" run gh api -X POST repos/someone/public-tool/issues -f body="${CLIENT_TEXT}"
+    [ "$status" -ne 0 ]
+    [ ! -f "${BATS_TEST_TMPDIR}/ran" ]
+}
+
+@test "gh-guard: client text to the client's own private repo is sent" {
+    seed_visibility acme/pipeline private
+    gh_shim
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    cd "${BATS_TEST_TMPDIR}"
+    PATH="${GH_PATH}" run gh pr create -R acme/pipeline --title t --body "see: ${CLIENT_TEXT}"
+    [ "$status" -eq 0 ]
+    [ -f "${BATS_TEST_TMPDIR}/ran" ]
+}
+
+@test "gh-guard: a gist is outside every area" {
+    gh_shim
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    printf '%s\n' "${CLIENT_TEXT}" > note.txt
+    PATH="${GH_PATH}" run gh gist create note.txt
+    [ "$status" -ne 0 ]
+    [ ! -f "${BATS_TEST_TMPDIR}/ran" ]
+}
+
+# --- what is not specific to an area ---------------------------------------------
+
+@test "corpus: a phrase in allow.txt passes" {
+    printf '%s\n' "${CLIENT_TEXT}" > "${GUARD_CONFIG_DIR}/allow.txt"
+    mk_repo other
+    commit_line "${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: text that also appears in public background text passes" {
+    printf 'from a public readme: %s\n' "${COMPANY_TEXT}" > "${BATS_TEST_TMPDIR}/public/README.md"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a file a repository does not track is not its document" {
+    mk_repo_at "${CLIENT}/repos/tool"
+    printf 'a readme sentence that is only local scratch output here\n' > README.md
+    mk_repo other
+    commit_line "a readme sentence that is only local scratch output here"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+# --- code, data and PDF ------------------------------------------------------------
+
+CODE_LINE='    calibrated = apply_offset_table(raw_frames, acme_offsets, window=17)'
+
+# client_code <line> — commit a file holding <line> to a repository inside the client.
+client_code() {
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    printf 'def run():\n%s\n    return x\n' "$1" > pipeline.py
+    git add pipeline.py
+    commit_bypassing_hooks "add pipeline"
+}
+
+@test "corpus: a whole line of a client repository's code is caught, however it is indented" {
+    export GUARD_CORPUS_CODE_LINES=1
+    client_code "${CODE_LINE}"
+    mk_repo other
+    commit_line "        calibrated = apply_offset_table(raw_frames, acme_offsets, window=17)"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client text"* ]]
+}
+
+@test "corpus: a short line of code is too common to mean anything" {
+    client_code "${CODE_LINE}"
+    mk_repo other
+    commit_line "    return x"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: code in a vendored folder is someone else's, not the area's" {
+    export GUARD_CORPUS_CODE_LINES=1
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    mkdir -p third_party/lib
+    printf '%s\n' "${CODE_LINE}" > third_party/lib/x.py
+    git add third_party
+    commit_bypassing_hooks "vendor"
+    mk_repo other
+    commit_line "${CODE_LINE}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a line of code also found in public code is not the area's" {
+    export GUARD_CORPUS_CODE_LINES=1
+    client_code "${CODE_LINE}"
+    mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
+    printf '%s\n' "${CODE_LINE}" > "${BATS_TEST_TMPDIR}/public/lib/same.py"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line "${CODE_LINE}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: by default a lone common line of code passes and a copied block is caught" {
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    printf 'def run():\n%s\n    result = merge_panels(calibrated, seam_allowance=0.35)\n' "${CODE_LINE}" > pipeline.py
+    git add pipeline.py
+    commit_bypassing_hooks "add pipeline"
+    mk_repo other
+    commit_line "${CODE_LINE}"
+    scan_last
+    [ "$status" -eq 0 ]
+    printf '%s\n    result = merge_panels(calibrated, seam_allowance=0.35)\n' "${CODE_LINE}" > block.py
+    git add block.py
+    commit_bypassing_hooks "copy a block"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: a license wrapped differently from its public copy is not the area's" {
+    export GUARD_CORPUS_CODE_LINES=1
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    printf '# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY\n# EXPRESS OR IMPLIED WARRANTIES ARE DISCLAIMED FOREVER AND EVER\n' > header.py
+    git add header.py
+    commit_bypassing_hooks "header"
+    mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
+    printf 'THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND\nCONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES ARE\nDISCLAIMED FOREVER AND EVER\n' > "${BATS_TEST_TMPDIR}/public/lib/LICENSE"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line '# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY'
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a row that is public text (a license in a .txt) is not the area's" {
+    printf 'Permission is hereby granted, free of charge, to any person obtaining a copy\n' > "${CLIENT}/received/terms.txt"
+    mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
+    printf 'Permission is hereby granted, free of charge, to any\nperson obtaining a copy of this software\n' > "${BATS_TEST_TMPDIR}/public/lib/LICENSE"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line "Permission is hereby granted, free of charge, to any person obtaining a copy"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: one row of a CSV is caught on its own" {
+    printf 'id,label,score\n4411,acme-left-sleeve-measurement-batch,0.8731\n' > "${CLIENT}/received/table.csv"
+    mk_repo other
+    commit_line "4411,acme-left-sleeve-measurement-batch,0.8731"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: the head of a link that every link to the site shares is not the area's" {
+    printf 'The weights sit in https://drive.google.com/drive/folders/1Qz9XkLmNoPqRsTuVwXyZaBcDeFgHiJk for every run.\n' > "${CLIENT}/received/notes.md"
+    mk_repo other
+    commit_line 'WEIGHTS_URL="https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz01234"'
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: the head of a link after a colon is still the head every link shares" {
+    printf '資料の置き場: https://drive.google.com/drive/folders/1Qz9XkLmNoPqRsTuVwXyZaBcDeFgHiJk\n' > "${CLIENT}/received/notes.md"
+    mk_repo other
+    commit_line "返事の絵を置きました（第 2 版）： https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz01234"
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "see: https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz01234 (the folder)"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a sentence copied with its link is still caught" {
+    printf 'The weights sit in https://drive.google.com/drive/folders/1Qz9XkLmNoPqRsTuVwXyZaBcDeFgHiJk for every run.\n' > "${CLIENT}/received/notes.md"
+    mk_repo other
+    commit_line "The weights sit in https://drive.google.com/drive/folders/1Qz9XkLmNoPqRsTuVwXyZaBcDeFgHiJk for every run."
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: a command called with its options is how the tool is used, not the area's text" {
+    printf 'Before a run, check the board is free:\n\n    boardctl -d 0 --list-jobs=owner,mem_used --output=tsv,bare\n' > "${CLIENT}/received/runbook.md"
+    mk_repo other
+    commit_line 'busy="$(boardctl -d 2 --list-jobs=owner,mem_used --output=tsv,bare)"'
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: the text of a PDF is caught" {
+    command -v pdftotext >/dev/null || skip "pdftotext is not installed"
+    mk_pdf "${CLIENT}/received/report.pdf" "the sleeve seam drifts four millimetres per wash cycle"
+    mk_repo other
+    commit_line "the sleeve seam drifts four millimetres per wash cycle"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: a sentence a PDF wrapped across lines is joined again" {
+    run python3 -c "
+import importlib.util
+spec = importlib.util.spec_from_file_location('c', '${GUARD_ROOT}/scanners/corpus/corpus-scan.py')
+c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
+print(c.join_wrapped(['採寸表の三段目は夜', '明けに読み直すこと', '', 'the next', 'paragraph']))"
+    [ "$output" = "['採寸表の三段目は夜明けに読み直すこと', 'the next paragraph']" ]
+}
+
+@test "corpus: a run reaching past an allowed phrase is not a hit" {
+    # the document and the sent line share the allowed phrase plus the few words after it
+    printf 'open System Settings then Privacy and Security then Screen Recording for the app\n' > "${CLIENT}/received/howto.md"
+    printf 'System Settings then Privacy and Security then Screen Recording\n' > "${GUARD_CONFIG_DIR}/allow.txt"
+    mk_repo other
+    commit_line "- System Settings then Privacy and Security then Screen Recording for the process"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a repository holding the area from outside keeps its notes out of the area" {
+    # an agent's state tree (a repository) with a folder for the company inside it
+    STATE="${BATS_TEST_TMPDIR}/state-tree"
+    mkdir -p "${STATE}/projects/co"
+    git -C "${BATS_TEST_TMPDIR}" init -q "${STATE}"
+    git -C "${STATE}" config user.email "${ALLOWED_EMAIL}"
+    git -C "${STATE}" config user.name "Fixture"
+    printf 'the agent writes its own session notes in this very folder\n' > "${STATE}/projects/co/notes.md"
+    git -C "${STATE}" add -A && git -C "${STATE}" -c core.hooksPath=/dev/null commit -q -m notes
+    printf 'co %s/projects/co\n' "${STATE}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo other
+    commit_line "the agent writes its own session notes in this very folder"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a license text in a repository is public boilerplate" {
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    printf 'Redistributions of source code must retain the above copyright notice\n' > LICENSE
+    git add LICENSE
+    commit_bypassing_hooks "license"
+    mk_repo other
+    commit_line "Redistributions of source code must retain the above copyright notice"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a folder in ignore.txt holds no documents" {
+    mkdir -p "${WORK}/corpus-external"
+    printf '%s\n' "${COMPANY_TEXT}" > "${WORK}/corpus-external/a.txt"
+    rm "${WORK}/meetings/plan.md"
+    printf '%s\n' "${WORK}/corpus-external" > "${GUARD_CONFIG_DIR}/ignore.txt"
+    mk_repo other
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+# --- a new client folder is an area at once -----------------------------------------
+
+@test "corpus: a client folder made after the areas were written is its own area" {
+    printf 'client-* %s/clients/*\n' "${WORK}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mkdir -p "${WORK}/clients/beta"
+    printf 'beta keeps the pattern archive under the north stairs\n' > "${WORK}/clients/beta/brief.md"
+    # beta's own repository may carry it (checked first: once another client's repository
+    # has committed the line, that repository holds it too)
+    mk_repo_at "${WORK}/clients/beta/repos/tool"
+    commit_line "beta keeps the pattern archive under the north stairs"
+    scan_last
+    [ "$status" -eq 0 ]
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    commit_line "beta keeps the pattern archive under the north stairs"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client-beta text"* ]]
+}
+
+@test "corpus: a folder named on an explicit line keeps that name" {
+    printf 'client-* %s/clients/*\n' "${WORK}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo other
+    commit_line "${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *" client text"* ]]
+    [[ "$output" != *"client-acme"* ]]
+}
+
+# --- a machine that is the company's, less the folders in no area ---------------------
+
+HOME_TEXT="the loading dock opens only after the second bell"
+
+# home_is_company — every folder of a home directory joins the company; its repos folder is in no area.
+home_is_company() {
+    HOMEDIR="${BATS_TEST_TMPDIR}/home"
+    mkdir -p "${HOMEDIR}/repos"
+    printf 'company %s/*\n_outside %s/repos\n' "${HOMEDIR}" "${HOMEDIR}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+}
+
+@test "corpus: a folder made later under a <name> <path>/* line joins that area" {
+    home_is_company
+    mkdir -p "${HOMEDIR}/Desktop"
+    printf '%s\n' "${HOME_TEXT}" > "${HOMEDIR}/Desktop/memo.md"
+    mk_repo other
+    commit_line "${HOME_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a hidden folder under a <name> <path>/* line stays out of the area" {
+    home_is_company
+    mkdir -p "${HOMEDIR}/.config"
+    printf '%s\n' "${HOME_TEXT}" > "${HOMEDIR}/.config/memo.md"
+    mk_repo other
+    commit_line "${HOME_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a folder on an _outside line holds no documents" {
+    home_is_company
+    printf '%s\n' "${HOME_TEXT}" > "${HOMEDIR}/repos/memo.md"
+    mk_repo other
+    commit_line "${HOME_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: an _outside folder inside an area is cut out of it" {
+    printf '_outside %s/public\n' "${WORK}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mkdir -p "${WORK}/public"
+    printf '%s\n' "${HOME_TEXT}" > "${WORK}/public/notes.md"
+    mk_repo_at "${WORK}/public/site"
+    commit_line "${HOME_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]                   # its notes are not the company's documents
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]                   # and a repository there is outside the company
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a private destination cloned in an _outside folder inside the company is outside it" {
+    printf '_outside %s/public\n' "${WORK}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    seed_visibility acme/site private
+    mk_clone_at "${WORK}/public/site" acme/site
+    commit_line "${COMPANY_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/site.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+# --- a document changed after the build is checked at once --------------------------
+
+# spotlight_stub <reported-file> — mdutil says indexing is on; mdfind finds any probe
+# asked by name and reports <reported-file> as changed.
+spotlight_stub() {
+    STUB="${BATS_TEST_TMPDIR}/spotlight"; mkdir -p "${STUB}"
+    printf '#!/bin/sh\necho "/:"\necho "\tIndexing enabled."\n' > "${STUB}/mdutil"
+    cat > "${STUB}/mdfind" <<SH
+#!/bin/sh
+[ "\$3" = "-name" ] && { echo "\$2/\$4"; exit 0; }
+echo "\${SPOTLIGHT_REPORTS:-}" | grep . | grep "^\$2" || true
+SH
+    chmod +x "${STUB}/mdutil" "${STUB}/mdfind"
+    export SPOTLIGHT_REPORTS="$1"
+}
+
+@test "corpus: a document Spotlight reports as changed is caught without a full rebuild" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
+    # Spotlight answers with physical paths (= /var/folders is /private/var/folders)
+    SPOTLIGHT_REPORTS="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "${CLIENT}/received/late.md")"
+    export SPOTLIGHT_REPORTS
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"walking the private documents"* ]]
+}
+
+@test "corpus: a sentence taken out of a document is no longer the area's text once the change is seen" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/draft.md"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    # the draft is rewritten: the sentence leaves it
+    printf 'the order is settled with the mill in the north by friday\n' > "${CLIENT}/received/draft.md"
+    SPOTLIGHT_REPORTS="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "${CLIENT}/received/draft.md")"
+    export SPOTLIGHT_REPORTS
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    # what the draft says now is the area's text
+    commit_line "the order is settled with the mill in the north by friday"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: a rewritten document of a large area starts a walk the scan does not wait for" {
+    export GUARD_CORPUS_MAX_AGE=3600 GUARD_CORPUS_SMALL_AREA=0
+    spotlight_stub ""
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/draft.md"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    printf 'the order is settled with the mill in the north by friday\n' > "${CLIENT}/received/draft.md"
+    SPOTLIGHT_REPORTS="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "${CLIENT}/received/draft.md")"
+    export SPOTLIGHT_REPORTS
+    commit_line "nothing private either"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"takes longer than 0s: it goes on apart"* ]]
+}
+
+# index_has <path> — the index (docs/index.json) still names <path> as a document. The index
+# names real paths (macOS's temp folder sits behind a symlink); a deleted file's folder still
+# resolves, so the path is resolved before the lookup.
+index_has() {
+    python3 -c "
+import json, os, sys
+with open('${GUARD_CORPUS_CACHE}/docs/index.json') as fh:
+    index = json.load(fh)
+sys.exit(0 if os.path.realpath(sys.argv[1]) in index else 1)" "$1"
+}
+
+@test "corpus: a nested area's root folder among the changes is passed over, and the documents beside it are still caught" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    # Asked under the company's root, Spotlight also lists folders whose content moved: the
+    # client's root folder is one when a file is made right inside it.
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/late.md"
+    SPOTLIGHT_REPORTS="$(python3 -c 'import os,sys;print("\n".join(os.path.realpath(p) for p in sys.argv[1:]))' \
+        "${CLIENT}" "${CLIENT}/late.md")"
+    export SPOTLIGHT_REPORTS
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"Traceback"* ]]
+    [[ "$output" != *"walking the private documents"* ]]
+}
+
+@test "corpus: a scan that breaks says it could not judge (exit 2), not that it found text" {
+    mk_repo other
+    commit_line "nothing private"
+    scan_last
+    [ "$status" -eq 0 ]
+    export GUARD_CORPUS_MAX_AGE=3600
+    echo '[' > "${GUARD_CORPUS_CACHE}/docs/index.json"
+    commit_line "still nothing private"
+    scan_last
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"could not judge"* ]]
+    [[ "$output" != *"Traceback"* ]]
+    [ "$(printf '%s\n' "$output" | grep -c '^    ')" -eq 0 ]
+}
+
+@test "corpus: when Spotlight cannot answer, an edited document is caught without a full rebuild" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last               # first look: nothing built yet, a full walk either way
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"walking the private documents"* ]]
+    printf 'the dye lot for the spring run arrives on the ninth\n' >> "${CLIENT}/received/notes.md"
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last               # Spotlight is down: the stat fallback finds the edit
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"walking the private documents"* ]]
+}
+
+@test "corpus: when Spotlight does not index an area, an edited document is still caught by the stat fallback" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    printf '#!/bin/sh\nexit 0\n' > "${STUB}/mdfind"   # finds nothing, not even a known document
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    printf 'the dye lot for the spring run arrives on the ninth\n' >> "${CLIENT}/received/notes.md"
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"walking the private documents"* ]]
+}
+
+@test "corpus: when Spotlight cannot answer, a deleted document drops from the index and its text with it" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    run index_has "${CLIENT}/received/notes.md"
+    [ "$status" -eq 0 ]
+    rm "${CLIENT}/received/notes.md"
+    commit_line "the file is gone now"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    run index_has "${CLIENT}/received/notes.md"
+    [ "$status" -ne 0 ]
+    # the area's text is what its folder holds now: the walk the deletion made due merged the
+    # table anew, and the text the deleted document held is no longer the area's
+    commit_line "expected: ${CLIENT_TEXT}"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: when Spotlight cannot answer, a new document and a new folder are caught without a full walk" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    # created since the last look: its folder's modification time moved, so only that folder is
+    # listed again -- found at once, without walking everything
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"walking the private documents"* ]]
+    # a folder that did not exist at the last look is walked whole
+    mkdir -p "${CLIENT}/received/new-batch/inner"
+    printf 'the loom in bay four is retuned every second tuesday\n' > "${CLIENT}/received/new-batch/inner/note.md"
+    commit_line "the loom in bay four is retuned every second tuesday"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"walking the private documents"* ]]
+}
+
+# --- a full walk that is due does not hold up the scan -----------------------------------
+#
+# A full walk runs as a process of its own; the scan waits for it up to GUARD_CORPUS_WALK_WAIT
+# and then goes on with the tables on disk, which catch_up() has just brought up to date. A send
+# is judged within its own time limit however long the walk takes.
+
+# built_at — when the tables on disk were last built (summary.json), as a number.
+built_at() {
+    python3 -c "import json; print(json.load(open('${GUARD_CORPUS_CACHE}/summary.json'))['built'])"
+}
+
+# wait_for_walk <built before> — the walk started apart finishes within ten seconds.
+wait_for_walk() {
+    local k
+    for k in $(seq 100); do
+        if [ -f "${GUARD_CORPUS_CACHE}/summary.json" ] && \
+            python3 -c "import json,sys; sys.exit(0 if json.load(open('${GUARD_CORPUS_CACHE}/summary.json'))['built'] > float(sys.argv[1]) else 1)" "$1"; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    return 1
+}
+
+@test "corpus: a walk past its age goes on apart when it takes longer than the scan waits, and what changed is still caught" {
+    export GUARD_CORPUS_MAX_AGE=0
+    spotlight_stub ""
+    printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last               # first look: nothing built yet, waited for
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"walking the private documents"* ]]
+    export GUARD_CORPUS_WALK_WAIT=0
+    local before
+    before="$(built_at)"
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"goes on apart from this scan"* ]]
+    wait_for_walk "${before}"
+}
+
+@test "corpus: a walk the scan waits for is used as if walked here" {
+    export GUARD_CORPUS_MAX_AGE=0
+    mk_repo other
+    commit_line "nothing private"
+    scan_last
+    [ "$status" -eq 0 ]
+    local before
+    before="$(built_at)"
+    commit_line "expected: ${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"walking the private documents"* ]]
+    [[ "$output" != *"goes on apart"* ]]
+    python3 -c "import json,sys; sys.exit(0 if json.load(open('${GUARD_CORPUS_CACHE}/summary.json'))['built'] > float(sys.argv[1]) else 1)" "${before}"
+}
+
+@test "corpus: more changed documents than the delta holds are still caught, and the walk goes on apart" {
+    export GUARD_CORPUS_MAX_AGE=3600 GUARD_CORPUS_MAX_DELTA=1
+    spotlight_stub ""
+    printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last               # first look: nothing built yet, waited for
+    [ "$status" -eq 0 ]
+    export GUARD_CORPUS_WALK_WAIT=0
+    local before
+    before="$(built_at)"
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
+    printf 'the loom in bay four is retuned every second tuesday\n' > "${CLIENT}/received/later.md"
+    commit_line "the loom in bay four is retuned every second tuesday"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"goes on apart from this scan"* ]]
+    wait_for_walk "${before}"
+    # the walk folded both into the area's table: still caught, nothing left due
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"walking the private documents"* ]]
+}
+
+# --- no tables that fit are built apart from the scan ------------------------------------
+#
+# A fresh cache, or areas.txt naming other areas: the build runs as a process of its own, which a
+# scan given up on by its caller does not stop half way. The scan waits for it up to
+# GUARD_CORPUS_WALK_WAIT, and refuses to judge when it is not done by then.
+
+@test "corpus: with no tables yet, a scan that cannot wait refuses, and the build it started finishes apart" {
+    export GUARD_CORPUS_WALK_WAIT=0
+    mk_repo other
+    commit_line "expected: ${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NOT JUDGED"* ]]
+    [[ "$output" == *"being built apart from this scan"* ]]
+    wait_for_walk 0
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: tables built for other areas are not judged with, so a new area's text is not passed unchecked" {
+    mk_repo other
+    commit_line "nothing private"
+    scan_last
+    [ "$status" -eq 0 ]
+    mkdir -p "${BATS_TEST_TMPDIR}/lab"
+    printf 'the lab keeps its spare centrifuge behind the second door\n' > "${BATS_TEST_TMPDIR}/lab/notes.md"
+    printf 'lab %s\n' "${BATS_TEST_TMPDIR}/lab" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    hold_lock "${GUARD_CORPUS_CACHE}" 4          # whoever builds the tables for the new area is at it
+    export GUARD_CORPUS_WALK_WAIT=1
+    commit_line "the lab keeps its spare centrifuge behind the second door"
+    scan_last
+    kill "${LOCK_PID}" 2>/dev/null || true
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NOT JUDGED"* ]]
+}
+
+# --- the table of public text ---------------------------------------------------------
+#
+# Most of these tests watch the table through a row of a license: whether a whole row is public
+# is decided when a line is judged, from the table as it is then. A line of code is taken out of
+# an area's own table when that table is merged: the last two tests watch that merge happen
+# when what is public changes.
+
+SCAN="${GUARD_ROOT}/scanners/corpus/corpus-scan.py"
+LICENSE_ROW="Permission is hereby granted, free of charge, to any person obtaining a copy"
+
+# public_row — a client's file holds a row of a license, a folder of public text does not hold
+# the license yet, and the row is committed in a repository outside every area.
+public_row() {
+    printf '%s\n' "${LICENSE_ROW}" > "${CLIENT}/received/terms.txt"
+    mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
+    printf 'print("nothing shared yet")\n' > "${BATS_TEST_TMPDIR}/public/lib/other.py"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line "${LICENSE_ROW}"
+}
+
+# publish_license <folder> — the license becomes public text there (wrapped as its own copy wraps it).
+publish_license() {
+    mkdir -p "$1"
+    printf 'Permission is hereby granted, free of charge, to any\nperson obtaining a copy of this software\n' > "$1/LICENSE"
+}
+
+# age_public <days> — make the table of public text look built that many days ago, and
+# background.txt older still: the table is then old, not overtaken by an edit.
+age_public() {
+    python3 -c '
+import glob, os, sys, time
+then = time.time() - float(sys.argv[3]) * 86400
+for table in glob.glob(os.path.join(sys.argv[1], "background-*.bin")):
+    os.utime(table, (then, then))
+os.utime(sys.argv[2], (then - 60, then - 60))
+' "${GUARD_CORPUS_CACHE}" "${GUARD_CONFIG_DIR}/background.txt" "$1"
+}
+
+# public_age_days — how old the table of public text is, in whole days.
+public_age_days() {
+    python3 -c '
+import glob, os, sys, time
+tables = glob.glob(os.path.join(sys.argv[1], "background-*.bin"))
+print(int((time.time() - max(os.path.getmtime(p) for p in tables)) // 86400))
+' "${GUARD_CORPUS_CACHE}"
+}
+
+# wait_public_rebuilt — until the table of public text has been written again (10 s at most).
+wait_public_rebuilt() {
+    for _ in $(seq 1 100); do
+        [ "$(public_age_days)" -eq 0 ] && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+@test "corpus: a table of public text past its week answers as it is and is rebuilt apart from the scan" {
+    public_row
+    scan_last
+    [ "$status" -eq 1 ]                 # the table is built, and the license is not public
+    publish_license "${BATS_TEST_TMPDIR}/public/lib"                            # now it is
+    age_public 8
+    scan_last
+    [ "$status" -eq 1 ]                 # the old table answered: the scan did not stop to rebuild it
+    [[ "$output" == *"8 days old"* ]]
+    wait_public_rebuilt
+    scan_last
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"days old"* ]]
+}
+
+@test "corpus: while one process rebuilds the table of public text, a scan neither waits nor starts another" {
+    public_row
+    scan_last
+    [ "$status" -eq 1 ]
+    publish_license "${BATS_TEST_TMPDIR}/public/lib"
+    age_public 8
+    hold_lock "${GUARD_CORPUS_CACHE}" 4 background.lock
+    started="$(date +%s)"
+    scan_last
+    elapsed=$(( $(date +%s) - started ))
+    [ "$status" -eq 1 ]
+    [ "${elapsed}" -lt 3 ]
+    # Asked to rebuild while another holds the lock, the process leaves without building.
+    run python3 "${SCAN}" --refresh-public
+    [ "$status" -eq 0 ]
+    [ "$(public_age_days)" -eq 8 ]
+    kill "${LOCK_PID}" 2>/dev/null || true
+}
+
+@test "corpus: a background.txt edited since the table was built is read again within the scan" {
+    public_row
+    scan_last
+    [ "$status" -eq 1 ]
+    age_public 1
+    publish_license "${BATS_TEST_TMPDIR}/more"
+    printf '%s\n%s\n' "${BATS_TEST_TMPDIR}/public" "${BATS_TEST_TMPDIR}/more" > "${GUARD_CONFIG_DIR}/background.txt"
+    scan_last
+    [ "$status" -eq 0 ]                 # the operator changed what is public: the next scan knows
+    [[ "$output" != *"days old"* ]]
+}
+
+@test "corpus: a rebuild of the table of public text reads only the files that changed" {
+    public_row
+    publish_license "${BATS_TEST_TMPDIR}/public/lib"
+    scan_last
+    [ "$status" -eq 0 ]
+    # Other text under the same size and time: a rebuild that read the file again would lose the license.
+    python3 -c '
+import os, sys
+status = os.stat(sys.argv[1])
+with open(sys.argv[1], "w") as fh:
+    fh.write("#" * (status.st_size - 1) + "\n")
+os.utime(sys.argv[1], ns=(status.st_atime_ns, status.st_mtime_ns))
+' "${BATS_TEST_TMPDIR}/public/lib/LICENSE"
+    age_public 8
+    run python3 "${SCAN}" --refresh-public
+    [ "$status" -eq 0 ]
+    [ "$(public_age_days)" -eq 0 ]
+    scan_last
+    [ "$status" -eq 0 ]
+    # A file that did change is read again: what it used to hold is public no longer.
+    printf 'This copy now holds other words altogether, and is of another length.\n' > "${BATS_TEST_TMPDIR}/public/lib/LICENSE"
+    age_public 8
+    run python3 "${SCAN}" --refresh-public
+    [ "$status" -eq 0 ]
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: the table a rebuild puts together from kept prints is the one a build from nothing gives" {
+    public_row
+    publish_license "${BATS_TEST_TMPDIR}/public/lib"
+    for n in 1 2 3 4; do
+        printf 'def step_%s(frames):\n    return normalise_every_frame_of_the_batch(frames, pass_number=%s)\n' "${n}" "${n}" \
+            > "${BATS_TEST_TMPDIR}/public/lib/step${n}.py"
+    done
+    printf 'A page of public prose, long enough to leave more than one run of forty characters.\n' \
+        > "${BATS_TEST_TMPDIR}/public/README.md"
+    scan_last
+    [ "$status" -eq 0 ]
+    printf 'def step_2(frames):\n    return a_different_body_for_the_second_step_entirely(frames)\n' \
+        > "${BATS_TEST_TMPDIR}/public/lib/step2.py"
+    rm "${BATS_TEST_TMPDIR}/public/lib/step3.py"
+    printf 'def added(frames):\n    return a_file_that_was_not_there_the_first_time(frames, kept=True)\n' \
+        > "${BATS_TEST_TMPDIR}/public/lib/added.py"
+    age_public 8
+    run python3 "${SCAN}" --refresh-public
+    [ "$status" -eq 0 ]
+    cp "${GUARD_CORPUS_CACHE}"/background-*.bin "${BATS_TEST_TMPDIR}/kept.bin"
+    [ "$(wc -c < "${BATS_TEST_TMPDIR}/kept.bin")" -gt 0 ]
+    rm -rf "${GUARD_CORPUS_CACHE}"/public-* "${GUARD_CORPUS_CACHE}"/background-*.bin
+    scan_last
+    [ "$status" -eq 0 ]
+    cmp "${GUARD_CORPUS_CACHE}"/background-*.bin "${BATS_TEST_TMPDIR}/kept.bin"
+}
+
+@test "corpus: a published repository clears what its remote carries, under a name that is not ASCII too" {
+    export GUARD_CORPUS_CODE_LINES=1
+    client_code "${CODE_LINE}"
+    git init -q --bare "${BATS_TEST_TMPDIR}/remote.git"
+    mkdir -p "${BATS_TEST_TMPDIR}/mine"
+    git clone -q "${BATS_TEST_TMPDIR}/remote.git" "${BATS_TEST_TMPDIR}/mine/kit" 2>/dev/null
+    cd "${BATS_TEST_TMPDIR}/mine/kit"
+    git config user.email "${ALLOWED_EMAIL}"
+    git config user.name "Fixture"
+    git config commit.gpgsign false
+    printf '%s\n' "${CODE_LINE}" > "手引き.py"
+    git add . && commit_bypassing_hooks "a kit"
+    git -c core.hooksPath=/dev/null push -q origin HEAD
+    git remote set-head origin -a >/dev/null
+    printf 'published %s\n' "${BATS_TEST_TMPDIR}/mine" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line "${CODE_LINE}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: repositories are read as themselves when the scan runs in another repository's hook" {
+    # A hook runs with GIT_DIR naming its own repository, and it wins over `git -C <folder>`.
+    export GUARD_CORPUS_CODE_LINES=1
+    client_code "${CODE_LINE}"
+    git init -q "${BATS_TEST_TMPDIR}/hooked"
+    printf '%s\n' "${CODE_LINE}" > "${BATS_TEST_TMPDIR}/payload.txt"
+    hooked() {
+        (cd "${BATS_TEST_TMPDIR}/hooked" && GIT_DIR="${BATS_TEST_TMPDIR}/hooked/.git" \
+            python3 "${SCAN}" --text "${BATS_TEST_TMPDIR}/payload.txt" --dest-area OUTSIDE)
+    }
+    run hooked
+    [ "$status" -eq 1 ]                 # the client's repository is read for what it tracks
+    git init -q --bare "${BATS_TEST_TMPDIR}/remote.git"
+    mkdir -p "${BATS_TEST_TMPDIR}/mine"
+    git clone -q "${BATS_TEST_TMPDIR}/remote.git" "${BATS_TEST_TMPDIR}/mine/kit" 2>/dev/null
+    cd "${BATS_TEST_TMPDIR}/mine/kit"
+    git config user.email "${ALLOWED_EMAIL}"
+    git config user.name "Fixture"
+    git config commit.gpgsign false
+    printf '%s\n' "${CODE_LINE}" > kit.py
+    git add . && commit_bypassing_hooks "a kit"
+    git -c core.hooksPath=/dev/null push -q origin HEAD
+    git remote set-head origin -a >/dev/null
+    printf 'published %s\n' "${BATS_TEST_TMPDIR}/mine" > "${GUARD_CONFIG_DIR}/background.txt"
+    run hooked
+    [ "$status" -eq 0 ]                 # and the published kit for what its remote carries
+}
+
+@test "corpus: a table of public text behind a published repository is rebuilt apart, before its week is out" {
+    export GUARD_CORPUS_CODE_LINES=1
+    client_code "${CODE_LINE}"
+    git init -q --bare "${BATS_TEST_TMPDIR}/remote.git"
+    mkdir -p "${BATS_TEST_TMPDIR}/mine"
+    git clone -q "${BATS_TEST_TMPDIR}/remote.git" "${BATS_TEST_TMPDIR}/mine/kit" 2>/dev/null
+    cd "${BATS_TEST_TMPDIR}/mine/kit"
+    git config user.email "${ALLOWED_EMAIL}"
+    git config user.name "Fixture"
+    git config commit.gpgsign false
+    printf 'print("nothing shared yet")\n' > first.py
+    git add . && commit_bypassing_hooks "a kit"
+    git -c core.hooksPath=/dev/null push -q origin HEAD
+    git remote set-head origin -a >/dev/null
+    printf 'published %s\n' "${BATS_TEST_TMPDIR}/mine" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    sender="${PWD}"
+    commit_line "${CODE_LINE}"
+    scan_last
+    [ "$status" -eq 1 ]                 # the table is built, and the line is not public yet
+    scan_last
+    [[ "$output" != *"behind a published repository"* ]]    # nothing moved: the table is current
+    # The kit publishes the line the same day: its remote moves, and the table is a minute old
+    cd "${BATS_TEST_TMPDIR}/mine/kit"
+    printf '%s\n' "${CODE_LINE}" > second.py
+    git add . && commit_bypassing_hooks "the line"
+    git -c core.hooksPath=/dev/null push -q origin HEAD
+    git fetch -q origin
+    cd "${sender}"
+    scan_last
+    # The table on disk answers and is rebuilt apart (= in a fixture this small, the rebuild may
+    # already have cleared the line by the time the scan reads the areas' tables)
+    [[ "$output" == *"behind a published repository"* ]]
+    for _ in $(seq 1 100); do
+        python3 "${SCAN}" --summary >/dev/null 2>&1
+        scan_last
+        [ "$status" -eq 0 ] && break
+        sleep 0.1
+    done
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"behind a published repository"* ]]
+}
+
+# public_code — a client's line of code, a folder of public code that does not hold it yet, and a
+# commit of that line in a repository outside every area.
+public_code() {
+    export GUARD_CORPUS_CODE_LINES=1
+    client_code "${CODE_LINE}"
+    mkdir -p "${BATS_TEST_TMPDIR}/public/lib"
+    printf 'print("nothing shared yet")\n' > "${BATS_TEST_TMPDIR}/public/lib/other.py"
+    printf '%s\n' "${BATS_TEST_TMPDIR}/public" > "${GUARD_CONFIG_DIR}/background.txt"
+    mk_repo other
+    commit_line "${CODE_LINE}"
+}
+
+# wait_public_merged — until the areas' tables have been merged against the table of public text
+# now on disk (10 s at most).
+wait_public_merged() {
+    for _ in $(seq 1 100); do
+        python3 -c '
+import glob, json, os, sys
+names = glob.glob(os.path.join(sys.argv[1], "background-*.id"))
+want = open(names[0]).read().strip() if names else ""
+have = json.load(open(os.path.join(sys.argv[1], "summary.json"))).get("public", "")
+sys.exit(0 if want and want == have else 1)
+' "${GUARD_CORPUS_CACHE}" 2>/dev/null && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+@test "corpus: an edit of background.txt reaches a line of code an area's table already holds, within the scan" {
+    public_code
+    scan_last
+    [ "$status" -eq 1 ]                 # the client's table holds the line
+    age_public 1
+    mkdir -p "${BATS_TEST_TMPDIR}/more"
+    printf '%s\n' "${CODE_LINE}" > "${BATS_TEST_TMPDIR}/more/same.py"
+    printf '%s\n%s\n' "${BATS_TEST_TMPDIR}/public" "${BATS_TEST_TMPDIR}/more" > "${GUARD_CONFIG_DIR}/background.txt"
+    scan_last
+    [ "$status" -eq 0 ]                 # the tables were merged anew against what is public now
+    # ... and once more, with nothing changed: the merge is not done over and over.
+    before="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["public"])' "${GUARD_CORPUS_CACHE}/summary.json")"
+    scan_last
+    [ "$status" -eq 0 ]
+    [ -n "${before}" ]
+    [ "$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["public"])' "${GUARD_CORPUS_CACHE}/summary.json")" = "${before}" ]
+}
+
+@test "corpus: the process that rebuilds the table of public text merges the areas' tables against it" {
+    # The areas' own walk is not due here: a walk the scan started and waited for would run beside
+    # the rebuild of public text, and which of the two wrote the tables last would decide the scan.
+    export GUARD_CORPUS_MAX_AGE=3600
+    public_code
+    scan_last
+    [ "$status" -eq 1 ]
+    printf '%s\n' "${CODE_LINE}" > "${BATS_TEST_TMPDIR}/public/lib/same.py"     # the line becomes public
+    age_public 8
+    scan_last
+    [ "$status" -eq 1 ]                 # the old tables answered: this scan merged nothing anew
+    [[ "$output" == *"8 days old"* ]]
+    wait_public_rebuilt
+    wait_public_merged
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: the path of a folder that holds several areas is no area's text, and what follows it still is" {
+    # A folder whose path holds a whole run of its own, written as the areas are read (links resolved).
+    local place
+    place="$(cd -P "${BATS_TEST_TMPDIR}" && pwd)/the-folder-every-area-of-the-company-lives-in"
+    mkdir -p "${place}/org/clients/acme"
+    printf '%s\nthe archive moved to %s/shared/drive last spring\n' "${CLIENT_TEXT}" "${place}" \
+        > "${place}/org/clients/acme/notes.md"
+    printf 'company %s/org\nclient  %s/org/clients/acme\n' "${place}" "${place}" > "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo other
+    commit_line "the new notes live under ${place}/other/place now"
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "see ${place}/org/clients/acme/notes.md: ${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client text"* ]]
+}
+
+@test "corpus: a scan says how long it took, clean or not" {
+    mk_repo other
+    commit_line "nothing private"
+    scan_last
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ clean\ \([0-9]+\ lines\ against\ 2\ areas\)\ in\ [0-9]+\.[0-9]s ]]
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" =~ scanned\ in\ [0-9]+\.[0-9]s ]]
+}
+
+# --- only one process at a time builds or writes the fingerprints -------------------
+
+# hold_lock <cache-dir> <seconds> [lock] — take the build lock (or the one named) in a background
+# process and wait until it is really held, so the test that follows races a lock it is sure to lose.
+hold_lock() {
+    rm -f "$1/lock-held"
+    python3 -c "
+import fcntl, os, sys, time
+cache = sys.argv[1]
+os.makedirs(cache, exist_ok=True)
+fh = open(os.path.join(cache, sys.argv[3]), 'a+')
+fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+open(os.path.join(cache, 'lock-held'), 'w').close()
+time.sleep(float(sys.argv[2]))
+" "$1" "$2" "${3:-build.lock}" &
+    LOCK_PID=$!
+    for _ in $(seq 1 50); do
+        [ -f "$1/lock-held" ] && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+@test "corpus: a process that cannot take the build lock uses the summary already on disk instead of waiting" {
+    export GUARD_CORPUS_MAX_AGE=0      # would rebuild on every look, if it got the chance
+    mk_repo other
+    commit_line "nothing private"
+    scan_last
+    [ "$status" -eq 0 ]
+    before="$(cat "${GUARD_CORPUS_CACHE}/summary.json")"
+    hold_lock "${GUARD_CORPUS_CACHE}" 6
+    started="$(date +%s)"
+    scan_last
+    elapsed=$(( $(date +%s) - started ))
+    [ "$status" -eq 0 ]
+    [ "${elapsed}" -lt 3 ]
+    [ "$(cat "${GUARD_CORPUS_CACHE}/summary.json")" = "${before}" ]
+}
+
+@test "corpus: with nothing built yet, a second process waits for the one holding the lock" {
+    rm -rf "${GUARD_CORPUS_CACHE}"
+    # The git setup happens before the lock is taken, so a loaded machine being slow at that does
+    # not eat into the window the test measures.
+    mk_repo other
+    commit_line "nothing private"
+    hold_lock "${GUARD_CORPUS_CACHE}" 3
+    started="$(date +%s)"
+    scan_last
+    elapsed=$(( $(date +%s) - started ))
+    [ "$status" -eq 0 ]
+    [ "${elapsed}" -ge 2 ]
+    [ -f "${GUARD_CORPUS_CACHE}/summary.json" ]
+}
+
+@test "corpus: a summary.json read back is never a half-written file" {
+    mk_repo other
+    commit_line "nothing private"
+    scan_last
+    [ "$status" -eq 0 ]
+    python3 -c "import json; json.load(open('${GUARD_CORPUS_CACHE}/summary.json'))"
+    [ -z "$(find "${GUARD_CORPUS_CACHE}" -maxdepth 1 -name '.summary.json.*')" ]
+    [ -z "$(find "${GUARD_CORPUS_CACHE}/docs" -maxdepth 1 -name '.index.json.*')" ]
+}
+
+@test "corpus: a broken areas.txt line refuses instead of guessing" {
+    printf '_exempt = the text of a comment that lost its hash\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo other
+    commit_line "nothing private"
+    scan_last
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"REFUSED"* ]]
+}
+
+@test "corpus: no areas on this machine says NOT CHECKED and passes" {
+    rm "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo other
+    commit_line "${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"NOT CHECKED"* ]]
+}
+
+# --- wiring -----------------------------------------------------------------------
+
+@test "pre-push: a push carrying client text is blocked" {
+    mk_repo other
+    base="$(git rev-parse HEAD)"
+    commit_line "${CLIENT_TEXT}"
+    head="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/feature/x ${head} refs/heads/feature/x ${base}"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"private area"* ]]
+}
+
+@test "pre-push: a rewritten history does not compare again the files its destination already holds" {
+    mk_repo other
+    dest="${BATS_TEST_TMPDIR}/dest.git"
+    git init -q --bare "${dest}"
+    # the destination has carried this file all along (it went there before the areas were set)
+    printf '%s\n' "${CLIENT_TEXT}" > held.txt && git add held.txt
+    commit_bypassing_hooks "add a file the destination holds"
+    git -c core.hooksPath=/dev/null push -q "${dest}" HEAD:refs/heads/develop
+    old="$(git rev-parse HEAD)"
+    # a rewrite: same tree, a new message, a new hash; the old tip is not known here any more
+    new="$(git commit-tree "HEAD^{tree}" -p HEAD~1 -m "add the file, reworded")"
+    git update-ref refs/heads/develop "${new}"
+    git reflog expire --expire=now --all && git gc -q --prune=now
+    run bash -c "printf '%s\n' 'refs/heads/develop ${new} refs/heads/develop ${old}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${dest}'"
+    [[ "$output" != *"private area"* ]]
+    # a file the destination does not hold is still compared
+    printf 'notes\n%s\n' "${CLIENT_TEXT}" > fresh.txt && git add fresh.txt
+    newer="$(git commit-tree "$(git write-tree)" -p "${new}" -m "add a fresh file")"
+    run bash -c "printf '%s\n' 'refs/heads/develop ${newer} refs/heads/develop ${old}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${dest}'"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"private area"* ]]
+    [[ "$output" == *"fresh.txt"* ]]
+}
+
+@test "pre-push: a rewritten history does not compare again the commit texts its destination already holds" {
+    mk_repo other
+    dest="${BATS_TEST_TMPDIR}/dest.git"
+    git init -q --bare "${dest}"
+    echo "theirs" > theirs.txt && git add theirs.txt
+    commit_bypassing_hooks "notes: ${CLIENT_TEXT}"
+    git -c core.hooksPath=/dev/null push -q "${dest}" HEAD:refs/heads/develop
+    old="$(git rev-parse HEAD)"
+    # the seed reworded: the commit above it comes back with a new hash and the same text
+    seed="$(git commit-tree "HEAD~1^{tree}" -m "seed, reworded")"
+    new="$(git commit-tree "HEAD^{tree}" -p "${seed}" -m "notes: ${CLIENT_TEXT}")"
+    run bash -c "printf '%s\n' 'refs/heads/develop ${new} refs/heads/develop ${old}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${dest}'"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"private area"* ]]
+    # a text the destination does not hold is still compared
+    newer="$(git commit-tree "HEAD^{tree}" -p "${new}" -m "again: ${CLIENT_TEXT}")"
+    run bash -c "printf '%s\n' 'refs/heads/develop ${newer} refs/heads/develop ${old}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${dest}'"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"private area"* ]]
+    [[ "$output" == *"${newer:0:7} message"* ]]
+}
+
+# --- an area whose repositories may hold other areas' text ---------------------------------------
+
+# hub_records [<names>] — an area inside the company for someone's gathered notes, a repository
+# of them with no remote, and (given names) the line that lets it hold those areas' text. What a
+# commit would add is in added.txt: a sentence of the company's and one of the client's.
+hub_records() {
+    mkdir -p "${WORK}/hub"
+    printf 'hub %s\n' "${WORK}/hub" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    [ -z "${1:-}" ] || printf '_carries hub %s\n' "$1" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo_at "${WORK}/hub/records"
+    printf '%s\n%s\n' "${COMPANY_TEXT}" "${CLIENT_TEXT}" > "${BATS_TEST_TMPDIR}/added.txt"
+}
+
+# commit_scan [args] — the scan pre-commit runs over what a commit adds to the repository here.
+commit_scan() {
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/added.txt" --repo "${PWD}" --commit "$@"
+}
+
+@test "corpus: a repository whose area carries others takes a commit holding their text" {
+    hub_records "company client"
+    commit_scan
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"may hold the text of the 2 areas"* ]]
+    # The line makes no area and moves none: the same text is still caught outside them all.
+    mk_repo other
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: without the line the commit is refused, and with it only the areas it names pass" {
+    hub_records
+    commit_scan
+    [ "$status" -eq 1 ]
+    printf '_carries hub company\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    commit_scan
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client text"* ]]
+    [[ "$output" != *"company text"* ]]
+}
+
+@test "corpus: a glob names several areas to carry, and a client's identifiers of a shape go with its text" {
+    hub_records "c*"
+    printf 'the unit is QX1234\n' >> "${BATS_TEST_TMPDIR}/added.txt"
+    commit_scan
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: only a commit carries: the same text judged as a payload or a push is refused" {
+    hub_records "company client"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/added.txt" --repo "${PWD}"
+    [ "$status" -eq 1 ]
+    cp "${BATS_TEST_TMPDIR}/added.txt" notes.md
+    git add notes.md
+    commit_bypassing_hooks "notes"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a repository with a remote carries nothing, and the refusal says why" {
+    hub_records "company client"
+    git remote add origin "${OTHER_URL}"
+    commit_scan
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"only one with no remote"* ]]
+}
+
+@test "corpus: a repository of another area is not let hold what the line names for hub" {
+    hub_records "company client"
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    commit_scan
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a _carries line that names no area, or a path, refuses instead of guessing" {
+    hub_records
+    cp "${GUARD_CONFIG_DIR}/areas.txt" "${BATS_TEST_TMPDIR}/areas.good"
+    local line
+    for line in "_carries hub" "_carries nosuch company" "_carries hub ${WORK}" "_carries _exempt company"; do
+        cp "${BATS_TEST_TMPDIR}/areas.good" "${GUARD_CONFIG_DIR}/areas.txt"
+        printf '%s\n' "${line}" >> "${GUARD_CONFIG_DIR}/areas.txt"
+        commit_scan
+        [ "$status" -eq 2 ] || { echo "passed: ${line}"; return 1; }
+        [[ "$output" == *"REFUSED"* ]]
+    done
+}
+
+@test "pre-commit: a corpus-scope repository of an area that carries others takes their text, and refuses it again once it has a remote" {
+    hub_records "company client"
+    git config guard.scope corpus
+    cp "${BATS_TEST_TMPDIR}/added.txt" notes.md
+    git add notes.md
+    run_pre_commit
+    [ "$status" -eq 0 ]
+    git remote add origin "${OTHER_URL}"
+    run_pre_commit
+    [ "$status" -eq 1 ]
+}
+
+# --- guard.scope corpus: an agent's own notes, where the word list does not apply -----
+
+@test "pre-commit: a corpus-scope repository inside the company refuses a client's text staged into it" {
+    mk_repo_at "${WORK}/notes"
+    git config guard.scope corpus
+    printf '%s\n' "${COMPANY_TEXT}" "${SENTINEL} is fine here" > n.md
+    git add n.md
+    run_pre_commit
+    [ "$status" -eq 0 ]
+    printf '%s\n' "${CLIENT_TEXT}" >> n.md
+    git add n.md
+    run_pre_commit
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client text"* ]]
+}
+
+@test "pre-push: a corpus-scope repository runs only the private-document scan" {
+    mk_repo other
+    git config guard.scope corpus
+    base="$(git rev-parse HEAD)"
+    commit_line "${SENTINEL} is a word this repository holds by design"
+    head="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/${SENTINEL} ${head} refs/heads/${SENTINEL} ${base}"
+    [ "$status" -eq 0 ]
+    commit_line "${COMPANY_TEXT}"
+    head2="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/main ${head2} refs/heads/main ${head}"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "pre-push: GUARD_CORPUS_SKIP=1 lets one push through" {
+    mk_repo other
+    base="$(git rev-parse HEAD)"
+    commit_line "${CLIENT_TEXT}"
+    head="$(git rev-parse HEAD)"
+    GUARD_CORPUS_SKIP=1 run_pre_push "refs/heads/feature/x ${head} refs/heads/feature/x ${base}"
+    [ "$status" -eq 0 ]
+}
+
+@test "gh-guard: a body carrying client text is refused and never sent" {
+    SHIM_DIR="${BATS_TEST_TMPDIR}/shim"; REAL_DIR="${BATS_TEST_TMPDIR}/real"
+    mkdir -p "${SHIM_DIR}" "${REAL_DIR}"
+    ln -sf "${GUARD_ROOT}/gh-shim/gh-guard.sh" "${SHIM_DIR}/gh"
+    printf '#!/usr/bin/env bash\ntouch "%s/ran"\n' "${BATS_TEST_TMPDIR}" > "${REAL_DIR}/gh"
+    chmod +x "${REAL_DIR}/gh"
+    mk_repo other
+    PATH="${SHIM_DIR}:${REAL_DIR}:${PATH}" run gh pr comment 1 --body "see: ${CLIENT_TEXT}"
+    [ "$status" -ne 0 ]
+    [ ! -f "${BATS_TEST_TMPDIR}/ran" ]
+}
+
+teardown() {
+    [ -n "${LOCK_PID:-}" ] && kill "${LOCK_PID}" 2>/dev/null
+    true
+}
+
+# update_prints — bring the fingerprints up to date through an ordinary clean scan
+# (the changed documents, everything when a full walk is due).
+update_prints() {
+    printf 'nothing copied here\n' > "${BATS_TEST_TMPDIR}/prime.txt"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/prime.txt"
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: only --status names an area, its folder or a document; every other output counts" {
+    printf 'broken' > "${CLIENT}/received/broken.pptx"
+    # named <output> — the output carries an area's name, its folder or a document of it.
+    named() { [[ "$1" == *company* || "$1" == *client* || "$1" == *acme* || "$1" == *"${WORK}"* || "$1" == *broken.pptx* ]]; }
+    for mode in --refresh --summary; do
+        run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" "${mode}"
+        [ "$status" -eq 0 ]
+        [[ "$output" == *"documents / "*" prints in 2 areas"* ]]
+        [[ "$output" == *"1 documents could not be read (see --status)"* ]]
+        if named "$output"; then echo "${mode} named: $output"; return 1; fi
+    done
+    mk_repo other
+    commit_line "nothing from any document"
+    scan_last
+    [ "$status" -eq 0 ]
+    if named "$output"; then echo "scan named: $output"; return 1; fi
+    # A throwaway HOME: the operator's own config dirs are no part of this test.
+    run env HOME="${BATS_TEST_TMPDIR}/doctor-home" bash "${GUARD_ROOT}/scripts/doctor.sh"
+    [[ "$output" == *"prints in 2 areas"* ]]
+    if named "$output"; then echo "doctor named: $output"; return 1; fi
+    # The operator's own look names everything.
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --status
+    [[ "$output" == *"company "*" documents / "*"client "*" documents / "* ]]
+    [[ "$output" == *"/received/broken.pptx"* ]]
+}
+
+# --- why a document could not be read ---------------------------------------------
+
+@test "corpus: a time-out, a missing extractor and an exit code are told apart, not just OSError" {
+    run python3 -c "
+import importlib.util, subprocess
+spec = importlib.util.spec_from_file_location('c', '${GUARD_ROOT}/scanners/corpus/corpus-scan.py')
+c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
+
+cases = [
+    (subprocess.TimeoutExpired(cmd='pdftotext', timeout=30), 'timed out'),
+    (FileNotFoundError(2, 'No such file or directory'), 'the extractor is not installed'),
+    (OSError('pdftotext exited 1'), 'pdftotext exited 1'),
+]
+failures = []
+for i, (exc, expect) in enumerate(cases):
+    def reader(exc=exc):
+        raise exc
+    ok, why = c.document_prints(f'/nowhere/doc{i}.pdf', 'STAMP', ('runs', reader), {}, {}, 'area')
+    if ok or why != expect:
+        failures.append((i, ok, why))
+print('ALL_OK' if not failures else f'FAILED: {failures}')
+"
+    [[ "$output" == *"ALL_OK"* ]]
+}
+
+@test "corpus: a PDF pdftotext cannot parse is unreadable, its reason names the exit code" {
+    command -v pdftotext >/dev/null || skip "pdftotext is not installed"
+    printf 'not a real pdf file at all\n' > "${CLIENT}/received/broken.pdf"
+    printf 'nothing copied here\n' > "${BATS_TEST_TMPDIR}/prime.txt"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/prime.txt"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"1 documents could not be read (see --status): pdftotext exited"* ]]
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --status
+    [[ "$output" == *"could not read (not checked): "*"/received/broken.pdf (pdftotext exited"* ]]
+}
+
+@test "corpus: a PDF whose extractor times out is unreadable within the PDF budget, not the full 300s" {
+    STUB="${BATS_TEST_TMPDIR}/pdf-stub"; mkdir -p "${STUB}"
+    printf '#!/bin/sh\nsleep 5\n' > "${STUB}/pdftotext"
+    chmod +x "${STUB}/pdftotext"
+    printf 'placeholder\n' > "${CLIENT}/received/slow.pdf"
+    export GUARD_CORPUS_PDF_TIMEOUT=1
+    printf 'nothing copied here\n' > "${BATS_TEST_TMPDIR}/prime.txt"
+    started="$(date +%s)"
+    PATH="${STUB}:${PATH}" run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" \
+        --text "${BATS_TEST_TMPDIR}/prime.txt"
+    elapsed=$(( $(date +%s) - started ))
+    [ "$status" -eq 0 ]
+    [ "${elapsed}" -lt 4 ]
+    [[ "$output" == *"1 documents could not be read (see --status): timed out"* ]]
+}
+
+@test "corpus: --summary groups documents that could not be read by why, still naming no file" {
+    printf 'broken' > "${CLIENT}/received/broken.pptx"
+    command -v pdftotext >/dev/null && printf 'not a real pdf file at all\n' > "${CLIENT}/received/broken.pdf"
+    update_prints
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --summary
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"not a valid Office document: 1"* ]]
+    [[ "$output" != *"broken.pptx"* ]]
+    [[ "$output" != *"broken.pdf"* ]]
+}
+
+@test "corpus: a repository line with a stray third word still holds a push to the place it declares" {
+    seed_visibility acme/pipeline private
+    printf 'repo:acme/* outside order\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    commit_line "${CLIENT_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"declared outside every area"* ]]
+}
+
+# --- markup that says nothing is nobody's text -----------------------------------
+# A run or a line with no letter and no digit in it is ruling, not writing: the separator
+# row of a table, a horizontal rule, a banner of signs in a comment, an empty row of a CSV.
+# Every document that has a wide table holds the same one, so it cannot be a copy of any.
+
+# signs <piece> <times> — <piece> repeated <times> times (the fixtures say how long they are).
+signs() {
+    local out="" i
+    for ((i = 0; i < $2; i++)); do out+="$1"; done
+    printf '%s' "${out}"
+}
+
+# A separator row of twelve columns is 49 characters, past the 40 of a run without Japanese.
+SEPARATOR_12="|$(signs '---|' 12)"
+
+# commit_lines <line>... — add several lines in the current repo as one commit.
+commit_lines() {
+    printf '%s\n' "$@" >> sent.txt
+    git add sent.txt
+    commit_bypassing_hooks "add lines"
+}
+
+@test "corpus: the separator row of a wide table is markup, not a copy" {
+    printf '%s\n' '| a1 | a2 | a3 | a4 | a5 | a6 | a7 | a8 | a9 | b1 | b2 | b3 |' "${SEPARATOR_12}" \
+        '| x | x | x | x | x | x | x | x | x | x | x | x |' > "${CLIENT}/received/wide.md"
+    mk_repo other
+    commit_lines '| k1 | k2 | k3 | k4 | k5 | k6 | k7 | k8 | k9 | m1 | m2 | m3 |' "${SEPARATOR_12}" \
+        '| y | y | y | y | y | y | y | y | y | y | y | y |'
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a separator row with spaces and alignment marks is markup too" {
+    spaced="| --- | :---: | ---: $(signs '| --- ' 9)|"
+    printf '%s\n' '| a1 | a2 | a3 | a4 | a5 | a6 | a7 | a8 | a9 | b1 | b2 | b3 |' "${spaced}" > "${CLIENT}/received/wide.md"
+    mk_repo other
+    commit_lines '| k1 | k2 | k3 | k4 | k5 | k6 | k7 | k8 | k9 | m1 | m2 | m3 |' "${spaced}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a row of a wide table holding the client's words is still caught" {
+    printf '%s\n' "| ${CLIENT_TEXT} | a2 | a3 | a4 | a5 | a6 | a7 | a8 | a9 | b1 | b2 | b3 |" "${SEPARATOR_12}" \
+        > "${CLIENT}/received/wide.md"
+    mk_repo other
+    commit_lines "| ${CLIENT_TEXT} | k2 | k3 | k4 | k5 | k6 | k7 | k8 | k9 | m1 | m2 | m3 |" "${SEPARATOR_12}"
+    scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"client text"* ]]
+}
+
+@test "corpus: a horizontal rule or an underline of signs is not a copy" {
+    double="$(signs '=' 50)"; single="$(signs '-' 50)"; stars="$(signs '* ' 25)"
+    printf '%s\n' 'Report' "${double}" '' "${single}" "${stars}" > "${CLIENT}/received/ruled.md"
+    mk_repo other
+    commit_lines 'Changes' "${double}" "${single}" "${stars}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a line of code that is only signs is not the area's line" {
+    export GUARD_CORPUS_CODE_LINES=1
+    banner="    # $(signs '=' 70)"
+    client_code "${banner}"
+    mk_repo other
+    commit_line "${banner}"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: an empty row of a CSV is not a row of the client's data" {
+    empty="$(signs ',' 45)"
+    printf 'id,label,score\n%s\n4411,acme-left-sleeve-measurement-batch,0.8731\n' "${empty}" > "${CLIENT}/received/table.csv"
+    mk_repo other
+    commit_line "${empty}"
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "4411,acme-left-sleeve-measurement-batch,0.8731"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+# --- a repository's owner, declared --------------------------------------------------------
+
+@test "corpus: a private repo of the company's organization cloned in the client takes the client's text and the company's" {
+    seed_visibility acme/pipeline private
+    printf 'repo:acme/* company\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    commit_line "${CLIENT_TEXT}"
+    commit_line "${COMPANY_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~2..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: the declared owner lets in its own text only: another client's text is still refused" {
+    mkdir -p "${WORK}/clients/beta"
+    printf '%s\n' "the beta fixture lists eleven sensors along the north wall" > "${WORK}/clients/beta/plan.md"
+    printf 'beta %s\n' "${WORK}/clients/beta" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    seed_visibility acme/pipeline private
+    printf 'repo:acme/* company\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    commit_line "the beta fixture lists eleven sensors along the north wall"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"beta text"* ]]
+}
+
+@test "corpus: without the owner declared, company text into a client's repo is still refused" {
+    seed_visibility acme/pipeline private
+    mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
+    commit_line "${COMPANY_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a declared area with no clone inside it is where the repository sits, as before" {
+    seed_visibility acme/pipeline private
+    printf 'repo:acme/* client\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    mk_clone_at "${WORK}/repos/pipeline" acme/pipeline
+    commit_line "${COMPANY_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}

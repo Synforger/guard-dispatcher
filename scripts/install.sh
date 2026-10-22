@@ -46,18 +46,25 @@ GUARD_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 HOOKS_SRC="${GUARD_ROOT}/git-hooks"
 TARGET_DIR="${HOME}/.git-hooks"
 
-if [ ! -d "${HOOKS_SRC}/lib" ]; then
-    echo "error: expected dispatcher source at ${HOOKS_SRC}, but lib/ is missing." >&2
+if [ ! -d "${HOOKS_SRC}/_internal" ]; then
+    echo "error: expected dispatcher source at ${HOOKS_SRC}, but _internal/ is missing." >&2
     exit 1
 fi
 
 mkdir -p "${TARGET_DIR}"
 
+# A link whose target is gone names a part this checkout no longer has; it would only mislead.
+for link in "${TARGET_DIR}"/*; do
+    if [ -L "${link}" ] && [ ! -e "${link}" ]; then
+        rm "${link}"
+    fi
+done
+
 # Replace any prior entries — a plain overwrite is safer than trying to
 # preserve unknown state, since the target is a dispatcher owned by this
 # script. doctor.sh is not a git hook but symlinking it here lets it be
 # invoked as `~/.git-hooks/doctor.sh` from anywhere.
-for entry in pre-commit commit-msg pre-push lib doctor.sh; do
+for entry in pre-commit commit-msg pre-push _internal doctor.sh; do
     src="${HOOKS_SRC}/${entry}"
     [ "${entry}" = "doctor.sh" ] && src="${SCRIPT_DIR}/${entry}"
     dst="${TARGET_DIR}/${entry}"
@@ -79,16 +86,31 @@ done
 # lost the +x bit if the user re-created files via editor.
 chmod +x "${HOOKS_SRC}/pre-commit" "${HOOKS_SRC}/commit-msg" "${HOOKS_SRC}/pre-push" "${SCRIPT_DIR}/doctor.sh"
 
-# Expose the scanners, helper scripts and agent hooks alongside the git hooks
-# so Taskfiles, shells and agent settings can invoke them via a stable path
-# (git only executes known hook names, so extra entries here are inert to git
+# Expose the helper scripts and agent hooks alongside the git hooks so
+# Taskfiles, shells and agent settings can invoke them via a stable path (git
+# only executes known hook names, so extra entries here are inert to git
 # itself).
-for entry in scanners scripts agent-hooks; do
+for entry in scripts agent-hooks; do
     dst="${TARGET_DIR}/${entry}"
     if [ -e "${dst}" ] || [ -L "${dst}" ]; then
         rm -rf "${dst}"
     fi
     ln -s "${GUARD_ROOT}/${entry}" "${dst}"
+done
+
+# Other repositories call a scanner by its name alone (`~/.git-hooks/scanners/anon-scan.sh`), while
+# this checkout keeps each one in the folder of its role. One link per scanner, and one for the
+# table of places they ask, keeps that name whichever folder holds it.
+dst="${TARGET_DIR}/scanners"
+if [ -e "${dst}" ] || [ -L "${dst}" ]; then
+    rm -rf "${dst}"
+fi
+mkdir "${dst}"
+for src in "${GUARD_ROOT}"/scanners/*/*.sh "${GUARD_ROOT}"/scanners/*/*.py "${GUARD_ROOT}/_common/guard_places.py"; do
+    case "${src}" in
+        */_internal/*) continue ;;
+    esac
+    ln -s "${src}" "${dst}/$(basename "${src}")"
 done
 
 git config --global core.hooksPath "${TARGET_DIR}"
@@ -138,7 +160,7 @@ done
 # do not recompile on every call. Best-effort: never blocks the install.
 if command -v python3 >/dev/null 2>&1; then
     # Only the folders the hooks run Python from.
-    if python3 -m compileall -q "${GUARD_ROOT}/agent-hooks" "${GUARD_ROOT}/scanners"; then
+    if python3 -m compileall -q "${GUARD_ROOT}/agent-hooks" "${GUARD_ROOT}/scanners" "${GUARD_ROOT}/_common"; then
         echo "[global-hooks] pre-compiled ${GUARD_ROOT} bytecode"
     else
         echo "[global-hooks] warning: bytecode pre-compile failed (non-fatal)" >&2
