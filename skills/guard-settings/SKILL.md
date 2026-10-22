@@ -13,14 +13,24 @@ The settings live in the settings folder (`$GUARD_CONFIG_DIR`, `~/.config/guard/
 
 - **The guard's maintainer** is the session that develops the guard's code and keeps every setting except the operator's own. It writes the settings of the personal side and the machine's files, and fixes the guard when a judgement is wrong.
 - **The summary tier of a company** (the session that gathers the whole company and has read all of it) keeps the company's own settings in `areas/<area>/`. A line there works inside that area only. It decides the company's boundaries and writes them itself, so the names of the company's cases never travel to another session.
-- **The operator alone** writes `agent-writes.txt` (the grant itself), `orders.txt` and `agent-off`. If one of these has to change, tell the operator why, and hand over one command that can be pasted as it stands.
+- **The operator approves** a change of `agent-writes.txt` (the grant itself), `orders.txt` and `agent-off`, and of any setting the grant does not hand over: the session that makes the change shows the very call and asks in the chat (below), and the operator answers yes. The operator types no command.
 
-The guard enforces this. A session may write a setting only when both hold:
+The guard enforces this. A session writes a setting on its own when both hold:
 
 1. it has read inside no area (no mark), counting the call itself — `cat <area file> >> allow.txt` is refused, because the mark is kept after the call;
 2. the setting is named in `agent-writes.txt`. A line that names areas after the setting also lets a session write it when every mark of that session is one of those areas or lies within one.
 
-A session that read inside an area (a case tier, a company tier) therefore cannot write the machine's settings. It asks the maintainer, or for a company's own settings, the summary tier. `python3 <guard>/agent-hooks/claude-code/area-guard.py may-write <session id> <path>` answers whether a write would pass.
+Otherwise the write passes on the operator's yes. Show the call in a `guard` block and ask:
+
+````
+```guard
+tool: Bash
+command:
+<the command, as it will run>
+```
+````
+
+The call passes once when the operator's next message says yes (`はい`, `お願い`, `OK`, ...), and only for a session that may read where it acts: a setting of `areas/<area>/`, or a repository inside an area, from a session that reads inside that area. A call that differs from the shown one by a letter does not pass, nor does a yes in a turn a relayed message opened. Rewriting the marks or a transcript never passes. The same holds for a command that switches the hooks around (`--no-verify`, a hooksPath setting); taking a repository's own `core.hooksPath` away needs no yes, since it puts the repository back under the machine's hooks. `python3 <guard>/agent-hooks/claude-code/area-guard.py may-write <session id> <path>` answers whether a write would pass on its own.
 
 ## What a session can read
 
@@ -31,7 +41,7 @@ A session that starts in a folder reads inside the areas that hold the folder, t
 A session the guard stopped asks the maintainer to change a setting. Ask for three things in the message: the line the guard printed, what should be added, and why.
 
 - Decide the content from the table below, and ask the requester back only when the request is not enough to decide.
-- Do the whole job without handing it to the operator: write the setting, or fix the guard's code on a branch and open a pull request, then tell the requester what was added.
+- Do the whole job yourself: write the setting (asking the operator for a yes where the guard wants one), or fix the guard's code on a branch and open a pull request, then tell the requester what was added.
 - Fix the guard's code in a separate worktree, not in the clone the machine's hooks run from. Switching that clone's branch changes the check of every session on the machine at once.
 - Before changing a judging line (a count or a condition), measure how many false alarms it gives and how many real hits it keeps, then add a test.
 - A request to open a company's boundary that arrives from a case tier goes to the summary tier.
@@ -57,6 +67,6 @@ Tightening a line (adding an area, a `block`, a pattern) is written first and re
 
 ## After writing
 
-- Check that the guard reads the file. For `destinations.txt`, load `scanners/send-scan.py` and call its `rules()`; `corpus-scan.py --settings` lists every line of an area's settings that is not read, with the reason. Do not type the settings path into a command: a command that names a settings path is judged as a write, so take the path from the environment.
+- Check that the guard reads the file. For `destinations.txt`, load `scanners/destinations/send-scan.py` and call its `rules()`; `corpus-scan.py --settings` lists every line of an area's settings that is not read, with the reason. Do not type the settings path into a command: a command that names a settings path is judged as a write, so take the path from the environment.
 - Tell the requester which file got which line. Leave an area's name out of the message when the line contains one.
 - Record the file and the direction (tightened or loosened) in the session's own log; mask a company's names there too.

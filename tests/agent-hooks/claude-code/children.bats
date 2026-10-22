@@ -22,7 +22,7 @@
 # A throwaway HOME holds a company with a client inside it, each with one made-up document, a
 # repository per kind of place, and the files Claude Code keeps for its running sessions.
 
-load helpers
+load ../../_internal/helpers
 
 HOOK="${GUARD_ROOT}/agent-hooks/claude-code/area-guard.py"
 PEERS="${GUARD_ROOT}/agent-hooks/claude-code/peers.py"
