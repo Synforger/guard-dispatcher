@@ -568,6 +568,33 @@ step earlier, before each tool call, from the same `areas.txt`:
   relative path resolves from the caller's working directory. It only
   answers: it adds no mark and changes nothing.
 
+- **A session may hand work to a child of its own.** The client that opens a child's
+  tab registers it with the guard (`area-guard.py child add --child TAB --parent TAB
+  [--writes FILE]`; `child check --parent TAB --text FILE` judges the task text first). The
+  guard learns which session a tab runs from the tab id the client puts in `PWA_SID`, so a
+  child is known by its tab, and a tab that was never registered is no child. A registered
+  child is held to four things:
+  - **Where it writes.** FILE lists the folders the parent declares, one per line. A write or
+    a commit inside a git repository passes only inside one of them, and at the child's own
+    note (`PWA_NOTE`). A child with no declared place writes in no repository. A place the
+    parent itself may not write cannot be declared. Files outside every repository stay
+    writable.
+  - **What it starts with.** The child holds the areas its parent had read when it was
+    registered, and the ones it reads itself afterwards. What the parent reads later is not
+    the child's, and the child keeps what it was given when the parent's tab starts a new
+    session. A message to the child (`peers.py`) is judged by the same areas.
+  - **Whom it talks to.** Only its parent: `tabs send` addressed to the parent's tab id (a
+    name or another machine is refused), `tabs report`, `SendMessage` to the parent's running
+    session or the child's own subagents. The client's message endpoint is not called by hand.
+  - **A child that mends a tool** has places that all publish outside every area (a public
+    repository, or one `destinations.txt` declares outside). It is the one child that does not
+    inherit what its parent read, since no session that read an area could write such a place;
+    the task text is judged as for a session that has read nothing. `child check` and
+    `child add` print `area` or `tool`.
+
+  `area-guard.py marks SESSION` prints the areas a session is held to. An agent does not run
+  `child add` itself, nor write the register under the guard's state folder.
+
 The hook is registered for every tool (`matcher: "*"`): a send can go through any tool, and a call the
 guard is not asked about is one it cannot judge. A call that passes prints nothing, so nothing is added to the agent's context.
 A refusal is one line naming the area and the destination. `doctor.sh` reports
@@ -1059,8 +1086,9 @@ git-hooks/          entry points git calls: pre-commit / commit-msg / pre-push
 gh-shim/            entry point PATH resolves as `gh`: gh-guard.sh
 agent-hooks/        entry points an AI agent calls before each tool:
                     claude-code/area-guard.py (with outgoing.py, the send guard,
-                    order.py, the operator's order for a send, and peers.py,
-                    another session as a destination)
+                    order.py, the operator's order for a send, peers.py,
+                    another session as a destination, and children/, the
+                    register of a session's children and what each may do)
 scanners/           the judgement the entry points call, one folder per role:
   words/            the word lists: anon-scan, anon-pattern, anon-audit-deep
                     (11-source audit), anon-fix (history scrub), anon-sync-truth

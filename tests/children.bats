@@ -99,10 +99,12 @@ places() {
     PLACES="${file}"
 }
 
-# register <child tab> <parent tab> [folder ...] — what the client does once the child's tab is open.
+# register <child tab> <parent tab> [folder ...] — what the client does once the child's tab is open
+# (the parent's tab has run a call by then: it opened the tab).
 register() {
     local child="$1" parent="$2"
     shift 2
+    [ "${parent}" != "${PARENT}" ] || read_as "${PARENT}" "${ID_PARENT}" "${H}/scratch/anything"
     if [ "$#" -gt 0 ]; then
         places "${child}" "$@"
         run python3 "${HOOK}" child add --child "${child}" --parent "${parent}" --writes "${PLACES}"
@@ -230,6 +232,18 @@ to_session() {
     denied
     write_as "${CHILD}" "${ID_CHILD}" "${AREA_GUARD_STATE}/children/${CHILD}.json"
     denied
+}
+
+@test "children: a tab nobody registered is no child, whatever tab id it carries" {
+    write_as "${CHILD}" "${ID_CHILD}" "${TOOL_FIX}/a.py"
+    passed
+    write_as "${CHILD}" "${ID_CHILD}" "${COMPANY_REPO}/a.md"
+    passed
+    bash_as "${CHILD}" "${ID_CHILD}" "${OTHER_TOOL}" "git commit -qm fix"
+    passed
+    printf 'hello\n' > "${BATS_TEST_TMPDIR}/body.txt"
+    bash_as "${CHILD}" "${ID_CHILD}" "${H}" "tabs send ${STRANGER} ${BATS_TEST_TMPDIR}/body.txt"
+    passed
 }
 
 # --- 2. a child starts with what its parent had read ------------------------------------
