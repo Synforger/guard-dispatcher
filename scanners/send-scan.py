@@ -249,7 +249,8 @@ def documents(name: str, place: str, dest_area: str, payload: Path, env: dict, r
         return 1, (f"not sent to {name} ({place}): it carries text from a private area the destination "
                    f"is outside of. {remedy}")
     if r.returncode != 0:
-        return 2, f"not sent to {name}: the private-document scan could not judge it"
+        said = (r.stderr.strip().splitlines() or [""])[-1].removeprefix("[corpus] ")
+        return 2, f"not sent to {name}: the private-document scan could not judge it" + (f" ({said})" if said else "")
     return 0, ""
 
 

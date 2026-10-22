@@ -630,6 +630,24 @@ print(m.judge('anything', Path('${BATS_TEST_TMPDIR}/payload.txt')))
     [[ "$output" == *"not because of what it found"* ]]
 }
 
+@test "send-scan: a private-document scan that could not judge says why" {
+    printf 'harmless\n' > "${BATS_TEST_TMPDIR}/payload.txt"
+    printf '* company\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    run python3 -c "
+import importlib.util, subprocess
+spec = importlib.util.spec_from_file_location('send_scan', '${GUARD_ROOT}/scanners/send-scan.py')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+from pathlib import Path
+
+def fake_run(cmd, **kw):
+    return subprocess.CompletedProcess(cmd, 2, '', '[corpus] walking the private documents...\\n'
+                                       '[corpus] NOT JUDGED — the tables are being built apart from this scan\\n')
+subprocess.run = fake_run
+print(m.judge('anything', Path('${BATS_TEST_TMPDIR}/payload.txt')))
+"
+    [[ "$output" == *"could not judge it (NOT JUDGED — the tables are being built apart from this scan)"* ]]
+}
+
 @test "send-scan: a word-list scan that does not finish in time says so, not that it found a hit" {
     printf 'harmless\n' > "${BATS_TEST_TMPDIR}/payload.txt"
     run python3 -c "

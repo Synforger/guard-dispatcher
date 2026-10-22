@@ -74,9 +74,10 @@ the last look is caught at once without walking everything. A full walk still co
 hours (MAX_AGE), and when more than MAX_DELTA documents changed since the last one. A scan that finds
 one due starts it as a process of its own and waits for it up to WALK_WAIT; past that, the scan goes
 on with the tables it has just brought up to date and the walk finishes apart (a send is judged
-within its own time limit however long the walk takes). Only one process at a time walks or writes
-the fingerprints (a lock file in the cache); the rest use what is already there rather than wait or
-walk beside it.
+within its own time limit however long the walk takes). With no tables on disk that fit the areas
+(a fresh cache, or areas.txt naming other areas) the build starts the same way; a scan it is not
+done for by WALK_WAIT refuses to judge. Only one process at a time walks or writes the fingerprints
+(a lock file in the cache); the rest use what is already there rather than wait or walk beside it.
 
 What is checked depends on where the text is going: every area but the
 destination's own, the innermost ones that contain it. A repository inside an
@@ -223,6 +224,8 @@ MAX_DELTA = int(os.environ.get("GUARD_CORPUS_MAX_DELTA", "200"))
 # tables on disk and the walk finishes apart. send-scan.py gives the whole scan 120s; this leaves room
 # for Spotlight's answer (up to 30s, spotlight_changes) and the scan itself.
 WALK_WAIT = int(os.environ.get("GUARD_CORPUS_WALK_WAIT", "60"))
+# How often a scan with no tables that fit looks for the ones the build started apart writes.
+BUILD_POLL = 0.1
 # An area this small has its table merged anew within the scan that sees one of its documents
 # rewritten or deleted (well under a second); a larger one gets a full walk started apart.
 SMALL_AREA = int(os.environ.get("GUARD_CORPUS_SMALL_AREA", "1000"))
@@ -1572,25 +1575,64 @@ def walk_apart(summary: dict, wait: float = WALK_WAIT) -> dict:
     return built
 
 
+class NotBuilt(Exception):
+    """No tables on disk fit the areas, and the build started apart did not finish within WALK_WAIT."""
+
+
+def fits(summary: dict, areas: dict[str, list[Path]]) -> bool:
+    """Whether the tables a summary describes were built for these areas, by this way of printing."""
+    return bool(summary.get("checked") and summary["run"] == [RUN, LATIN_RUN]
+                and set(summary["areas"]) == {n for n in areas if n not in UNSCANNED})
+
+
+def build_apart(areas: dict[str, list[Path]], wait: float = WALK_WAIT) -> dict:
+    """No tables on disk fit these areas (a fresh cache, or areas.txt changed): start the build as a
+    process of its own (= the `--walk` walk_apart starts) and wait for tables that fit up to WALK_WAIT.
+    Built here instead, a build of tens of thousands of documents outlasts the time a send gives its
+    scan, is killed with it, and the next scan starts it over: no send is judged until something
+    without a time limit builds the tables. Raises NotBuilt when they are not there by then."""
+    say("walking the private documents (unchanged ones are reused)...")
+    walk = None
+    deadline = time.time() + wait
+    while True:
+        built = built_summary()
+        if built is not None and fits(built, areas):
+            say_built(built)
+            return built
+        if walk is None or walk.poll() is not None:
+            # Whoever holds the lock may be building them; once nobody does, this scan starts it.
+            with lock_file(wait=False) as free:
+                pass
+            if free and walk is not None:
+                break       # the walk this scan started ended without tables that fit
+            if free:
+                walk = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--walk"],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, start_new_session=True)
+        if time.time() >= deadline:
+            break
+        time.sleep(BUILD_POLL)
+    raise NotBuilt(f"the tables of the private documents are being built apart from this scan and were "
+                   f"not ready within {wait:g}s: nothing is judged until they are (try again in a few minutes)")
+
+
 def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
     """Per area, the tables a sent line is looked up in: the full build and what changed since."""
     summary_path = CACHE / "summary.json"
-    summary, full = None, True
+    summary = None
     # The table of public text first: an edited background.txt is read before the areas' tables
     # are held against it.
     public_now = public_id()
     if summary_path.is_file() and not refresh:
         summary = json.loads(summary_path.read_text())
-        current = (summary.get("checked") and summary["run"] == [RUN, LATIN_RUN]
-                   and set(summary["areas"]) == {n for n in areas if n not in UNSCANNED})
-        # The areas' tables were merged against another table of public text: what became public
-        # since is still in them, and what is public no longer is still missing. Merge them anew.
-        moved = summary.get("public", "") != public_now
-        full = not current or moved
-        if full:
-            # The tables on disk do not fit these areas or this table of public text: nothing to
-            # judge with until they are built anew, here.
+        if not fits(summary, areas):
+            # Nothing on disk fits these areas: nothing to judge with until they are built anew.
             summary = None
+        elif summary.get("public", "") != public_now:
+            # The areas' tables were merged against another table of public text: what became
+            # public since is still in them, and what is public no longer is still missing. They
+            # are merged anew apart; the tables on disk answer meanwhile.
+            summary = walk_apart(summary)
         else:
             summary = catch_up(areas, summary)
             if summary is not None and (summary.get("walk_due") or time.time() - summary["built"] >= MAX_AGE):
@@ -1599,10 +1641,12 @@ def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
                 # A large area's document was rewritten: its old prints go with a walk this scan
                 # does not wait for.
                 summary = walk_apart(summary, wait=0)
-    if summary is None:
+    if summary is None and refresh:
         say("walking the private documents (unchanged ones are reused)...")
-        summary = build(areas, full=full)
+        summary = build(areas, full=True)
         say_built(summary)
+    elif summary is None:
+        summary = build_apart(areas)
     return {name: [read_table(CACHE / f"{name}.bin"), read_table(CACHE / f"{name}.delta.bin")]
             for name in summary["areas"]}
 
@@ -1957,15 +2001,18 @@ def main(argv: list[str] | None = None) -> int:
                     _build_locked(areas, full=True)
         return 0
     if args.walk:
-        # Started by a scan that found a full walk due, or by hand. Whoever holds the lock is
-        # already at it: this one leaves.
+        # Started by a scan that found a full walk due or no tables that fit (build_apart), or by
+        # hand. Whoever holds the lock is already at it: this one leaves -- unless nothing is on
+        # disk yet, when the holder may be a scan of before that builds in its own process.
         try:
             areas = load_areas()
         except ValueError:
             return 2
-        with lock_file(wait=False) as mine:
-            if mine and areas and (CACHE / "summary.json").is_file():
-                _build_locked(areas, full=False)
+        with lock_file(wait=built_summary() is None) as mine:
+            if mine and areas:
+                summary = built_summary()
+                _build_locked(areas, full=summary is None or not fits(summary, areas)
+                              or summary.get("public", "") != public_id())
         return 0
     try:
         areas = load_areas()
@@ -2072,7 +2119,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         lines = [(where, where, line) for where, line in outgoing(args.span)]
 
-    prints = load(areas, refresh=False)
+    try:
+        prints = load(areas, refresh=False)
+    except NotBuilt as not_built:
+        say(f"NOT JUDGED — {not_built}")
+        return 2
     allowed = [normalize(p) for p in read_lines(guard_places.setting("allow.txt"))]
     public = background_prints()
     found = []
