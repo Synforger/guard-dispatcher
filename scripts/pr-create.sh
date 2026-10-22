@@ -50,7 +50,7 @@ if [ -z "${REPO_ROOT}" ]; then
     exit 2
 fi
 
-GUARD_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GUARD_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCANNER="${REPO_ROOT}/.tooling/local-ci/anon-scan.sh"
 if [ ! -f "${SCANNER}" ]; then
     SCANNER="${GUARD_ROOT}/scanners/words/anon-scan.sh"

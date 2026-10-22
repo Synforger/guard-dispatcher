@@ -28,8 +28,8 @@
 
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GUARD_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GUARD_ROOT="$(cd -P "${SCRIPT_DIR}/.." && pwd)"
 
 # shellcheck source=../scanners/_internal/setup-lib.sh
 source "${GUARD_ROOT}/scanners/_internal/setup-lib.sh"

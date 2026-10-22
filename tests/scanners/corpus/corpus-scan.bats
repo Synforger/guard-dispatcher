@@ -1728,7 +1728,9 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
 
 @test "corpus: a PDF whose extractor times out is unreadable within the PDF budget, not the full 300s" {
     STUB="${BATS_TEST_TMPDIR}/pdf-stub"; mkdir -p "${STUB}"
-    printf '#!/bin/sh\nsleep 5\n' > "${STUB}/pdftotext"
+    # The extractor sleeps far longer than a scan takes on a loaded machine: a scan the budget did
+    # not cut would come back only once it wakes.
+    printf '#!/bin/sh\nexec sleep 60\n' > "${STUB}/pdftotext"
     chmod +x "${STUB}/pdftotext"
     printf 'placeholder\n' > "${CLIENT}/received/slow.pdf"
     export GUARD_CORPUS_PDF_TIMEOUT=1
@@ -1738,7 +1740,7 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
         --text "${BATS_TEST_TMPDIR}/prime.txt"
     elapsed=$(( $(date +%s) - started ))
     [ "$status" -eq 0 ]
-    [ "${elapsed}" -lt 4 ]
+    [ "${elapsed}" -lt 30 ]
     [[ "$output" == *"1 documents could not be read (see --status): timed out"* ]]
 }
 
