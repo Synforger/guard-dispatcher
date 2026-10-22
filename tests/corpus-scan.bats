@@ -904,14 +904,15 @@ wait_for_walk() {
 }
 
 @test "corpus: a walk past its age goes on apart when it takes longer than the scan waits, and what changed is still caught" {
-    export GUARD_CORPUS_MAX_AGE=0 GUARD_CORPUS_WALK_WAIT=0
+    export GUARD_CORPUS_MAX_AGE=0
     spotlight_stub ""
     printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
     mk_repo other
     commit_line "nothing private"
-    PATH="${STUB}:${PATH}" scan_last               # first look: nothing built yet, walked here
+    PATH="${STUB}:${PATH}" scan_last               # first look: nothing built yet, waited for
     [ "$status" -eq 0 ]
     [[ "$output" == *"walking the private documents"* ]]
+    export GUARD_CORPUS_WALK_WAIT=0
     local before
     before="$(built_at)"
     printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
@@ -939,13 +940,14 @@ wait_for_walk() {
 }
 
 @test "corpus: more changed documents than the delta holds are still caught, and the walk goes on apart" {
-    export GUARD_CORPUS_MAX_AGE=3600 GUARD_CORPUS_MAX_DELTA=1 GUARD_CORPUS_WALK_WAIT=0
+    export GUARD_CORPUS_MAX_AGE=3600 GUARD_CORPUS_MAX_DELTA=1
     spotlight_stub ""
     printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
     mk_repo other
     commit_line "nothing private"
-    PATH="${STUB}:${PATH}" scan_last
+    PATH="${STUB}:${PATH}" scan_last               # first look: nothing built yet, waited for
     [ "$status" -eq 0 ]
+    export GUARD_CORPUS_WALK_WAIT=0
     local before
     before="$(built_at)"
     printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
@@ -960,6 +962,42 @@ wait_for_walk() {
     PATH="${STUB}:${PATH}" scan_last
     [ "$status" -eq 1 ]
     [[ "$output" != *"walking the private documents"* ]]
+}
+
+# --- no tables that fit are built apart from the scan ------------------------------------
+#
+# A fresh cache, or areas.txt naming other areas: the build runs as a process of its own, which a
+# scan given up on by its caller does not stop half way. The scan waits for it up to
+# GUARD_CORPUS_WALK_WAIT, and refuses to judge when it is not done by then.
+
+@test "corpus: with no tables yet, a scan that cannot wait refuses, and the build it started finishes apart" {
+    export GUARD_CORPUS_WALK_WAIT=0
+    mk_repo other
+    commit_line "expected: ${CLIENT_TEXT}"
+    scan_last
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NOT JUDGED"* ]]
+    [[ "$output" == *"being built apart from this scan"* ]]
+    wait_for_walk 0
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: tables built for other areas are not judged with, so a new area's text is not passed unchecked" {
+    mk_repo other
+    commit_line "nothing private"
+    scan_last
+    [ "$status" -eq 0 ]
+    mkdir -p "${BATS_TEST_TMPDIR}/lab"
+    printf 'the lab keeps its spare centrifuge behind the second door\n' > "${BATS_TEST_TMPDIR}/lab/notes.md"
+    printf 'lab %s\n' "${BATS_TEST_TMPDIR}/lab" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    hold_lock "${GUARD_CORPUS_CACHE}" 4          # whoever builds the tables for the new area is at it
+    export GUARD_CORPUS_WALK_WAIT=1
+    commit_line "the lab keeps its spare centrifuge behind the second door"
+    scan_last
+    kill "${LOCK_PID}" 2>/dev/null || true
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NOT JUDGED"* ]]
 }
 
 # --- the table of public text ---------------------------------------------------------
