@@ -48,7 +48,7 @@ A session the guard stopped asks the maintainer to change a setting. Ask for thr
 
 ## Before writing
 
-1. Copy the file to a dated name in an `_archive` folder of the settings folder (`<file>.<YYYYMMDD-HHMM>`), so the previous state can be restored.
+1. Copy the file to a dated name in the `_archive` folder beside it (`<folder>/_archive/<file>.<YYYYMMDD-HHMM>`; for an area's own settings, `areas/<area>/_archive/`), so the previous state can be restored. A session that may write the file may write that folder too, and the guard reads no folder whose name starts with `_` as settings.
 2. Say in one sentence what the line lets through and what it stops. A line that cannot be put in a sentence is not written; ask the requester.
 3. Write real names. A placeholder such as `<name>` left in `destinations.txt` makes the guard stop every send until the line is fixed.
 

@@ -42,6 +42,8 @@ set -uo pipefail
 
 GUARD_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCANNER="${GUARD_ROOT}/scanners/words/anon-audit-deep.sh"
+# shellcheck source=../git-hooks/_internal/dispatcher-common.sh
+. "${GUARD_ROOT}/git-hooks/_internal/dispatcher-common.sh"
 PLACES="${GUARD_ROOT}/_common/guard_places.py"
 CONF="$(python3 "${PLACES}" weekly-audit.conf)"
 STATE_DIR="$(python3 "${PLACES}" audit-logs)"
@@ -118,13 +120,20 @@ PY
 
 repos=()
 repo_areas=()
+left_out=()
 seen=" "
-# add_repo <repo> <area> — the first listing of a repository names its area.
+# add_repo <repo> <area> — the first listing of a repository names its area. A repository the git
+# hooks hold to no word list (`guard.scope corpus`, an agent's own notes, or `exempt`) is left out
+# as they leave it: its words are there by design, and what it sends is still judged on the way out.
 add_repo() {
-    local real
+    local real kind
     real="$(cd "$1" 2>/dev/null && pwd -P)" || return 0
     case "${seen}" in *" ${real} "*) return 0 ;; esac
     seen="${seen}${real} "
+    kind="$(cd "$1" && dispatcher::detect_repo_kind)"
+    case "${kind}" in
+        corpus|exempt) left_out+=("$1 (guard.scope ${kind})"); return 0 ;;
+    esac
     repos+=("$1")
     repo_areas+=("$2")
 }
@@ -157,6 +166,9 @@ summary=""
 
 {
     echo "=== weekly anon audit: ${stamp} ($(date '+%H:%M:%S')) ==="
+    for repo in ${left_out[@]+"${left_out[@]}"}; do
+        echo "left out: ${repo}"
+    done
     for i in "${!repos[@]}"; do
         repo="${repos[$i]}"
         [ -d "${repo}" ] || continue
