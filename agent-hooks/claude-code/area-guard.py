@@ -596,6 +596,51 @@ def code_paths(code: str, cwd: str) -> list[str]:
     return found
 
 
+class Standing:
+    """Where a command line stands as it is read in order: `cd`, `pushd` / `popd` move it, and a
+    `( ... )` subshell gives the place back when it closes.
+
+    The writes (named), the sends (sends_of) and the recursive reads (recursive_reads) all follow it,
+    so a relative name is judged from the same folder by all three."""
+
+    def __init__(self, cwd: str, *, unknown_stays: bool = True) -> None:
+        self.here = self.previous = str(real(cwd))
+        self.dirs: list[str] = []
+        self._subshells: list[tuple[str, str, list[str], object]] = []
+        self._unknown_stays = unknown_stays
+
+    def move(self, tool: str, args: list[str]) -> bool:
+        """Follow `cd` / `pushd` / `popd` (= True when the command was one of them).
+
+        Where `cd $X` goes cannot be read: with `unknown_stays` the command line is judged where it stood,
+        without it the word is taken as written."""
+        if tool in ("cd", "pushd"):
+            target = next((a for a in args if not a.startswith("-") or a == "-"), None)
+            if self._unknown_stays and target is not None and UNKNOWN.search(target):
+                return True
+            if tool == "pushd":
+                self.dirs.append(self.here)
+            new = self.previous if target == "-" else str(real(target or str(Path.home()), self.here))
+            self.previous, self.here = self.here, new
+            return True
+        if tool == "popd":
+            if self.dirs:
+                self.previous, self.here = self.here, self.dirs.pop()
+            return True
+        return False
+
+    def open(self, carried: object = None) -> None:
+        """A subshell opens: remember the place, and whatever else the reader keeps per subshell."""
+        self._subshells.append((self.here, self.previous, list(self.dirs), carried))
+
+    def close(self) -> object:
+        """A subshell closes: the place it opened at comes back, with what was carried (= None when none is open)."""
+        if not self._subshells:
+            return None
+        self.here, self.previous, self.dirs, carried = self._subshells.pop()
+        return carried
+
+
 def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
     """(paths a Bash command names as a place it writes, paths it names as removed).
 
@@ -621,9 +666,7 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
     written: list[tuple[str, str]] = []     # (the name as written, the folder the command stood in)
     removed: list[tuple[str, str]] = []
     found: tuple[list[Path], list[Path]] = ([], [])
-    here = previous = str(real(cwd))
-    dirs: list[str] = []
-    subshells: list[tuple[str, str, list[str], dict[str, str]]] = []
+    standing = Standing(cwd)
     values: dict[str, str] = {}
 
     def filled(word: str) -> str:
@@ -640,7 +683,6 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
             written.extend((path, base) for path in code_paths(code, base))
 
     def one(words: list[str], stdin: str | None) -> None:
-        nonlocal here, previous
         if words and all(ASSIGNMENT.fullmatch(w) for w in words[words[0] in DECLARES:]):
             # `D=/a/b` alone on its command (or after export / local): later words may spell it $D.
             # A value this line cannot know (a substitution, a variable set elsewhere) is forgotten.
@@ -660,19 +702,9 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
         if not words:
             return
         tool, args = os.path.basename(words[0]), [filled(a) for a in words[1:]]
-        if tool in ("cd", "pushd"):
-            target = next((a for a in args if not a.startswith("-") or a == "-"), None)
-            if target is not None and UNKNOWN.search(target):
-                return      # where it goes cannot be read: the command is judged where it stood
-            if tool == "pushd":
-                dirs.append(here)
-            new = previous if target == "-" else str(real(target or str(Path.home()), here))
-            previous, here = here, new
+        if standing.move(tool, args):
             return
-        if tool == "popd":
-            if dirs:
-                previous, here = here, dirs.pop()
-            return
+        here = standing.here
         paths = [a for a in args if not a.startswith("-")]
         if tool in CREATES:
             written.extend((p, here) for p in paths)
@@ -703,15 +735,17 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
     # read from where the command started.
     waiting = list(fed)
     for words, redirects, stdin, ended_by in commands:
-        written.extend((filled(target), here) for operator, target in redirects if ">" in operator)
+        written.extend((filled(target), standing.here) for operator, target in redirects if ">" in operator)
         one(words, stdin)
         for operator, _ in redirects:
             if operator in ("<<", "<<-") and waiting:
-                run(*waiting.pop(0), here)
+                run(*waiting.pop(0), standing.here)
         if ended_by == "(":
-            subshells.append((here, previous, list(dirs), dict(values)))
-        elif ended_by == ")" and subshells:
-            here, previous, dirs, values = subshells.pop()
+            standing.open(dict(values))
+        elif ended_by == ")":
+            carried = standing.close()
+            if carried is not None:
+                values = carried
     for program, body in waiting:
         run(program, body, str(real(cwd)))
 
@@ -907,53 +941,70 @@ def recursive_reads(command: str, cwd: str, depth: int = 0) -> list[tuple[Path, 
     """The folders a Bash command reads every file under, each with the folder names its walk
     leaves out: what a recursive grep, rg, a `find` that runs a command on what it finds (or hands
     it to xargs), or a recursive copy is given, and the command's folder when it is given nothing.
-    A shell's `-c` string is followed the same way."""
+    A shell's `-c` string is followed the same way. A relative folder is the one the command stands
+    in when it reaches it (= `cd /b && grep -r x .` reads /b; see Standing)."""
     line, _ = split_heredocs(spell_home(command))
     try:
         steps = list(stepped_commands(line))
     except ValueError:
         return []
     found: list[tuple[Path, list[str]]] = []
+    standing = Standing(cwd)
     for index, (words, _, _, ended_by) in enumerate(steps):
-        rest = words
-        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT):
-            rest = rest[1:]
-        if not rest:
-            continue
-        tool, args = os.path.basename(rest[0]), rest[1:]
-        if SHELL_CODE.fullmatch(tool) and depth < NESTED:
-            for at, word in enumerate(args[:-1]):
-                if re.fullmatch(r"-[A-Za-z]*c", word):
-                    found += recursive_reads(args[at + 1], cwd, depth + 1)
-                    break
-            continue
-        given: list[str] | None = None
-        if tool in GREPS and _grep_recursive(args):
-            operands = _operands(args, VALUED["grep"])
-            pattern_given = any(w in ("-e", "-f", "--regexp", "--file") or w.startswith(("--regexp=", "--file="))
-                                for w in args)
-            given = operands if pattern_given else operands[1:]
-        elif tool in ALWAYS_RECURSIVE:
-            operands = _operands(args, VALUED["rg"])
-            pattern_given = any(w in ("-e", "-f", "--regexp", "--file") for w in args)
-            given = operands if pattern_given else operands[1:]
-        elif tool == "find":
-            runs = any(w in FIND_RUNS for w in args)
-            piped = ended_by == "|" and index + 1 < len(steps) and steps[index + 1][0][:1] == ["xargs"]
-            if runs or piped:
-                given = list(itertools.takewhile(lambda w: not w.startswith(("-", "(", "!")), args))
-        elif tool in RECURSIVE_COPIES and _copy_recursive(tool, args):
-            operands = _operands(args, VALUED["copy"])
-            # The last word of cp / rsync / scp / ditto is where it copies to. An archive's name and
-            # tar's mode word are no folders, so the folders among tar's and zip's words are what it reads.
-            given = operands[:-1] if tool in ("cp", "rsync", "scp", "ditto") else operands
-        if given is None:
-            continue
-        excluded = _excluded_dirs(args)
-        for name in given or ["."]:
-            folder = real(name, cwd)
-            if folder.is_dir():
-                found.append((folder, excluded))
+        found += _walked(words, steps, index, standing, depth)
+        if ended_by == "(":
+            standing.open()
+        elif ended_by == ")":
+            standing.close()
+    return found
+
+
+def _walked(words: list[str], steps: list, index: int, standing: Standing, depth: int) -> list[tuple[Path, list[str]]]:
+    """The folders one command of a command line reads every file under (see recursive_reads)."""
+    rest = words
+    while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT):
+        rest = rest[1:]
+    if not rest:
+        return []
+    tool, args = os.path.basename(rest[0]), rest[1:]
+    if standing.move(tool, args):
+        return []
+    cwd = standing.here
+    ended_by = steps[index][3]
+    found: list[tuple[Path, list[str]]] = []
+    if SHELL_CODE.fullmatch(tool) and depth < NESTED:
+        for at, word in enumerate(args[:-1]):
+            if re.fullmatch(r"-[A-Za-z]*c", word):
+                found += recursive_reads(args[at + 1], cwd, depth + 1)
+                break
+        return found
+    given: list[str] | None = None
+    if tool in GREPS and _grep_recursive(args):
+        operands = _operands(args, VALUED["grep"])
+        pattern_given = any(w in ("-e", "-f", "--regexp", "--file") or w.startswith(("--regexp=", "--file="))
+                            for w in args)
+        given = operands if pattern_given else operands[1:]
+    elif tool in ALWAYS_RECURSIVE:
+        operands = _operands(args, VALUED["rg"])
+        pattern_given = any(w in ("-e", "-f", "--regexp", "--file") for w in args)
+        given = operands if pattern_given else operands[1:]
+    elif tool == "find":
+        runs = any(w in FIND_RUNS for w in args)
+        piped = ended_by == "|" and index + 1 < len(steps) and steps[index + 1][0][:1] == ["xargs"]
+        if runs or piped:
+            given = list(itertools.takewhile(lambda w: not w.startswith(("-", "(", "!")), args))
+    elif tool in RECURSIVE_COPIES and _copy_recursive(tool, args):
+        operands = _operands(args, VALUED["copy"])
+        # The last word of cp / rsync / scp / ditto is where it copies to. An archive's name and
+        # tar's mode word are no folders, so the folders among tar's and zip's words are what it reads.
+        given = operands[:-1] if tool in ("cp", "rsync", "scp", "ditto") else operands
+    if given is None:
+        return found
+    excluded = _excluded_dirs(args)
+    for name in given or ["."]:
+        folder = real(name, cwd)
+        if folder.is_dir():
+            found.append((folder, excluded))
     return found
 
 
@@ -1011,10 +1062,9 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
         return []
     breaks = outgoing_module().SHELL_BREAK
     found: list[tuple[Path, list[str]]] = []
-    here, previous, dirs, subshells = real(cwd), real(cwd), [], []
+    standing = Standing(cwd, unknown_stays=False)
 
     def run(argv: list[str]) -> None:
-        nonlocal here, previous
         # Skip what stands before the command: shell keywords (`do git push`), assignments
         # (`FOO=1 git ...`) and commands that run the next one (`sudo`, `env`, `nohup`, ...).
         while argv:
@@ -1029,15 +1079,10 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
         if not argv:
             return
         name, args = os.path.basename(argv[0]), argv[1:]
-        if name in ("cd", "pushd"):
-            target = next((a for a in args if not a.startswith("-") or a == "-"), None)
-            if name == "pushd":
-                dirs.append(here)
-            new = previous if target == "-" else real(target or str(Path.home()), str(here))
-            previous, here = here, new
-        elif name == "popd" and dirs:
-            previous, here = here, dirs.pop()
-        elif name in SHELLS and "-c" in args[:-1]:
+        if standing.move(name, args):
+            return
+        here = Path(standing.here)
+        if name in SHELLS and "-c" in args[:-1]:
             found.extend(sends_of(args[args.index("-c") + 1], str(here)))
         elif name == "eval" and args:
             found.extend(sends_of(" ".join(args), str(here)))
@@ -1086,9 +1131,9 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
         run(current)
         current = []
         if w == "(":
-            subshells.append((here, previous, list(dirs)))
-        elif w == ")" and subshells:
-            here, previous, dirs = subshells.pop()
+            standing.open()
+        elif w == ")":
+            standing.close()
     return found
 
 
