@@ -35,6 +35,8 @@
 #   bash .tooling/local-ci/anon-audit-deep.sh
 #   bash .tooling/local-ci/anon-audit-deep.sh --range origin/main..HEAD
 #   bash .tooling/local-ci/anon-audit-deep.sh --record-known FILE   (= 今の検出を既知として記録)
+#   bash .tooling/local-ci/anon-audit-deep.sh --record-known FILE --as-of 2026-10-19T15:00:00Z
+#                                                                  (= その時刻より前に出た分を既知として記録)
 #   bash .tooling/local-ci/anon-audit-deep.sh --known FILE          (= 記録より後に出た分だけを赤に)
 #   task audit:deep    (= Taskfile 経由、 full mode)
 #
@@ -50,6 +52,7 @@ RANGE=""
 GITHUB_SINCE=""
 KNOWN=""
 RECORD=""
+AS_OF=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --known)
@@ -59,6 +62,10 @@ while [ $# -gt 0 ]; do
         --record-known)
             shift
             RECORD="${1:-}"
+            ;;
+        --as-of)
+            shift
+            AS_OF="${1:-}"
             ;;
         --range)
             shift
@@ -92,6 +99,11 @@ done
 
 if [ -n "${KNOWN}" ] && [ -n "${RECORD}" ]; then
     echo "error: give --known or --record-known, not both" >&2
+    exit 2
+fi
+# The time is compared as text with GitHub's `since`, so it is spelled the way GitHub spells it.
+if [ -n "${AS_OF}" ] && { [ -z "${RECORD}" ] || ! [[ "${AS_OF}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; }; then
+    echo "error: --as-of goes with --record-known, as a UTC time (2026-10-19T15:00:00Z)" >&2
     exit 2
 fi
 if [ -n "${RANGE}" ] && { [ -n "${KNOWN}" ] || [ -n "${RECORD}" ]; }; then
@@ -239,15 +251,24 @@ total=0
 #   - branch names, tags, repo metadata, releases (4/5/9/10) cannot be cut by time: the
 #     matches recorded (`hit <source>\t<match>`) are taken out, any other match is red
 #   - tracked files (1) are always scanned whole: a file in the tree is fixed, not accepted
-# --record-known writes the file from the repository as it stands, then audits against it.
+# --record-known writes the file from the repository as it stands, then audits against it. With
+# --as-of, what had gone out before that time is known instead: each ref's newest commit before it
+# is its tip, and `since` is that time, so a commit or a record made later is red at once. The
+# matches of the sources that cannot be cut by time are recorded as they stand.
 RECORD_TMP=""
 if [ -n "${RECORD}" ]; then
     mkdir -p "$(dirname "${RECORD}")" || exit 2
     RECORD_TMP="$(mktemp -t audit-known.XXXXXX)" || exit 2
     {
         printf '# findings accepted as known by anon-audit-deep.sh --record-known (%s)\n' "${PROJECT_ROOT}"
-        printf 'since %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        git rev-list --all --no-walk 2>/dev/null | sed 's/^/tip /'
+        printf 'since %s\n' "${AS_OF:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+        if [ -n "${AS_OF}" ]; then
+            git for-each-ref --format='%(refname)' | while IFS= read -r ref; do
+                git rev-list -1 --before="${AS_OF}" "${ref}" 2>/dev/null
+            done | sort -u | sed 's/^/tip /'
+        else
+            git rev-list --all --no-walk 2>/dev/null | sed 's/^/tip /'
+        fi
     } > "${RECORD_TMP}"
     KNOWN="${RECORD_TMP}"
 elif [ -n "${KNOWN}" ] && [ ! -f "${KNOWN}" ]; then

@@ -879,7 +879,7 @@ contract:
 - **No commit is created** whose staged file contents or commit message
   match the word list (`pre-commit`, `commit-msg`). The scan reads the
   staged blobs, not the working tree — cleaning a file after staging it
-  does not unblock the leak. Pinned in `tests/hooks.bats`.
+  does not unblock the leak. Pinned in `tests/git-hooks/hooks.bats`.
 - **No push publishes** matching content: every outgoing commit is
   deep-scanned — all blobs (full diffs), the message, and the
   author/committer name+email — and the pushed branch or tag name is
@@ -892,26 +892,26 @@ contract:
   too, so the destination is fetched once and every check leaves out the
   same things — files whose blob it holds, commit texts it holds, authors
   and committers it carries. What the rewrite made new is checked as before.
-  Pinned in `tests/hooks.bats` (a check added without what the destination
-  holds fails it) and `tests/corpus-scan.bats`.
+  Pinned in `tests/git-hooks/hooks.bats` (a check added without what the destination
+  holds fails it) and `tests/scanners/corpus/corpus-scan.bats`.
   The scan runs while git holds the connection to the remote open, so a
   push that sends a whole history (a new or recreated repository) can
   outlast an idle SSH connection: set `ServerAliveInterval 30` for the host
   in `~/.ssh/config`.
 - **A word list that does not compile refuses to scan** (exit 2,
   configuration error) — a broken fragment can never silently disarm a
-  boundary. Pinned in `tests/scanners.bats`.
+  boundary. Pinned in `tests/scanners/words/scanners.bats`.
 - **A private-document scan that breaks refuses as not judged** (exit 2)
   — an error inside the scan is never taken for a finding, and the
   refusal says the call could not be judged, not that it carried private
-  text. Pinned in `tests/corpus-scan.bats`.
+  text. Pinned in `tests/scanners/corpus/corpus-scan.bats`.
 - On identity-enforced repositories (enforced org / no-remote /
   `guard.scope enforced`), additionally: the committer and every author
   in the outgoing range must be on the identity allow-list, and direct
   pushes to protected branches of a pull-request host (GitHub, including
   ssh host aliases) are refused. A remote without pull requests — a plain
   ssh host holding a rail's history — has no review flow to bypass, so a
-  direct push there is allowed. Pinned in `tests/hooks.bats`.
+  direct push there is allowed. Pinned in `tests/git-hooks/hooks.bats`.
 - PRs opened through `scripts/pr-create.sh` have their title and body
   scanned before `gh pr create` runs.
 - **Nothing the `gh` CLI sends leaves unscanned** while the PATH shim is
@@ -921,13 +921,13 @@ contract:
   `GET` through `api`, …) pass through untouched, because those
   legitimately name accounts and repositories. An unrecognised subcommand
   is scanned rather than assumed harmless, and an unresolvable scanner
-  refuses the command. Pinned in `tests/gh-guard.bats`.
+  refuses the command. Pinned in `tests/gh-shim/gh-guard.bats`.
 - **A Claude Code session with the agent entry guard registered** does not
   write a repository outside the areas it read, and does not commit, push or
   send through `gh` outside them; with or without areas, it does not run a
   command that switches the guards off or around. Pinned in
-  `tests/area-guard.bats`; installing and registering it in
-  `tests/install.bats`.
+  `tests/agent-hooks/claude-code/area-guard.bats` and `approval.bats`; installing and registering it in
+  `tests/scripts/install.bats`.
 - After the fact, `anon-audit-deep` sweeps 11 sources — tracked files,
   every history blob, commit messages, branch names, tag names +
   annotations, author/committer fields, GitHub PR + Issue title/body +
@@ -941,13 +941,23 @@ contract:
   metadata and releases). From then on only what appears later is red — a new
   commit carrying a known word included — and the files in the tree are
   always scanned whole (`anon-audit-deep.sh --known FILE` / `--record-known FILE`).
+  `--accept --as-of <UTC time>` (`2026-10-19T15:00:00Z`) records what had gone
+  out before that time instead: each ref's newest commit before it is its tip,
+  and PR / Issue text and run records are read from that time, so whatever came
+  later is red at once. The matches of branch names, tags, metadata and releases,
+  which carry no time to cut by, are recorded as they stand.
+- Each repository in the weekly log opens with
+  `--- <repo> (<sweep>[, known findings accepted], area <name>) ---`: the
+  innermost area holding it, `-` for one outside every area, so its findings
+  reach the sessions that read there. `area-guard.py reach` prints the areas a
+  session of `GUARD_WORK_FOLDER` may read inside, one per line, to match against.
 - **A GitHub source that cannot be fetched is reported as a finding, never
   as clean.** The audit settles reachability once before scanning and falls
   back to the keyring credential when an environment token cannot see the
   organisation; if no credential resolves the repository, every GitHub-side
   source counts against the run. Silence is not proof — an erroring API call
   used to collapse into empty output, which a scan reports as clean, leaving
-  a whole organisation green forever. Pinned in `tests/scanners.bats`.
+  a whole organisation green forever. Pinned in `tests/scanners/words/scanners.bats`.
 
 ### Outside the purpose — not watched
 

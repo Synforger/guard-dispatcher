@@ -434,6 +434,30 @@ leak_in_history() {
     grep -qF "issues?state=all&per_page=100&since=${since}" "${GH_LOG}"
 }
 
+@test "deep audit: --as-of accepts what had gone out before the time, and what came after is red at once" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    GIT_COMMITTER_DATE="2026-10-18T09:00:00Z" GIT_AUTHOR_DATE="2026-10-18T09:00:00Z" leak_in_history old
+    audit --record-known "$(known_file)" --as-of 2026-10-19T15:00:00Z
+    [ "$status" -eq 0 ]
+    [ "$(sed -n 's/^since //p' "$(known_file)")" = "2026-10-19T15:00:00Z" ]
+    GIT_COMMITTER_DATE="2026-10-21T09:00:00Z" GIT_AUTHOR_DATE="2026-10-21T09:00:00Z" leak_in_history late
+    audit --record-known "$(known_file)" --as-of 2026-10-19T15:00:00Z
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"git history blob"* ]]
+    audit --known "$(known_file)"
+    [ "$status" -ne 0 ]
+}
+
+@test "deep audit: --as-of is a UTC time, and only with --record-known" {
+    mk_repo synforger
+    audit --record-known "$(known_file)" --as-of 2026-10-20
+    [ "$status" -eq 2 ]
+    audit --known "$(known_file)" --as-of 2026-10-19T15:00:00Z
+    [ "$status" -eq 2 ]
+}
+
 @test "deep audit: --known is refused with a push range, and a missing known file is an error" {
     mk_repo synforger
     audit --known "$(known_file)" --range "HEAD~0..HEAD"
@@ -462,6 +486,30 @@ leak_in_history() {
     grep -q "known findings accepted" "${HOME}"/.local/state/guard-dispatcher/weekly-audit-*.log
     leak_in_history new
     run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -ne 0 ]
+}
+
+@test "weekly audit: --accept --as-of cuts at the time, and each repository names its innermost area" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    GIT_COMMITTER_DATE="2026-10-18T09:00:00Z" GIT_AUTHOR_DATE="2026-10-18T09:00:00Z" leak_in_history old
+    local repo outside
+    repo="$(pwd)"
+    outside="${BATS_RUN_TMPDIR}/outside-repo-${RANDOM}"
+    git init -q "${outside}"
+    mkdir -p "${GUARD_CONFIG_DIR}"
+    printf 'company %s\nclient %s\n' "$(dirname "$(dirname "${repo}")")" "$(dirname "${repo}")" > "${GUARD_CONFIG_DIR}/areas.txt"
+    export HOME="${BATS_TEST_TMPDIR}/home"
+    mkdir -p "${HOME}/.config/guard-dispatcher"
+    printf 'REPOS_GLOB="%s"\n' "${outside}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh" --accept --as-of 2026-10-19T15:00:00Z "${repo}"
+    [ "$status" -eq 0 ]
+    grep -qx "since 2026-10-19T15:00:00Z" "${HOME}/.config/guard-dispatcher/known/$(basename "${repo}").known"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    grep -qE -- "^--- .*/$(basename "${repo}") \(full, known findings accepted, area client\) ---$" "${HOME}"/.local/state/guard-dispatcher/weekly-audit-*.log
+    grep -qE -- "^--- .*/$(basename "${outside}") \(full, area -\) ---$" "${HOME}"/.local/state/guard-dispatcher/weekly-audit-*.log
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh" --accept --as-of 2026-10-20 "${repo}"
     [ "$status" -ne 0 ]
 }
 
