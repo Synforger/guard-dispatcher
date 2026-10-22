@@ -74,6 +74,15 @@ so it keeps working whatever was installed last. Re-running leaves one
 entry. If that file is missing the entry passes silently rather than refusing
 every tool call, and `doctor.sh` reports it missing.
 
+The repository is also a Claude Code plugin marketplace. Its `guard-settings`
+skill tells an agent who may write the guard's settings, what goes into which
+file, and how to check a change:
+
+```sh
+claude plugin marketplace add Synforger/guard-dispatcher
+claude plugin install guard-dispatcher@guard-dispatcher
+```
+
 ### Word list
 
 Scanners read one PCRE fragment per line from the first of:
@@ -1063,6 +1072,8 @@ scanners/           the judgement the entry points call, one folder per role:
 _common/            guard_places.py: where every setting, mark and cache sits
                     (read by the hooks, the scanners and the scripts)
 configs/            anon-words.example.txt, the format of a word list
+skills/             the plugin's skills (guard-settings), listed by
+                    .claude-plugin/ (plugin.json and marketplace.json)
 scripts/            setting up and checking a machine: bootstrap-machine.sh,
                     install.sh, doctor.sh, pr-create.sh,
                     weekly-audit.sh, install-weekly-audit.sh

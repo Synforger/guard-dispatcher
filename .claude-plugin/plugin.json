@@ -1,0 +1,10 @@
+{
+  "name": "guard-dispatcher",
+  "description": "How an agent keeps the guard's settings: who may write them, what goes into which file, and how to check a change.",
+  "author": {
+    "name": "Synforger"
+  },
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/Synforger/guard-dispatcher",
+  "repository": "https://github.com/Synforger/guard-dispatcher"
+}
