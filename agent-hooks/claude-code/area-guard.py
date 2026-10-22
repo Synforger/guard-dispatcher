@@ -12,8 +12,11 @@ them.
            standing by itself -- a word of the command line, a string of inline code, a line of
            what a program is fed; inside a sentence it is text, which nothing opens (see said) --
            unless the command only checks it: a lone test / [ / stat / realpath / readlink /
-           ls -d with every argument literal; and a folder on another machine (a `host:<host>:<path>`
-           root) that an ssh / scp / rsync names
+           ls -d with every argument literal; a folder on another machine (a `host:<host>:<path>`
+           root) that an ssh / scp / rsync names; and a reading call to a service an area's
+           `reads.txt` places in it (a mail search, a channel's history, a browser tab at the
+           service's site; see service_reads), refused before it runs, like a folder, for a
+           session that may not read there
 - Refused: Edit / Write / NotebookEdit on a file inside a git repository outside the marks, and
            a Bash command that names one as written (see named);
            a Bash `git commit` / `git push` / sending `gh` call (reads pass) whose destination is
@@ -107,6 +110,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import children  # noqa: E402
 import guard_places  # noqa: E402
+import service_reads  # noqa: E402
 
 CONFIG = guard_places.settings_folder()
 AREAS = guard_places.setting("areas.txt")
@@ -219,6 +223,27 @@ def shell_words(command: str) -> list[str]:
         return outgoing_module().shell_words(command)
     except ValueError:
         return command.split()
+
+
+def service_areas(tool: str, args: dict, cwd: str, tabs: dict) -> set[str]:
+    """The areas a call to a service reads inside, by the lines the areas keep in `reads.txt`
+    (service_reads): a reading MCP call, any call to a browser tab at the site, a curl with no body.
+    A call that sends or drafts reads nothing there; its send is judged apart."""
+    corpus = corpus_module()
+    try:
+        lines = corpus.kept_reads(corpus.load_areas(AREAS))
+    except Exception:  # noqa: BLE001 — a broken checkout must not stop the agent, as in load_areas
+        return set()
+    if not lines:
+        return set()
+    out = outgoing_module()
+    if tool == "Bash":
+        return {area for send in out.sends(tool, args, cwd, SEND_SCAN, tabs) if send.reading
+                for area in service_reads.rules.areas_read(lines, send.dest, {})}
+    destination = out.destination_of(tool, args, tabs)
+    if destination.startswith("browser:") or (tool.startswith("mcp__") and out.reads_only(tool, args)):
+        return service_reads.rules.areas_read(lines, destination, args)
+    return set()
 
 
 def load_areas() -> list[tuple[str, Path]]:
@@ -1820,6 +1845,7 @@ def main() -> int:
                  f"write {target} (areas: {AREAS}). Do it in another session")
             return 0
 
+    remote |= service_areas(tool, args, cwd, tabs)
     new = {a for a in (area_of(p, areas) for p in touched) if a and a != EXEMPT} | remote
     if (reachable := reach(areas)) is not None and (beyond := new - reachable):
         deny(f"area-guard: this session reads only inside {', '.join(sorted(reachable)) or 'no area'} "

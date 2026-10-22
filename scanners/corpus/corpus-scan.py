@@ -330,9 +330,10 @@ def read_lines(path: Path) -> list[str]:
 
 # Settings an area keeps for itself (`areas/<area>/` beside the machine's own files), written by
 # the session the operator hands them to (`agent-writes.txt`): areas.txt, destinations.txt,
-# allow.txt, ignore.txt and patterns/. A line there works inside the area only: a sub-area within
-# its folders, a destination placed in it or blocked, a phrase fine to send of its text, a shape
-# of its identifiers, a folder of it that holds none of its documents. A line that would reach
+# allow.txt, ignore.txt, patterns/ and reads.txt. A line there works inside the area only: a
+# sub-area within its folders, a destination placed in it or blocked, a phrase fine to send of its
+# text, a shape of its identifiers, a folder of it that holds none of its documents, a service
+# whose reading calls read inside it or an area within it. A line that would reach
 # outside the area is skipped and named (`--settings`), so a slip of the area's keeper stops
 # nothing else. The machine's own files come first and win.
 AREA_SETTINGS = guard_places.setting("areas")
@@ -552,11 +553,44 @@ def kept_destinations(areas: dict[str, list[Path]]) -> list[tuple[str, str, bool
     return out
 
 
+#: A condition of a reads.txt line: an argument of the call and the shape its value has.
+READ_CONDITION = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.+)$")
+
+
+def kept_reads(areas: dict[str, list[Path]]) -> list[tuple[str, str, tuple[tuple[str, str], ...]]]:
+    """(destination pattern, area, conditions) of the lines each area keeps in `reads.txt`, in
+    order: what a reading call to a service, or a browser tab at a site, reads inside. A line is
+    `<destination> <area> [<argument>=<shape>]...`, the destination named as the send guard names
+    it (an MCP tool, `browser:<host>`, `host:<host>`). Placing a read outside the area that keeps the
+    line, a line catching every destination, or a line that does not read as one is skipped and
+    named."""
+    out = []
+    for owner, path, line in kept_lines("reads.txt", areas):
+        words = line.split("#", 1)[0].split()
+        conditions = [READ_CONDITION.match(w) for w in words[2:]]
+        if len(words) < 2 or not all(conditions):
+            skip(path, line, "is not `<destination> <area> [<argument>=<shape>]...`")
+            continue
+        pattern, target = words[0], words[1]
+        # Every MCP tool's name opens with `mcp__`: it names no service.
+        literal = pattern.lower().removeprefix("mcp__")
+        for kind in DESTINATION_KINDS:
+            literal = literal.removeprefix(kind)
+        if not (target in areas and within(target, owner, areas)):
+            skip(path, line, f"{target} is no area within {owner}")
+        elif len(re.sub(r"[*?\[\]_]", "", literal)) < 3:
+            skip(path, line, "catches every destination: name the service or the site")
+        else:
+            out.append((pattern, target, tuple((m.group(1), m.group(2)) for m in conditions)))
+    return out
+
+
 def skipped_settings() -> list[str]:
     """Every line of the areas' own settings that is not read, with why (`--settings`)."""
     areas = load_areas()
     kept_ignored(areas)
     kept_destinations(areas)
+    kept_reads(areas)
     for name in areas:
         kept_allowed(name, areas)
         patterns(name, areas)

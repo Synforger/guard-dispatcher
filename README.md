@@ -239,8 +239,8 @@ What follows it in a line (an area's own folders and files, and any prose) is st
 
 #### Settings an area keeps for itself
 
-An area can keep its own `areas.txt`, `destinations.txt`, `allow.txt`, `ignore.txt`
-and `patterns/` in `~/.config/guard/areas/<area>/`, so whoever decides the area's
+An area can keep its own `areas.txt`, `destinations.txt`, `allow.txt`, `ignore.txt`,
+`patterns/` and `reads.txt` in `~/.config/guard/areas/<area>/`, so whoever decides the area's
 boundaries writes them without touching the machine's files. A line there works
 inside the area only:
 
@@ -251,6 +251,29 @@ inside the area only:
 | `allow.txt` | a phrase fine to send of the text of the areas within it | — |
 | `patterns/<name>.txt` | a shape of the identifiers of an area within it | a shape that does not compile |
 | `ignore.txt` | a folder inside it that holds none of its documents | a folder outside it |
+| `reads.txt` | a service whose reading calls read inside the area or an area within it (below) | an area outside it, a pattern that catches every destination, a line that is not `<destination> <area> [<argument>=<shape>]...` |
+
+`reads.txt` places what a service holds inside an area, so a session that may not
+read there is refused a reading call to the service before it runs, as it is a
+folder of the area, and a session that may is marked with the area:
+
+```
+# areas/company/reads.txt
+mcp__*Gmail*__*        hub                       # a mail search or a thread
+mcp__*Slack*__*        hub                       # every channel the company has ...
+mcp__*Slack*__*        client-x  channel_id=C0123ABCD   # ... but the one it hands to a case
+browser:*.docbase.io   hub                       # a browser tab at the site, every call to it
+host:api.hubapi.com    hub                       # a curl that only fetches
+```
+
+The destination is named as the send guard names it. A reading MCP call counts
+(a tool whose name says it reads, as for a send); a call that sends or drafts
+reads nothing here, its send is judged as before. Every call to a browser tab
+opened at the site counts, and a `curl` / `wget` with no body. A line with
+conditions (`<argument>=<shape>`, a glob) sets apart what those values reach; the
+lines with none take the rest. A call that gives no value for a condition (a
+search over every channel) reads where every line of the destination points, and
+a call that gives several values reads where each of them does.
 
 The machine's own files come first and win, and the areas' destination lines
 come ahead of the built-in defaults (a connector the defaults put outside every
