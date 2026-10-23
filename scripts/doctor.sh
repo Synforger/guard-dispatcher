@@ -137,6 +137,42 @@ PY
     if [ "${found}" -eq 0 ]; then
         printf '  %s-%s no Claude Code settings found — agent entry guard not registered\n' "${DIM}" "${NC}"
     fi
+
+    # Files left for the operator to hand to people (`file:` lines) are judged after every call too.
+    local handed="${HOME}/.git-hooks/agent-hooks/claude-code/handed.py"
+    if [ -z "$(python3 "${GUARD_ROOT}/scanners/destinations/send-scan.py" --file-patterns 2>/dev/null)" ]; then
+        printf '  %s-%s no file left for the operator is a destination — the after-call check has nothing to judge\n' "${DIM}" "${NC}"
+        return
+    fi
+    if [ ! -f "${handed}" ]; then
+        printf '  %s✗%s after-call check missing (%s) — re-run install.sh\n' "${RED}" "${NC}" "${handed}"
+        findings=$((findings + 1))
+    fi
+    for settings in ${CLAUDE_CONFIG_DIR:+"${CLAUDE_CONFIG_DIR}/settings.json"} "${HOME}"/.claude*/settings.json; do
+        [ -f "${settings}" ] || continue
+        if python3 - "${settings}" <<'PY'
+import json
+import sys
+
+try:
+    hooks = json.load(open(sys.argv[1])).get("hooks", {})
+except (OSError, ValueError):
+    sys.exit(1)
+# After a call that succeeded and after one that failed: a program that wrote its output and then
+# failed has left the file all the same. Every tool: a file can be left by any of them.
+sys.exit(0 if all(any(g.get("matcher") in ("*", "", None)
+                      and any(".git-hooks/agent-hooks/claude-code/handed.py" in h.get("command", "")
+                              for h in g.get("hooks", []))
+                      for g in hooks.get(event, []))
+                  for event in ("PostToolUse", "PostToolUseFailure")) else 1)
+PY
+        then
+            printf '  %s✓%s after-call check registered (%s)\n' "${GRN}" "${NC}" "${settings}"
+        else
+            printf '  %s✗%s after-call check not registered for every tool after success and failure (%s) — a file left for the operator is not judged; run install.sh --claude-settings %s\n' "${RED}" "${NC}" "${settings}" "${settings}"
+            findings=$((findings + 1))
+        fi
+    done
 }
 
 check_repo() {

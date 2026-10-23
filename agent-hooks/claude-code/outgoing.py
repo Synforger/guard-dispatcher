@@ -50,6 +50,12 @@ What stays on this machine is named apart: `local:<port><path>` for a call to th
 line of destinations.txt names the kind (see send-scan.py): the operator blocks the endpoints that
 type into a terminal as the operator would.
 
+A file tool's write (Write, Edit, MultiEdit, NotebookEdit) into a file left for the operator to
+hand to people is named `file:<path>` when a line names such files (`file:~/handout/*`); its
+payload is the text written, and for an edit the file's text too. Other calls write there in ways
+a command line does not tell (a program writes its own output), so the files they leave are
+judged after the call (handed.py, next to this file).
+
 A message to another agent session (`SendMessage`) is named `session:<receiver>` and judged by
 where that session has read, not by a line of destinations.txt (`peers.py`, next to this file).
 """
@@ -72,6 +78,8 @@ READING = re.compile(r"(^|_)(get|list|search|read|fetch|query|view|find|describe
 # Tools of the host (not MCP) that send to a service. WebFetch and WebSearch fetch, but the URL,
 # the prompt and the query they carry reach the search or fetch service, so they are sends.
 HOST_SENDERS = {"Artifact", "ArtifactData", "ArtifactComments", "WebFetch", "WebSearch"}
+# The file tools that write, and the input keys holding the text they write (MultiEdit's is a list).
+FILE_WRITES = {"Write": ("content",), "Edit": ("new_string",), "MultiEdit": (), "NotebookEdit": ("new_source",)}
 ARTIFACT_READING = {"read", "list", "open", "quickstart"}
 ARTIFACT_DATA_READING = {"get", "list", "query"}
 # The name of an argument whose value names an object the service holds: its last word is `id`
@@ -869,10 +877,39 @@ def peer_send(args: dict) -> list[Send]:
     return [Send(SESSION + to.strip(), message, [])]
 
 
+def file_send(tool: str, args: dict, cwd: str, send_scan: Path) -> Send | None:
+    """The send of a file tool's write into a file left for the operator (a `file:` destination),
+    else None. A write that edits the file carries the file's text as well: all of it is handed on."""
+    judged = send_scan_module(send_scan)
+    if not (patterns := judged.file_patterns()):
+        return None
+    raw = args.get("file_path") or args.get("notebook_path") or ""
+    path = Path(os.path.expanduser(raw))
+    path = Path(os.path.realpath(path if path.is_absolute() else Path(cwd) / path))
+    name = judged.file_name(path)
+    if not judged.file_matches(name, patterns):
+        return None
+    if tool == "MultiEdit":
+        texts = [str(e.get("new_string") or "") for e in args.get("edits") or [] if isinstance(e, dict)]
+    else:
+        texts = [str(args.get(k) or "") for k in FILE_WRITES[tool]]
+    unreadable = []
+    if tool != "Write" and path.is_file():
+        text, why = file_text(path, send_scan)
+        if text is None:
+            unreadable.append((path, why))
+        else:
+            texts.append(text)
+    return Send(name, "\n".join(texts), unreadable)
+
+
 def sends(tool: str, args: dict, cwd: str, send_scan: Path, tabs: dict | None = None, depth: int = 0) -> list[Send]:
     """Every send the call makes."""
     if tool in PEER_SENDERS:
         return peer_send(args)
+    if tool in FILE_WRITES:
+        s = file_send(tool, args, cwd, send_scan)
+        return [s] if s is not None else []
     if tool == "Bash":
         command = args.get("command", "")
         return (curl_sends(command, cwd, send_scan) + other_sends(command, cwd, send_scan)

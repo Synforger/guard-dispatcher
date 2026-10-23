@@ -201,3 +201,51 @@ JSON
     [ "${status}" -eq 0 ]
     [ -z "${output}" ]
 }
+
+# after_entries <settings> — "<event> <matcher> <command>" of each after-call hook.
+after_entries() {
+    python3 - "$1" <<'PY'
+import json, sys
+settings = json.load(open(sys.argv[1]))
+for event in ("PostToolUse", "PostToolUseFailure"):
+    for group in settings.get("hooks", {}).get(event, []):
+        for hook in group["hooks"]:
+            print(event, group.get("matcher"), hook["command"])
+PY
+}
+
+@test "install: the after-call check is registered once for every tool, after success and failure" {
+    mkdir -p "${H}/.claude"
+    cat > "${H}/.claude/settings.json" <<'JSON'
+{"hooks": {"PostToolUse": [{"matcher": "Write", "hooks": [{"type": "command", "command": "format-me"}]},
+  {"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 /old/place/handed.py"}]}]}}
+JSON
+    bash "${GUARD_ROOT}/scripts/install.sh" --claude-settings "${H}/.claude/settings.json" >/dev/null
+    bash "${GUARD_ROOT}/scripts/install.sh" --claude-settings "${H}/.claude/settings.json" >/dev/null
+    run after_entries "${H}/.claude/settings.json"
+    [ "$(printf '%s\n' "${output}" | grep -c '^PostToolUse \* .*handed.py')" -eq 1 ]
+    [ "$(printf '%s\n' "${output}" | grep -c '^PostToolUseFailure \* .*handed.py')" -eq 1 ]
+    [[ "${output}" == *"format-me"* ]]
+    [[ "${output}" != *"/old/place/"* ]]
+}
+
+@test "doctor: with a file left for the operator, an unregistered after-call check is a finding" {
+    mkdir -p "${H}/org" "${H}/.config/guard" "${H}/.claude"
+    printf 'company %s\n' "${H}/org" > "${H}/.config/guard/areas.txt"
+    bash "${GUARD_ROOT}/scripts/install.sh" --claude-settings "${H}/.claude/settings.json" >/dev/null
+    run bash "${H}/.git-hooks/doctor.sh"
+    [[ "${output}" == *"no file left for the operator is a destination"* ]]
+    printf '%s\n' 'file:~/out/* company' > "${H}/.config/guard/destinations.txt"
+    python3 -c '
+import json, sys
+path = sys.argv[1]
+settings = json.load(open(path))
+settings["hooks"].pop("PostToolUseFailure")
+json.dump(settings, open(path, "w"))' "${H}/.claude/settings.json"
+    run bash "${H}/.git-hooks/doctor.sh"
+    [ "${status}" -eq 1 ]
+    [[ "${output}" == *"after-call check not registered for every tool after success and failure (${H}/.claude/settings.json)"* ]]
+    bash "${GUARD_ROOT}/scripts/install.sh" --claude-settings "${H}/.claude/settings.json" >/dev/null
+    run bash "${H}/.git-hooks/doctor.sh"
+    [[ "${output}" == *"after-call check registered (${H}/.claude/settings.json)"* ]]
+}

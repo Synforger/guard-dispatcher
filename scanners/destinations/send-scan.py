@@ -29,6 +29,13 @@ connectors); a line in the file overrides it.
 The pattern `browser:<host>` names the page a browser tool types into (see agent-hooks'
 outgoing.py): `browser:*.example.com company`.
 
+The pattern `file:<path>` names a file the agent leaves on this machine for the operator to hand to
+people (`file:~/handout/* company`; `~` stands for the home folder, and `*` reaches into
+subfolders). The entry point judges a file tool's write there before it is made, and every file
+there that changed during any other call after it (agent-hooks' handed.py). What lands there
+reaches people through the operator's hands, so it gets the destination's word list and not the
+private-document scan, as a send held to `order` does.
+
 The payload is compared by the private-document scan (`corpus-scan.py --dest-area`) with the
 areas the destination sits outside of; a destination outside every area also gets the word-list
 scan (`anon-scan.sh`), as a public repository does, and one inside an area gets that area's own
@@ -44,6 +51,7 @@ Usage:
                                            exit 0 passes, 1 refuses (one line why), 2 cannot judge
     send-scan.py --where NAME              print where NAME sits: an area, outside, block or undeclared
                                            (followed by ` order` when its sends need one)
+    send-scan.py --file-patterns           print the `file:` patterns of the lines, one per line
 
 Another session of the operator's agents is a destination too, and no line declares it: it sits in
 the areas it has read inside, which the entry point that knows the sessions passes
@@ -82,10 +90,41 @@ DEFAULTS = [("Artifact*", OUTSIDE, False), ("WebFetch", OUTSIDE, False), ("WebSe
             ("mcp__claude_ai_*", OUTSIDE, False)]
 
 
-# Names for what stays on this machine: a service on the loopback host (`local:<port><path>`) and
-# a tmux session typed into (`tmux:<session>`). Nothing leaves the machine through them, so a
-# catch-all line (`* outside`) does not reach them: only a line that names the kind does.
-ON_THIS_MACHINE = ("local:", "tmux:")
+# Names for what stays on this machine: a service on the loopback host (`local:<port><path>`), a
+# tmux session typed into (`tmux:<session>`) and a file left for the operator (`file:<path>`).
+# Nothing leaves the machine through them, so a catch-all line (`* outside`) does not reach them:
+# only a line that names the kind does.
+FILE = "file:"
+ON_THIS_MACHINE = ("local:", "tmux:", FILE)
+
+
+def file_name(path: Path) -> str:
+    """The destination name of a file: `file:` and its path, the home folder spelled `~`."""
+    home = Path.home()
+    return f"{FILE}~/{path.relative_to(home)}" if home in path.parents else f"{FILE}{path}"
+
+
+def file_patterns() -> list[str]:
+    """The `file:` patterns of the machine's destinations.txt and of every area's own, read as
+    written and without judging the lines: a cheap look for whether any file is a destination at
+    all, made before every call's writes are looked at. Where a matching file sits is decided by
+    find()."""
+    files = [DESTINATIONS]
+    areas = guard_places.setting("areas")
+    if areas.is_dir():
+        files += [d / "destinations.txt" for d in areas.iterdir() if d.is_dir() and not d.name.startswith((".", "_"))]
+    found = []
+    for path in files:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        found += [w[0] for line in lines if (w := line.split("#", 1)[0].split()) and w[0].lower().startswith(FILE)]
+    return found
+
+
+def file_matches(name: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatchcase(name.lower(), p.lower()) for p in patterns)
 
 
 class Broken(Exception):
@@ -219,9 +258,9 @@ def judge(name: str, payload: Path, reading: bool = False, handles: Path | None 
             return 2, f"not sent to {name}: the word-list scan could not run ({error})"
         if r.returncode != 0:
             return 1, f"not sent to {name} ({place}): it carries a flagged identifier (word list)"
-    if held:
-        # 人に届く前に operator が中身を見る (= 指示の枠に出した呼び、 operator が送る下書き)。 資料の写しは
-        # operator の目が守り、 ここで照合しない (= 禁止語は上で照合済み)
+    if held or name.lower().startswith(FILE):
+        # 人に届く前に operator が中身を見る (= 指示の枠に出した呼び、 operator が送る下書き、 operator が
+        # 渡す file)。 資料の写しは operator の目が守り、 ここで照合しない (= 禁止語は上で照合済み)
         return 0, ""
     return documents(name, place, "OUTSIDE" if destination == OUTSIDE else destination, payload, env,
                      f"Replace the text, or declare where it sits in {DESTINATIONS}")
@@ -302,7 +341,13 @@ def main() -> int:
     parser.add_argument("--reading", action="store_true", help="the payload is a reading call's own strings")
     parser.add_argument("--session-areas", metavar="AREAS", help="the destination is another agent session that "
                         "has read inside these areas (joined by commas; empty for none)")
+    parser.add_argument("--file-patterns", action="store_true", help="print the `file:` patterns of the "
+                        "destination lines, one per line")
     args = parser.parse_args()
+    if args.file_patterns:
+        for pattern in file_patterns():
+            print(pattern)
+        return 0
     if args.session_areas is not None:
         if not (args.dest and args.text):
             parser.error("give --dest and --text with --session-areas")

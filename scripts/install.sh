@@ -16,9 +16,11 @@
 #
 # --claude-settings registers the agent-side entry guard
 # (agent-hooks/claude-code/area-guard.py) as a PreToolUse hook in that Claude
-# Code settings file, creating the file if needed. Repeat it for every config
-# dir. Re-running leaves exactly one entry, and an entry pointing at another
-# copy of area-guard.py is replaced.
+# Code settings file, and the after-call check of the files left for the
+# operator (agent-hooks/claude-code/handed.py) as a PostToolUse and a
+# PostToolUseFailure hook, creating the file if needed. Repeat it for every
+# config dir. Re-running leaves exactly one entry of each, and an entry pointing
+# at another copy is replaced.
 #
 # Rollback:
 #   git config --global --unset core.hooksPath
@@ -133,13 +135,16 @@ MSG
 # Claude Code reads a failing hook's exit 2 as a refusal, which would stop
 # every tool call. doctor.sh reports the missing hook instead.
 AGENT_HOOK_COMMAND='f="$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py"; [ -f "$f" ] || exit 0; exec python3 "$f"'
+# The files a call leaves for the operator to hand to people are judged after it, whether it
+# succeeded or failed (agent-hooks/claude-code/handed.py).
+AFTER_CALL_COMMAND='f="$HOME/.git-hooks/agent-hooks/claude-code/handed.py"; [ -f "$f" ] || exit 0; exec python3 "$f"'
 for settings in ${claude_settings[@]+"${claude_settings[@]}"}; do
-    python3 - "${settings}" "${AGENT_HOOK_COMMAND}" <<'PY'
+    python3 - "${settings}" "${AGENT_HOOK_COMMAND}" "${AFTER_CALL_COMMAND}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-path, command = Path(sys.argv[1]).expanduser(), sys.argv[2]
+path, command, after = Path(sys.argv[1]).expanduser(), sys.argv[2], sys.argv[3]
 text = path.read_text() if path.is_file() else ""
 settings = json.loads(text) if text.strip() else {}
 pre = settings.setdefault("hooks", {}).setdefault("PreToolUse", [])
@@ -149,10 +154,16 @@ pre[:] = [g for g in pre if g["hooks"]]
 # Every tool: a send can go through any tool (an MCP tool, the Artifact tools), not only the file
 # and shell tools; a call the guard is not asked about is a call it cannot judge.
 pre.append({"matcher": "*", "hooks": [{"type": "command", "command": command}]})
+for event in ("PostToolUse", "PostToolUseFailure"):
+    post = settings["hooks"].setdefault(event, [])
+    for group in post:
+        group["hooks"] = [h for h in group.get("hooks", []) if "handed.py" not in h.get("command", "")]
+    post[:] = [g for g in post if g["hooks"]]
+    post.append({"matcher": "*", "hooks": [{"type": "command", "command": after}]})
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
 PY
-    echo "[global-hooks] agent entry guard registered in ${settings}"
+    echo "[global-hooks] agent entry guard and after-call check registered in ${settings}"
 done
 
 # Pre-compile the clone's bytecode with the python3 the hook itself invokes

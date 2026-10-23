@@ -521,7 +521,7 @@ def kept_patterns(name: str, areas: dict[str, list[Path]]) -> list[tuple[Path, s
 
 
 #: What a destination line may name besides an area: the kinds of send-scan.py's patterns.
-DESTINATION_KINDS = ("repo:", "host:", "local:", "tmux:", "browser:")
+DESTINATION_KINDS = ("repo:", "host:", "local:", "tmux:", "browser:", "file:")
 
 
 def kept_destinations(areas: dict[str, list[Path]]) -> list[tuple[str, str, bool]]:
