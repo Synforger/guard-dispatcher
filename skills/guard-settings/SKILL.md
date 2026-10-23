@@ -57,7 +57,7 @@ A session the guard stopped asks the maintainer to change a setting. Ask for thr
 | File | Add | A change that loosens the line |
 |---|---|---|
 | `areas.txt` | a folder the operator named, a folder a case tier declared as its own, the root of a boundary on another machine (`host:`) | removing or narrowing an area, adding to `_exempt` or `_outside` |
-| `destinations.txt` | the owner of a destination (`repo:<org>/* <area>`, only where the org name proves the owner), `block` | `outside` (public), removing a `block` |
+| `destinations.txt` | the owner of a destination (`repo:<org>/* <area>`, only where the org name proves the owner), a place the operator hands files on from (`file:~/handout/* <area>`: the area's word list only, no private-document scan), `block` | `outside` (public), removing a `block` |
 | `allow.txt` | a phrase that is common wording and no copy of an area's document, after measuring how many sends the same shape stopped | a phrase with a proper name or a number in it |
 | `background.txt`, `ignore.txt` | folders of public text and code, folders of an external corpus or build logs | a folder that holds an area's documents |
 | `patterns/` | the shape of an area's identifiers (a product code, a client's name) | removing a pattern, narrowing a broad expression |
