@@ -120,6 +120,20 @@ mk_repo_at() {
     [ "$status" -eq 1 ]
 }
 
+@test "corpus: twelve copied characters of kana and signs around a word or two pass, five that say what it is about are caught" {
+    printf '%s\n' "その後で、環境を作り直してから表を見る" "台帳は直していません (= 確認済み)" >> "${CLIENT}/received/notes.md"
+    mk_repo other
+    commit_line "ので、環境を作り直してか"      # 環境作直: four
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "帳は直していません (= "      # 帳直: two
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "環境を作り直してから表を"      # 環境作直表: five
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
 @test "corpus: common English shorter than 40 characters passes" {
     mk_repo other
     commit_line "the calibration table reads seventeen"
