@@ -676,6 +676,10 @@ class Standing:
         """A subshell opens: remember the place, and whatever else the reader keeps per subshell."""
         self._subshells.append((self.here, self.previous, list(self.dirs), carried))
 
+    def inside(self) -> bool:
+        """Whether a subshell is open."""
+        return bool(self._subshells)
+
     def close(self) -> object:
         """A subshell closes: the place it opened at comes back, with what was carried (= None when none is open)."""
         if not self._subshells:
@@ -1092,23 +1096,59 @@ WRAPPERS = {"sudo", "env", "command", "exec", "builtin", "nohup", "nice", "caffe
 
 
 def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
-    """Every send in a command (git commit / push, a sending gh call) as
-    (repository it runs in, arguments naming its destination for corpus-scan).
-    A commit stays local, so its arguments are empty.
+    """Every send in a command whose folder can be read (see send_places)."""
+    return send_places(command, cwd)[0]
+
+
+def send_places(command: str, cwd: str) -> tuple[list[tuple[Path, list[str]]], list[str]]:
+    """(every send in a command -- git commit / push, a sending gh call -- as (repository it runs
+    in, arguments naming its destination for corpus-scan), the words that leave a send's folder
+    to be known only as the command runs). A commit stays local, so its arguments are empty.
 
     The command is read in order, following where it stands: `cd`, `pushd` / `popd` and a
     `( ... )` subshell move it, and each git runs where the command stands at that point, moved
     again by its own `-C`. So `cd a; cd b && git push` pushes from b, and `(cd a); git commit`
-    commits where it started. A shell's -c string is read the same way from where it runs."""
+    commits where it started. A shell's -c string is read the same way from where it runs.
+
+    A variable the command line set to a literal before (`W=/a/b; cd $W`) is written out, and one
+    of the session's environment (`$HOME`) too. A folder still spelled with a variable or a
+    substitution after that (`cd $W` with W set elsewhere, `git -C "$(...)"`) cannot be read: a
+    send that stands there goes to the second list, until a `cd` to a folder written out."""
     try:
         words = shell_words(command)
     except ValueError:
-        return []
+        return [], []
     breaks = outgoing_module().SHELL_BREAK
     found: list[tuple[Path, list[str]]] = []
+    unread: list[str] = []
     standing = Standing(cwd, unknown_stays=False)
+    values: dict[str, str] = {}
+    lost: str | None = None            # the word that took the command where it cannot be read
+    pushed: list[str | None] = []
+
+    def filled(word: str) -> str:
+        """The word with the variables this command line set to a literal, and the environment's, written out."""
+        return os.path.expandvars(VARIABLE.sub(lambda m: values.get(m.group(1) or m.group(2), m.group(0)), word))
+
+    def unknown(place: str, before: str | None) -> str | None:
+        """What leaves a folder unread once the command goes to `place` from where `before` left it."""
+        if UNKNOWN.search(place):
+            return place
+        return None if place.startswith(("/", "~")) else before
 
     def run(argv: list[str]) -> None:
+        nonlocal lost
+        argv = [filled(w) for w in argv]
+        assigned = argv[argv[0] in DECLARES:] if argv else []
+        if assigned and all(ASSIGNMENT.fullmatch(w) for w in assigned):
+            # `W=/a/b` alone on its command (or after export / local): later words may spell it $W.
+            for word in assigned:
+                name, _, value = word.partition("=")
+                if UNKNOWN.search(value):
+                    values.pop(name, None)
+                else:
+                    values[name] = value
+            return
         # Skip what stands before the command: shell keywords (`do git push`), assignments
         # (`FOO=1 git ...`) and commands that run the next one (`sudo`, `env`, `nohup`, ...).
         while argv:
@@ -1123,26 +1163,42 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
         if not argv:
             return
         name, args = os.path.basename(argv[0]), argv[1:]
+        if name in ("cd", "pushd"):
+            target = next((a for a in args if not a.startswith("-") or a == "-"), None)
+            if name == "pushd":
+                pushed.append(lost)
+            lost = None if target is None else lost if target == "-" else unknown(target, lost)
+        elif name == "popd" and pushed:
+            lost = pushed.pop()
         if standing.move(name, args):
             return
         here = Path(standing.here)
+
+        def inner(code: str) -> None:
+            sends, unreadable = send_places(code, str(here))
+            found.extend([] if lost else sends)
+            unread.extend([lost] * len(sends) if lost else [])
+            unread.extend(unreadable)
+
         if name in SHELLS and "-c" in args[:-1]:
-            found.extend(sends_of(args[args.index("-c") + 1], str(here)))
+            inner(args[args.index("-c") + 1])
         elif name == "eval" and args:
-            found.extend(sends_of(" ".join(args), str(here)))
+            inner(" ".join(args))
         elif name == "git":
-            repo, i = here, 0
+            repo, i, place = here, 0, lost
             while i < len(args) and args[i].startswith("-"):
                 flag, eq, value = args[i].partition("=")
                 if flag in GIT_VALUED and not eq:
                     value, i = (args[i + 1] if i + 1 < len(args) else ""), i + 1
                 if flag == "-C" and value:
-                    repo = real(value, str(repo))
+                    repo, place = real(value, str(repo)), unknown(value, place)
                 elif flag == "--work-tree" and value:
-                    repo = real(value, str(here))
+                    repo, place = real(value, str(here)), unknown(value, lost)
                 i += 1
             sub, rest = (args[i], args[i + 1:]) if i < len(args) else ("", [])
-            if sub == "commit":
+            if sub in ("commit", "push") and place:
+                unread.append(place)
+            elif sub == "commit":
                 found.append((repo, []))
             elif sub == "push":
                 named = next((a for a in rest if not a.startswith("-")), None)
@@ -1153,7 +1209,9 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
                 sends = any(re.match(r"-[XfF]|--(method|field|raw-field|input)(=|$)", a) for a in args)
             else:
                 sends = len(rest) >= 2 and rest[0] != "search" and rest[1] not in GH_READONLY
-            if sends:
+            if sends and lost:
+                unread.append(lost)
+            elif sends:
                 found.append((here, ["--gh-argv-inline", *args]))
 
     def pieces(word: str) -> list[str]:
@@ -1175,10 +1233,10 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
         run(current)
         current = []
         if w == "(":
-            standing.open()
-        elif w == ")":
-            standing.close()
-    return found
+            standing.open(lost)
+        elif w == ")" and standing.inside():
+            lost = standing.close()
+    return found, unread
 
 
 def push_url(repo: Path, named: str | None) -> str:
@@ -1716,6 +1774,13 @@ def main() -> int:
     state = load_state(session) if areas else {"areas": [], "tabs": {}}
     read_marks = set(state["areas"])
     marks = children.registry.held_marks(child, read_marks)
+    # A send whose folder is only known as the command runs cannot be held to that folder's hooks
+    # or areas: the agent writes the folder out.
+    if tool == "Bash" and (unread := send_places(args.get("command", ""), cwd)[1]):
+        deny(f"area-guard: this command sends from a folder only known as it runs ({unread[0]}): write the "
+             f"folder out (`cd /path/to/repo && git ...` or `git -C /path/to/repo ...`), or set the variable "
+             f"to it earlier in the same command (`W=/path/to/repo; cd $W`)")
+        return 0
     # Switching the guards off or around is refused even on a machine with no areas, but on the
     # operator's yes to this very call: the marks, which keep areas apart, never.
     if tool == "Bash" and (reason := bypass(args.get("command", ""), cwd, areas)):

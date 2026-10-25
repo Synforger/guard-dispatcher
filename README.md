@@ -513,6 +513,12 @@ step earlier, before each tool call, from the same `areas.txt`:
   Taking a repository's own `core.hooksPath` away (`--unset` in the repository's config) is not
   refused at all: it puts the repository back under the machine's hooks. The same unset in the
   global or system config, or in a file named with `--file`, is refused like any other change.
+- On every machine, a `git` commit or push and a sending `gh` call are judged where they run:
+  the command is followed through `cd`, `pushd` / `popd`, a subshell and `git -C`, with a
+  variable set to a literal earlier in the command (`W=/a/b; cd $W`) or in the session's
+  environment (`$HOME`) written out. A folder still only known as the command runs
+  (`cd $W` with `W` set elsewhere, `git -C "$(…)"`) is refused, with the reason asking for the
+  folder written out: the guard cannot tell which repository's hooks and areas the send meets.
 - On every machine too, the agent writes nothing in the guard's settings folder
   (`~/.config/guard/`: `areas.txt`, `allow.txt`, `background.txt`, `ignore.txt`,
   `patterns/`, `destinations.txt`, `orders.txt`, `handoff.txt`, and a file put there tomorrow),
