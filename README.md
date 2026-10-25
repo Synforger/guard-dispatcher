@@ -665,8 +665,13 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   agent session as naming a folder here does.
   Code written into the command — `python -c`, `node -e`, a heredoc fed to an
   interpreter — sends to each host a URL in it names, carrying the code; a
-  shell's `-c` string is read as a command line of its own. A script in a file
-  and a command not listed here are not read.
+  shell's `-c` string is read as a command line of its own. A script for
+  `osascript` (its `-e` lines, or one fed on standard input) sends Apple events
+  to each application it names, `app:<name>` in lower case (`tell application
+  "Calendar"` and `Application("com.apple.iCal")` name `app:calendar` and
+  `app:com.apple.ical`), carrying the script; one piped in from another command
+  goes to `app:?`, since it is only known as it runs. A script in a file and a
+  command not listed here are not read.
   The text of an Office document or a PDF is taken out of it first. A file
   whose text cannot be taken out (over 8 MB, or not text, like an image)
   cannot be scanned: it is refused once the session has read inside an area,
@@ -708,6 +713,7 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   *chat*                    company order   # each send needs the operator's order
   repo:my-account/*         outside     # a push or gh call to these GitHub repositories, private or not
   repo:my-company/*         company     # the company's organization: its repositories belong to the company
+  app:calendar              personal    # an osascript script that writes to the Calendar app
   ```
 
   A `repo:` line naming an area says who owns the repositories. A private one
@@ -718,7 +724,8 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
 
   The pattern is a glob over the tool name, over `host:<name>` for a
   network command, over `repo:<owner>/<name>` for a GitHub repository a push
-  or a `gh` call sends to, or over `browser:<host>` for a browser tool (an MCP call
+  or a `gh` call sends to, over `app:<name>` for an application an `osascript`
+  script names, or over `browser:<host>` for a browser tool (an MCP call
   naming a `tabId`) whose tab this session opened at a page there; a tab it did
   not open stays named by the tool, and one opened at a page keeps that host
   after a click takes it elsewhere. A line naming an unknown area stops every
