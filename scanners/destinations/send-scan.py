@@ -27,7 +27,8 @@ every area without a line (DEFAULTS: the Artifact tools, WebFetch, WebSearch and
 connectors); a line in the file overrides it.
 
 The pattern `browser:<host>` names the page a browser tool types into (see agent-hooks'
-outgoing.py): `browser:*.example.com company`.
+outgoing.py): `browser:*.example.com company`. The pattern `app:<name>` names an application an
+`osascript` script sends Apple events to, in lower case: `app:calendar personal`.
 
 The pattern `file:<path>` names a file the agent leaves on this machine for the operator to hand to
 people (`file:~/handout/* company`; `~` stands for the home folder, and `*` reaches into

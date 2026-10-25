@@ -21,6 +21,9 @@ judgement in `scanners/destinations/send-scan.py`, which decides as for a push (
 - Code written into the command (`python -c`, `node -e`, a heredoc fed to an interpreter) is named
   `host:<host>` for each URL it names, and its payload is the code. A shell's `-c` string is read
   as a command line of its own. A script in a file is not read.
+- A script for `osascript` (its `-e` lines, or standard input when it names no script file) sends
+  Apple events to each application it names, `app:<name>` in lower case (`tell application
+  "Calendar"`, `Application("com.apple.iCal")`); its payload is the script.
 
 Only a destination declared in destinations.txt (or outside by send-scan's defaults) is judged: an
 undeclared one passes, with nothing scanned or refused (see send-scan.py).
@@ -68,9 +71,14 @@ import importlib.util
 import os
 import re
 import shlex
+import sys
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote_plus, urlsplit
+
+# This file is loaded by path (area-guard.py, handed.py): the parts beside it are found from here.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import apple_events  # noqa: E402
 
 # The words of a tool's own name (`mcp__server__slack_read_channel` -> slack, read, channel), however
 # they are joined: `_`, `-` (`notion-get-users`) or case (`getUsers`). The first word that is a verb
@@ -475,6 +483,7 @@ VALUED = {
     "nc": set("epsiwxXqTOIVc"),
     "mail": {"s", "c", "b", "r", "a"},
     "http": {"a", "o"},
+    "osascript": {"e", "l", "s"},
 }
 RSYNC_VALUED = {"--rsh", "--exclude", "--include", "--filter", "--exclude-from", "--include-from",
                 "--files-from", "--password-file", "--port", "--log-file", "--temp-dir", "--chmod",
@@ -657,6 +666,25 @@ def mail_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) ->
         return [Send("mail:?", "\n".join(texts), unreadable, unknown or "recipients read from the message")]
     domains = dict.fromkeys(r.rsplit("@", 1)[-1].strip(">,").lower() for r in recipients)
     return [Send(f"mail:{d}", "\n".join(texts), unreadable, unknown) for d in domains]
+
+
+def osascript_sends(words: list[str], stdin, command: str, cwd: str, send_scan: Path) -> list[Send]:
+    """osascript: each application its script names; the script is the payload. The script is its
+    `-e` lines, or standard input when there are none and no script file is named (a file is not
+    read, as for any interpreter). A script only known when it runs is sent to `app:?`."""
+    options, positional = split_options(words, VALUED["osascript"])
+    codes = [v for o, v in options if o == "-e" and v]
+    unknown = None
+    # A heredoc's lines reach the shell reader as words after the command: they name no script file.
+    if not codes and stdin and stdin[1] == "a heredoc":
+        codes = [m.group(3) for m in HEREDOC.finditer(command)]
+    elif not codes and not positional:
+        text, _, unknown = stdin_payload(stdin, cwd, send_scan)
+        codes = [text]
+    code = "\n".join(codes)
+    if unknown:
+        return [Send("app:?", code, [], unknown)]
+    return [Send(f"app:{name}", code, []) for name in apple_events.applications(code)]
 
 
 def http_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
@@ -871,6 +899,8 @@ def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
         elif tool == "sftp":
             hosts = [p.rsplit("@", 1)[-1].split(":", 1)[0] for p in split_options(args, VALUED["scp"])[1]]
             out += [Send(f"host:{h}", "", [], "sftp takes its commands as it runs") for h in hosts[:1]]
+        elif tool == "osascript":
+            out += osascript_sends(args, stdin, command, cwd, send_scan)
     # `host:<host>` or `host:<host>:<path>`: the host is what is checked
     return [s for s in out
             if (s.dest.split(":", 2)[1] if s.dest.startswith("host:") else s.dest.split(":", 1)[-1]) not in LOOPBACK]
