@@ -48,7 +48,9 @@ An area's documents are everything under its paths that holds its words:
 
     prose  Office (.pptx .docx .xlsx, read from their XML), PDF (pdftotext),
            Markdown -- every run of RUN consecutive characters mostly Japanese
-           (JAPANESE_SHARE), or LATIN_RUN otherwise, is a print
+           (JAPANESE_SHARE), or LATIN_RUN otherwise, is a print; a sent run is
+           compared only when RUN_CONTENT of its characters are kanji, katakana,
+           Latin letters or digits (kana and signs alone end anyone's sentence)
     rows   CSV, TSV, plain text -- every whole row of at least that length is a
            print, and one copied row is a hit
     lines  every other file a git repository there tracks (= its code and its
@@ -171,6 +173,14 @@ JAPANESE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]")
 # Japanese (numerator, denominator). At a half, a short phrase of Japanese and an English name
 # ("README の見出し") counted, and a common phrase of six and six stopped a push.
 JAPANESE_SHARE = (2, 3)
+# A sent run counts as copied only when it carries this many characters that say what it is about: a
+# kanji, a katakana, a Latin letter or a digit. Twelve characters of kana and signs around a word or
+# two ("は直していません (= ") are how anyone ends a sentence, and an area's documents written by the
+# same agent hold them as often as its messages do: over 3919 lines an agent wrote outside every area,
+# the runs with four or fewer were all such endings but one pair of names, which its longer mentions
+# still caught. Only the sent side is counted, so an area's prints stay as they are.
+RUN_CONTENT = int(os.environ.get("GUARD_CORPUS_RUN_CONTENT", "5"))
+CONTENT = re.compile(r"[\u3400-\u9fff\uf900-\ufaff\u30a0-\u30ffA-Za-z0-9]")
 
 
 def mostly_japanese(text: str) -> bool:
@@ -1980,7 +1990,8 @@ def hit(line: str, tables: list[array], allowed: list[str] = (), public: array =
         whole = line_print(line, kind)
         if whole is not None and any(present(t, whole) for t in tables) and not is_public():
             return kind, normalize(line)
-    run = next((w for w in windows(line) if any(present(t, digest(w)) for t in tables)), None)
+    run = next((w for w in windows(line) if len(CONTENT.findall(w)) >= RUN_CONTENT
+                and any(present(t, digest(w)) for t in tables)), None)
     return ("run", run) if run else None
 
 
