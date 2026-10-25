@@ -318,7 +318,7 @@ An area's documents are everything under it that holds its words:
 
 | kind | files | a sent line is a hit when it |
 |---|---|---|
-| prose | Office (`.pptx` `.docx` `.xlsx`, read from their XML, never their compressed bytes), PDF (`pdftotext`, wrapped lines rejoined), Markdown | holds a run of 12 characters at least two thirds Japanese, or 40 otherwise (twelve characters of English are two common words; six of Japanese around an English name are a common phrase) |
+| prose | Office (`.pptx` `.docx` `.xlsx`, read from their XML, never their compressed bytes), PDF (`pdftotext`, wrapped lines rejoined), SQLite (`.sqlite` `.sqlite3` `.db` `.db3` that open with SQLite's header: every text value of every table, read-only, its write-ahead log left out), Markdown | holds a run of 12 characters at least two thirds Japanese, or 40 otherwise (twelve characters of English are two common words; six of Japanese around an English name are a common phrase) |
 | rows | CSV, TSV, plain text | is, once whitespace is folded, a whole row of the same length bar |
 | lines | every other file a git repository inside the area tracks — its code and its Markdown | is one of `GUARD_CORPUS_CODE_LINES` (default 2) consecutive sent lines that are each a whole line of the same length bar |
 
@@ -331,7 +331,8 @@ millions of values. It takes two consecutive lines because a lone common line
 1,298 clean public commits one line blocked 14, two lines blocked 3. A row of
 data is specific on its own, so one copied row is a hit. Inside a repository only what it tracks counts: untracked
 output and vendored folders (`third_party/`, `vendor/`, ...) are someone
-else's. Runs and lines that also appear in the background text and code are
+else's. Office files, PDFs and databases count wherever they sit: an attachment
+or an app's data is the area's whether a repository tracks it or not. Runs and lines that also appear in the background text and code are
 not specific to any area and are dropped.
 
 The table of that public text keeps for a week, or until the remote default
