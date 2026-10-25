@@ -47,7 +47,7 @@ used when the guard runs on its own; under a platform root the same files sit in
 An area's documents are everything under its paths that holds its words:
 
     prose  Office (.pptx .docx .xlsx, read from their XML), PDF (pdftotext),
-           Markdown -- every run of RUN consecutive characters mostly Japanese
+           SQLite (.sqlite .db, every text value of its tables), Markdown -- every run of RUN consecutive characters mostly Japanese
            (JAPANESE_SHARE), or LATIN_RUN otherwise, is a print; a sent run is
            compared only when RUN_CONTENT of its characters are kanji, katakana,
            Latin letters or digits (kana and signs alone end anyone's sentence)
@@ -138,11 +138,12 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "_internal"))
 import guard_places  # noqa: E402
 
 
 class later:
-    """A standard-library module that is loaded when something of it is first used.
+    """A module that is loaded when something of it is first used.
 
     This file is also read as a module, for its areas alone, by the agent's entry guard -- before
     every tool call -- and each run of it as a command pays for what it loads. What only a scan
@@ -160,6 +161,7 @@ class later:
 bisect, hashlib, heapq, html = later("bisect"), later("hashlib"), later("heapq"), later("html")
 subprocess, tempfile = later("subprocess"), later("tempfile")
 unicodedata, zipfile = later("unicodedata"), later("zipfile")
+sqlite_text = later("sqlite_text")
 
 # How many consecutive characters count as copied. Twelve characters of
 # Japanese are a phrase; twelve of English are two common words ("machine with"),
@@ -214,7 +216,12 @@ CARRIES = "_carries"
 #: A root on another machine: `host:<host>:<absolute path>` (read by load_remote_areas, not load_areas).
 REMOTE = "host:"
 OFFICE = {".pptx", ".docx", ".xlsx", ".pptm", ".docm", ".xlsm"}
-TEXT = {".md", ".csv", ".tsv", ".txt"}
+DATABASES = {".sqlite", ".sqlite3", ".db", ".db3"}
+# Documents read for their text wherever they sit and whatever their size: inside a repository an
+# attachment or an app's data is the area's even when untracked, and a deck or a database is mostly
+# bytes that are not its text.
+ANYWHERE = OFFICE | {".pdf"} | DATABASES
+TEXT ={".md", ".csv", ".tsv", ".txt"}
 LOCKFILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock", "uv.lock",
              "Gemfile.lock", "composer.lock", "go.sum"}
 GENERATED = {".pbxproj", ".xcscheme", ".xcworkspacedata", ".storyboard", ".xib", ".plist", ".csproj", ".sln",
@@ -861,7 +868,7 @@ def text_units(path: Path) -> list[str]:
 
 def unit_reader(path: Path, tracked: bool):
     """(kind, read) for a file, or None when it is not a document. kind "runs" prints every run
-    of prose (Office, PDF, Markdown outside repositories); kind "rows" prints whole rows of data
+    of prose (Office, PDF, SQLite, Markdown outside repositories); kind "rows" prints whole rows of data
     (CSV, TSV, plain text); kind "lines" prints whole lines of code (every other file a repository
     tracks, its Markdown included), which is what an agent most easily copies."""
     suffix, name = path.suffix.lower(), path.name
@@ -876,6 +883,8 @@ def unit_reader(path: Path, tracked: bool):
         return "runs", lambda: office_units(path)
     if suffix == ".pdf":
         return "runs", lambda: pdf_units(path)
+    if suffix in DATABASES:
+        return ("runs", lambda: sqlite_text.units(path)) if sqlite_text.is_database(path) else None
     if suffix == ".md" and not tracked:
         return "runs", lambda: text_units(path)
     # Markdown a repository tracks documents its code, in the words its authors use everywhere:
@@ -905,16 +914,17 @@ class Repos:
     def reader(self, path: Path, repo: Path | None | bool = False, root: Path | None = None):
         """unit_reader for a file, applying the repository rule: inside a repository only what it
         tracks, minus vendored code (= untracked output and third-party copies are not its documents).
-        Office files and PDFs count wherever they sit. `repo` may be passed when already known.
+        Office files, PDFs and databases (ANYWHERE) count wherever they sit. `repo` may be passed
+        when already known.
 
         Only a repository that lies inside the area (`root`) is the area's. One that holds the area
         from outside -- an agent's own state tree with a folder for the company -- keeps its notes,
-        not the area's documents: only its Office files and PDFs are read."""
+        not the area's documents: only its Office files, PDFs and databases are read."""
         if repo is False:
             repo = self.of(path.parent)
         if repo is not None and root is not None and not (repo == root or root in repo.parents):
-            return unit_reader(path, tracked=False) if path.suffix.lower() in OFFICE | {".pdf"} else None
-        if repo is not None and path.suffix.lower() not in OFFICE | {".pdf"}:
+            return unit_reader(path, tracked=False) if path.suffix.lower() in ANYWHERE else None
+        if repo is not None and path.suffix.lower() not in ANYWHERE:
             relative = str(path.relative_to(repo))
             if relative not in self.tracked(repo) or any(p.lower() in VENDORED for p in Path(relative).parts[:-1]):
                 return None
@@ -930,7 +940,7 @@ def document(path: Path, repos: Repos, repo: Path | None | bool = False, root: P
         st = path.stat()
     except OSError:
         return None
-    if not path.is_file() or (st.st_size > MAX_FILE and path.suffix.lower() not in OFFICE | {".pdf"}):
+    if not path.is_file() or (st.st_size > MAX_FILE and path.suffix.lower() not in ANYWHERE):
         return None
     # How a document is read is part of its stamp: prints made the old way are never reused.
     return f"{PRINT_FORMAT}:{reader[0]}:{st.st_mtime_ns}:{st.st_size}", reader
