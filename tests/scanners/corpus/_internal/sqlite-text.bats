@@ -193,6 +193,41 @@ PY
     [[ "$output" == *"ALL_OK"* ]]
 }
 
+@test "sqlite: a database put in an area that held no document is read at the next scan, not the next walk" {
+    export GUARD_CORPUS_MAX_AGE=3600       # no full walk is due: only what catches changes can find it
+    scan_payload "nothing copied here at all, just a plain sentence of mine"
+    [ "$status" -eq 0 ]
+    mk_db "${AREA}/Line.sqlite" "${CHAT_JA}"
+    scan_payload "${CHAT_JA}"
+    [ "$status" -eq 1 ]
+}
+
+@test "sqlite: an area folder made after the last walk is read at the next scan" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    rmdir "${AREA}"
+    scan_payload "nothing copied here at all, just a plain sentence of mine"
+    [ "$status" -eq 0 ]
+    mkdir -p "${AREA}"
+    mk_db "${AREA}/Line.sqlite" "${CHAT_JA}"
+    scan_payload "${CHAT_JA}"
+    [ "$status" -eq 1 ]
+}
+
+@test "sqlite: with Spotlight off, an area folder made after the last walk is read at the next scan" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    mkdir -p "${BATS_TEST_TMPDIR}/bin"
+    printf '#!/bin/sh\necho "Indexing disabled."\n' > "${BATS_TEST_TMPDIR}/bin/mdutil"
+    chmod +x "${BATS_TEST_TMPDIR}/bin/mdutil"
+    export PATH="${BATS_TEST_TMPDIR}/bin:${PATH}"
+    rmdir "${AREA}"
+    scan_payload "nothing copied here at all, just a plain sentence of mine"
+    [ "$status" -eq 0 ]
+    mkdir -p "${AREA}"
+    mk_db "${AREA}/Line.sqlite" "${CHAT_JA}"
+    scan_payload "${CHAT_JA}"
+    [ "$status" -eq 1 ]
+}
+
 @test "sqlite: an untracked database in a repository inside the area is the area's" {
     mk_repo_at_area() { mkdir -p "$1" && git -C "$1" init -q; }
     mk_repo_at_area "${AREA}/app"
