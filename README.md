@@ -318,7 +318,7 @@ An area's documents are everything under it that holds its words:
 
 | kind | files | a sent line is a hit when it |
 |---|---|---|
-| prose | Office (`.pptx` `.docx` `.xlsx`, read from their XML, never their compressed bytes), PDF (`pdftotext`, wrapped lines rejoined), SQLite (`.sqlite` `.sqlite3` `.db` `.db3` that open with SQLite's header: every text value of every table, read-only, its write-ahead log left out), Markdown | holds a run of 12 characters at least two thirds Japanese, or 40 otherwise (twelve characters of English are two common words; six of Japanese around an English name are a common phrase) |
+| prose | Office (`.pptx` `.docx` `.xlsx`, read from their XML, never their compressed bytes), PDF (`pdftotext`, wrapped lines rejoined), SQLite (`.sqlite` `.sqlite3` `.db` `.db3` that open with SQLite's header: every text value of every table, read-only, its write-ahead log read with it from a copy in the guard's cache that is removed once read), Markdown | holds a run of 12 characters at least two thirds Japanese, or 40 otherwise (twelve characters of English are two common words; six of Japanese around an English name are a common phrase) |
 | rows | CSV, TSV, plain text | is, once whitespace is folded, a whole row of the same length bar |
 | lines | every other file a git repository inside the area tracks — its code and its Markdown | is one of `GUARD_CORPUS_CODE_LINES` (default 2) consecutive sent lines that are each a whole line of the same length bar |
 
