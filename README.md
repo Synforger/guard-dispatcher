@@ -670,8 +670,10 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   whose text cannot be taken out (over 8 MB, or not text, like an image)
   cannot be scanned: it is refused once the session has read inside an area,
   or when the file itself sits inside one, and passes otherwise.
-  A reading call (a tool whose name says it reads: get, list, search, read,
-  fetch, query, view, find, export, ...) still hands the service its own
+  A reading call (a tool whose name says it reads: the first verb among the
+  words of its name, joined by `_`, `-` or case, is get, list, search, read,
+  fetch, query, view, find, export, ...; `notion-search` reads,
+  `slack_update_list` and `notion-update-view` write) still hands the service its own
   strings, such as a search term, so those are scanned; the files it names are
   not uploaded and not read, and a service blocked for sending still takes
   reads, judged as outside every area. A fetch without a body is a reading

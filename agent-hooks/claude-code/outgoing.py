@@ -31,8 +31,9 @@ and a tool that drafts need none. A command (`curl` and the like) cannot be matc
 was shown, so it never sends there. What a send there carries gets the word list and not the
 private-document scan: the operator reads it before it reaches people (see send-scan.py).
 
-A reading call (a tool whose name says it reads: get / list / search / read / fetch / query / view /
-find / export / ..., or an Artifact tool's reading action) still hands the service its own
+A reading call (a tool whose name says it reads: the first verb among its words is get / list /
+search / read / fetch / query / view / find / export / ..., not create / update / send / ...; or an
+Artifact tool's reading action) still hands the service its own
 strings -- a search term, a query, a URL -- so those are scanned, but the files it names are not
 read, and a destination blocked for sending still takes reads. A local path in a call's arguments
 (a file to upload, a folder to save into) is not what the service receives: the files' text is. A network command without a body
@@ -71,10 +72,23 @@ from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote_plus, urlsplit
 
-# The last word of a tool name (`mcp__server__slack_read_channel` -> `slack_read_channel`) that
-# says the call only reads.
-READING = re.compile(r"(^|_)(get|list|search|read|fetch|query|view|find|describe|lookup|guide|export|"
-                     r"download|authenticate|complete_authentication|open|status|whoami|help)(_|$)", re.I)
+# The words of a tool's own name (`mcp__server__slack_read_channel` -> slack, read, channel), however
+# they are joined: `_`, `-` (`notion-get-users`) or case (`getUsers`). The first word that is a verb
+# says what the call does: READING only reads, WRITING changes or sends. The words before it name
+# the service (`slack`, `notion-calendar`), the words after it the object: `slack_update_list`
+# writes a list, `notion-update-view` a view. A name with neither verb sends.
+TOOL_WORD = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
+READING = frozenset({"get", "list", "search", "read", "fetch", "query", "view", "find", "describe", "lookup",
+                     "guide", "export", "download", "authenticate", "authentication", "open", "status",
+                     "whoami", "help"})
+WRITING = frozenset({"create", "update", "delete", "remove", "add", "send", "post", "put", "patch", "set",
+                     "move", "duplicate", "copy", "restore", "upload", "share", "edit", "write", "insert",
+                     "append", "archive", "unarchive", "spawn", "stop", "start", "invite", "reply", "react",
+                     "schedule", "draft", "publish", "rename", "modify", "replace", "mark", "assign",
+                     "resolve", "submit", "trigger", "run", "execute", "cancel", "close", "merge", "enable",
+                     "disable", "apply", "import", "save", "label", "unlabel", "star", "unstar", "trash",
+                     "untrash", "respond", "forward", "accept", "decline", "sync", "push", "commit", "pin",
+                     "unpin", "subscribe", "unsubscribe", "transfer", "approve", "reject", "comment"})
 # Tools of the host (not MCP) that send to a service. WebFetch and WebSearch fetch, but the URL,
 # the prompt and the query they carry reach the search or fetch service, so they are sends.
 HOST_SENDERS = {"Artifact", "ArtifactData", "ArtifactComments", "WebFetch", "WebSearch"}
@@ -149,7 +163,12 @@ def reads_only(tool: str, args: dict) -> bool:
         return args.get("action") in ARTIFACT_DATA_READING
     if tool == "ArtifactComments":
         return args.get("action") in {"read", "list", "watch", "unwatch"}
-    return bool(READING.search(tool.rsplit("__", 1)[-1]))
+    for word in TOOL_WORD.findall(tool.rsplit("__", 1)[-1]):
+        if word.lower() in READING:
+            return True
+        if word.lower() in WRITING:
+            return False
+    return False
 
 
 def strings(value) -> list[str]:

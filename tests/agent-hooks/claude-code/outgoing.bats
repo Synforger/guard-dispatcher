@@ -900,6 +900,26 @@ slack() { ordered "${SLACK}" "$(message "$1" "$2")" "${3:-toolu_1}"; }
     denied
 }
 
+@test "order: a read needs no order however its name is joined; the first verb of the name decides" {
+    held
+    destinations '*slack* company order' '*notion* company order' '*acme* company order'
+    said "look it up"
+    ordered mcp__claude_ai_Notion__notion-search '{"query": "terms of use"}'
+    passed
+    ordered mcp__claude_ai_Notion__notion-get-users '{}'
+    passed
+    ordered mcp__acme__listFiles '{"folder": "reports"}'
+    passed
+    ordered mcp__claude_ai_Notion__notion-update-view '{"view_id": "v1", "name": "board"}'
+    denied                                                # writes a view
+    [[ "${output}" == *"orders no send"* ]]
+    ordered mcp__claude_ai_Slack__slack_update_list '{"list_id": "L1", "title": "plan"}'
+    denied                                                # writes a list
+    [[ "${output}" == *"orders no send"* ]]
+    ordered mcp__claude_ai_Notion__notion-wait-session '{"session_id": "s1"}'
+    denied                                                # no verb it knows: a send
+}
+
 @test "order: a send the operator reads first takes the word list, not the private-document scan" {
     words_for_areas
     held
