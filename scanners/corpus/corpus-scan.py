@@ -884,7 +884,7 @@ def unit_reader(path: Path, tracked: bool):
     if suffix == ".pdf":
         return "runs", lambda: pdf_units(path)
     if suffix in DATABASES:
-        return ("runs", lambda: sqlite_text.units(path)) if sqlite_text.is_database(path) else None
+        return ("runs", lambda: sqlite_text.units(path, CACHE / "scratch")) if sqlite_text.is_database(path) else None
     if suffix == ".md" and not tracked:
         return "runs", lambda: text_units(path)
     # Markdown a repository tracks documents its code, in the words its authors use everywhere:
@@ -943,7 +943,28 @@ def document(path: Path, repos: Repos, repo: Path | None | bool = False, root: P
     if not path.is_file() or (st.st_size > MAX_FILE and path.suffix.lower() not in ANYWHERE):
         return None
     # How a document is read is part of its stamp: prints made the old way are never reused.
-    return f"{PRINT_FORMAT}:{reader[0]}:{st.st_mtime_ns}:{st.st_size}", reader
+    mtime_ns, size = content_stat(path, st)
+    return f"{PRINT_FORMAT}:{reader[0]}:{mtime_ns}:{size}", reader
+
+
+def database_read_with(path: Path) -> Path:
+    """The document a changed file is read as: a database for its write-ahead log, else itself."""
+    database = sqlite_text.database_of(path)
+    return database if database is not None and database.suffix.lower() in DATABASES else path
+
+
+def content_stat(path: Path, st: os.stat_result) -> tuple[int, int]:
+    """(mtime_ns, size) of what a document's text is read from: a database's write-ahead log
+    counts with it (the newer of the two times, the sum of the sizes), so a row written to the
+    log alone changes the stamp."""
+    log = sqlite_text.log_of(path) if path.suffix.lower() in DATABASES else None
+    try:
+        extra = log.stat() if log else None
+    except OSError:
+        extra = None
+    if extra is None:
+        return st.st_mtime_ns, st.st_size
+    return max(st.st_mtime_ns, extra.st_mtime_ns), st.st_size + extra.st_size
 
 
 def documents(roots: list[Path], inner: list[Path], ignored: list[Path], repos: Repos,
@@ -1413,7 +1434,11 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
 def spotlight_changes(roots: list[Path], since: float, known: dict) -> list[Path] | None:
     """Files under roots whose content changed since `since`, as Spotlight knows them.
     None when Spotlight cannot be trusted to answer: not macOS, indexing off, an error, or a
-    root it does not index (= it cannot find a document already known to be there)."""
+    root it does not index (= it cannot find a document already known to be there).
+
+    A root that holds no document known yet gives Spotlight nothing to be checked against, and
+    Spotlight answers nothing for a folder it does not index: such a root is walked instead
+    (unvouched_changes), so a document created in a new area is read at the next scan."""
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since - 60))   # a minute of slack for the indexer
     tops = [r for r in set(roots) if not any(o != r and o in r.parents for o in roots)]
     mounts = set()
@@ -1424,6 +1449,7 @@ def spotlight_changes(roots: list[Path], since: float, known: dict) -> list[Path
         mounts.add(mount)
     # Every question at once: each is a separate indexer round trip.
     asks: list[tuple[str, Path | None, subprocess.Popen]] = []
+    found: list[Path] = []
     try:
         for mount in mounts:
             asks.append(("state", None, subprocess.Popen(["mdutil", "-s", str(mount)], stdout=subprocess.PIPE,
@@ -1433,16 +1459,17 @@ def spotlight_changes(roots: list[Path], since: float, known: dict) -> list[Path
             # (building a Path per known document costs a second on tens of thousands of them).
             inside = f"{root}{os.sep}"
             probe = next((Path(k) for k in known if k.startswith(inside) and os.path.isfile(k)), None)
-            if probe is not None:
-                asks.append(("probe", probe, subprocess.Popen(
-                    ["mdfind", "-onlyin", str(probe.parent), "-name", probe.name],
-                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)))
+            if probe is None:
+                found += unvouched_changes(root, known)
+                continue
+            asks.append(("probe", probe, subprocess.Popen(
+                ["mdfind", "-onlyin", str(probe.parent), "-name", probe.name],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)))
             asks.append(("changed", root, subprocess.Popen(
                 ["mdfind", "-onlyin", str(root), f"kMDItemFSContentChangeDate >= $time.iso({stamp})"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)))
     except OSError:
         return None
-    found: list[Path] = []
     for kind, subject, ask in asks:
         try:
             out, _ = ask.communicate(timeout=30)
@@ -1457,6 +1484,25 @@ def spotlight_changes(roots: list[Path], since: float, known: dict) -> list[Path
             return None
         if kind == "changed":
             found += [Path(p) for p in out.splitlines() if p]
+    return found
+
+
+def unvouched_changes(root: Path, known: dict) -> list[Path]:
+    """Files under a root that the index does not know or whose content moved since it read
+    them: a root Spotlight cannot be checked for, walked by itself. It holds no document yet, so
+    the walk is short; a file in it that is no document is listed and passed over by the caller."""
+    found = []
+    for folder, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
+        for name in files:
+            path = Path(folder, name)
+            entry = known.get(str(path))
+            try:
+                moved = entry is None or stamp_stat(entry[0]) != content_stat(path, path.stat())
+            except OSError:
+                continue
+            if moved:
+                found.append(path)
     return found
 
 
@@ -1488,7 +1534,7 @@ def stat_changes(index: dict) -> tuple[list[Path], list[Path]]:
         except OSError:
             removed.append(path)
             continue
-        if known is None or (st.st_mtime_ns, st.st_size) != known:
+        if known is None or content_stat(path, st) != known:
             changed.append(path)
     return changed, removed
 
@@ -1562,6 +1608,9 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
                 return None
             changed, removed = stat_changes(index)
             changed += created
+            # A root made after the last walk is in no folder list: one holding no known document is walked.
+            changed += [p for root in roots if not any(k.startswith(f"{root}{os.sep}") for k in index)
+                        for p in unvouched_changes(root, index)]
         started = time.time()
         ignored = ignored_folders(areas)
         repos = Repos()
@@ -1578,8 +1627,9 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
                 replaced.add(stale[2])
             if not any(v[1] == stale[1] for v in index.values()):
                 (DOCS / f"{stale[1]}.bin").unlink(missing_ok=True)
+        # A database's write-ahead log is read with the database: its change is the database's.
+        changed = list(dict.fromkeys(database_read_with(expand(str(c))) for c in changed))
         for path in changed:
-            path = expand(str(path))
             found = area_root(areas, path)
             if found is None or found[0] == EXEMPT or any(path == i or i in path.parents for i in ignored):
                 continue

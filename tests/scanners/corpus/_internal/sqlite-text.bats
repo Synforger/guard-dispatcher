@@ -34,6 +34,30 @@ connection.close()
 PY
 }
 
+# mk_wal_db <folder> <name> <text> <newest> — a database in <folder> as an app leaves it while it
+# runs: <text> written back into the file, <newest> only in the write-ahead log beside it.
+mk_wal_db() {
+    python3 - "$@" <<'PY'
+import shutil, sqlite3, sys, tempfile
+from pathlib import Path
+folder, name, text, newest = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+work = Path(tempfile.mkdtemp())
+connection = sqlite3.connect(work / name)
+connection.execute("PRAGMA journal_mode=WAL")
+connection.execute("CREATE TABLE ZMESSAGE (Z_PK INTEGER PRIMARY KEY, ZTEXT TEXT)")
+connection.execute("INSERT INTO ZMESSAGE (ZTEXT) VALUES (?)", (text,))
+connection.commit()
+connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+connection.execute("PRAGMA wal_autocheckpoint=0")
+connection.execute("INSERT INTO ZMESSAGE (ZTEXT) VALUES (?)", (newest,))
+connection.commit()
+for suffix in ("", "-wal"):
+    shutil.copyfile(work / (name + suffix), folder / (name + suffix))
+connection.close()
+shutil.rmtree(work)
+PY
+}
+
 # scan_payload <text> — scan <text> as sent outside every area.
 scan_payload() {
     printf '%s\n' "$1" > "${BATS_TEST_TMPDIR}/payload.txt"
@@ -123,6 +147,85 @@ PY
     chmod 700 "${AREA}"
     [ "$status" -eq 1 ]
     [ "$(ls "${AREA}")" = "Line.sqlite" ]
+}
+
+@test "sqlite: a row only in the write-ahead log is read too, and nothing is left beside it or in the cache" {
+    mk_wal_db "${AREA}" Line.sqlite "${CHAT_EN}" "${CHAT_JA}"
+    [ -s "${AREA}/Line.sqlite-wal" ]
+    chmod 500 "${AREA}"
+    scan_payload "${CHAT_JA}"
+    chmod 700 "${AREA}"
+    [ "$status" -eq 1 ]
+    scan_payload "${CHAT_EN}"
+    [ "$status" -eq 1 ]
+    [ "$(ls "${AREA}" | tr '\n' ' ')" = "Line.sqlite Line.sqlite-wal " ]
+    [ -z "$(ls -A "${GUARD_CORPUS_CACHE}/scratch")" ]
+}
+
+@test "sqlite: a database copied again with a newer row in its write-ahead log is read again" {
+    mk_wal_db "${AREA}" Line.sqlite "${CHAT_EN}" "最初の行はまだ予定の話をしていない"
+    scan_payload "${CHAT_JA}"
+    [ "$status" -eq 0 ]
+    mk_wal_db "${AREA}" Line.sqlite "${CHAT_EN}" "${CHAT_JA}"
+    scan_payload "${CHAT_JA}"
+    [ "$status" -eq 1 ]
+}
+
+@test "sqlite: the stat fallback sees a change of the log, and a log is read as its database" {
+    mk_wal_db "${AREA}" Line.sqlite "${CHAT_EN}" "最初の行はまだ予定の話をしていない"
+    printf 'notes\n' > "${AREA}/notes-wal"
+    run python3 - "${SCAN}" "${AREA}" "${CHAT_JA}" <<'PY'
+import importlib.util, sqlite3, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("c", sys.argv[1])
+c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
+area = Path(sys.argv[2]); db = area / "Line.sqlite"
+stamp, _ = c.document(db, c.Repos(), root=area)
+index = {str(db): [stamp, "fid", "chats"]}
+assert c.stat_changes(index) == ([], []), "unchanged at first"
+with (area / "Line.sqlite-wal").open("ab") as log:
+    log.write(b"\0" * 4096)
+assert c.stat_changes(index)[0] == [db], "a longer log is a change"
+assert c.database_read_with(area / "Line.sqlite-wal") == db
+assert c.database_read_with(area / "notes-wal") == area / "notes-wal"
+print("ALL_OK")
+PY
+    [[ "$output" == *"ALL_OK"* ]]
+}
+
+@test "sqlite: a database put in an area that held no document is read at the next scan, not the next walk" {
+    export GUARD_CORPUS_MAX_AGE=3600       # no full walk is due: only what catches changes can find it
+    scan_payload "nothing copied here at all, just a plain sentence of mine"
+    [ "$status" -eq 0 ]
+    mk_db "${AREA}/Line.sqlite" "${CHAT_JA}"
+    scan_payload "${CHAT_JA}"
+    [ "$status" -eq 1 ]
+}
+
+@test "sqlite: an area folder made after the last walk is read at the next scan" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    rmdir "${AREA}"
+    scan_payload "nothing copied here at all, just a plain sentence of mine"
+    [ "$status" -eq 0 ]
+    mkdir -p "${AREA}"
+    mk_db "${AREA}/Line.sqlite" "${CHAT_JA}"
+    scan_payload "${CHAT_JA}"
+    [ "$status" -eq 1 ]
+}
+
+@test "sqlite: with Spotlight off, an area folder made after the last walk is read at the next scan" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    mkdir -p "${BATS_TEST_TMPDIR}/bin"
+    printf '#!/bin/sh\necho "Indexing disabled."\n' > "${BATS_TEST_TMPDIR}/bin/mdutil"
+    chmod +x "${BATS_TEST_TMPDIR}/bin/mdutil"
+    export PATH="${BATS_TEST_TMPDIR}/bin:${PATH}"
+    rmdir "${AREA}"
+    scan_payload "nothing copied here at all, just a plain sentence of mine"
+    [ "$status" -eq 0 ]
+    mkdir -p "${AREA}"
+    mk_db "${AREA}/Line.sqlite" "${CHAT_JA}"
+    scan_payload "${CHAT_JA}"
+    [ "$status" -eq 1 ]
 }
 
 @test "sqlite: an untracked database in a repository inside the area is the area's" {
