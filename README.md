@@ -237,6 +237,12 @@ folder, two folders deep or more) is fine to send without a line in `allow.txt`:
 area's documents name where the areas live, so a run over that path is no area's text.
 What follows it in a line (an area's own folders and files, and any prose) is still compared.
 
+A path that names an existing place inside the areas the destination lies in is fine to
+send there as well: a client's repository may link to the client's own files, even when
+the company's notes name the same path. A relative path is read from the folder of the
+file it is written in, and from your home folder. A path naming a place outside those
+areas, or one that does not exist, is compared as any other text.
+
 #### Settings an area keeps for itself
 
 An area can keep its own `areas.txt`, `destinations.txt`, `allow.txt`, `ignore.txt`,

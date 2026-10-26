@@ -140,6 +140,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "_internal"))
 import guard_places  # noqa: E402
+from own_paths import without_own_paths  # noqa: E402
 
 
 class later:
@@ -1996,6 +1997,13 @@ def git(*args: str) -> str:
                           check=True).stdout
 
 
+def written_from(where: str, sender: Path) -> Path:
+    """The folder a scanned line is written from: that of its file for an added line
+    (`<sha> <path>`), the sending repository for a commit message or a payload."""
+    _, _, path = where.partition(" ")
+    return (sender / path).parent if path and path != "message" else sender
+
+
 def sending_repo() -> str:
     """Where the pushing repository lives: its work tree, or for a bare repository its git dir."""
     top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
@@ -2269,15 +2277,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     allowed = shared_places(areas) + [normalize(p) for p in read_lines(guard_places.setting("allow.txt"))]
     public = background_prints()
+    own_roots = [root for n in own if n not in UNSCANNED for root in areas.get(n, [])]
+    compared = [without_own_paths(line, written_from(where, sender), own_roots) for _, where, line in lines]
     found = []
     for name in checked:
         shapes = patterns(name, areas)
         tables = [t for t in prints.get(name, []) if len(t)]
         fine = allowed + [normalize(p) for p in kept_allowed(name, areas)]
         results = []
-        for group, where, line in lines:
-            match = next((m.group(0) for p in shapes if (m := p.search(line))), None)
-            found_here = ("shape", match) if match else (hit(line, tables, fine, public) if tables else None)
+        for (group, where, line), text in zip(lines, compared):
+            match = next((m.group(0) for p in shapes if (m := p.search(text))), None)
+            found_here = ("shape", match) if match else (hit(text, tables, fine, public) if tables else None)
             results.append((group, where, line, found_here))
         for _, where, line, what in keep_blocks(results, CODE_LINES):
             if what:

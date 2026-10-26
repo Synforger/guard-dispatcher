@@ -1359,6 +1359,41 @@ sys.exit(0 if want and want == have else 1)
     [[ "$output" == *"client text"* ]]
 }
 
+@test "corpus: a path to a place inside the destination's own area is no other area's text" {
+    local deck="the-fitting-room-schedule-for-the-winter-collection.txt"
+    local gone="the-sewing-room-schedule-for-the-summer-collection.txt"
+    local bench="the-bench-schedule-for-every-quarter-of-the-year.md"
+    mkdir -p "${CLIENT}/slides"
+    echo "a deck" > "${CLIENT}/slides/${deck}"
+    echo "a plan" > "${WORK}/meetings/${bench}"
+    printf 'the decks are clients/acme/slides/%s and clients/acme/slides/%s, the plan meetings/%s\n' \
+        "${deck}" "${gone}" "${bench}" >> "${WORK}/meetings/plan.md"
+    mk_repo_at "${CLIENT}/records"
+    mkdir -p pages
+    printf '<a href="../../slides/%s">deck</a>\n' "${deck}" > pages/index.html
+    git add pages/index.html
+    commit_bypassing_hooks "link the deck"
+    scan_last
+    [ "$status" -eq 0 ]                                   # the client's own file, linked from the client
+    printf '<a href="../../slides/%s">deck</a>\n' "${gone}" >> pages/index.html
+    git add pages/index.html
+    commit_bypassing_hooks "link a deck that is not there"
+    scan_last
+    [ "$status" -eq 1 ]                                   # no such place: compared as text
+    [[ "$output" == *"company text"* ]]
+    git reset -q --hard HEAD~1
+    commit_line "the plan: ${WORK}/meetings/${bench}"
+    scan_last
+    [ "$status" -eq 1 ]                                   # a place of the company, outside the client
+    [[ "$output" == *"company text"* ]]
+    mk_repo other
+    printf '<a href="../../slides/%s">deck</a>\n' "${deck}" > index.html
+    git add index.html
+    commit_bypassing_hooks "link the deck from outside"
+    scan_last
+    [ "$status" -eq 1 ]                                   # outside every area, the path is text
+}
+
 @test "corpus: a scan says how long it took, clean or not" {
     mk_repo other
     commit_line "nothing private"
