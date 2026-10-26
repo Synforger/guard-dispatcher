@@ -1997,11 +1997,38 @@ def git(*args: str) -> str:
                           check=True).stdout
 
 
-def written_from(where: str, sender: Path) -> Path:
+def written_from(group: str, sender: Path) -> Path:
     """The folder a scanned line is written from: that of its file for an added line
-    (`<sha> <path>`), the sending repository for a commit message or a payload."""
-    _, _, path = where.partition(" ")
+    (`<sha> <path>`, `staged <path>`), the sending repository for a commit message or a payload."""
+    _, _, path = group.partition(" ")
     return (sender / path).parent if path and path != "message" else sender
+
+
+HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def added_lines(diff: str) -> list[tuple[str, str, str]]:
+    """(group, where, line) for every line a diff adds (`git diff --cached --no-prefix`, what a
+    commit adds): the group is `staged <path>` of the file it is added to, where is `<path>:<n>`.
+    A hunk is read for as many lines as its header counts, so an added line that opens with
+    `++ ` is not taken for the next file's header."""
+    out: list[tuple[str, str, str]] = []
+    path, old, new, at = "", 0, 0, 0
+    for row in diff.split("\n"):
+        if old > 0 or new > 0:
+            if row.startswith("+"):
+                out.append((f"staged {path}", f"{path}:{at}", row[1:]))
+                new, at = new - 1, at + 1
+            elif row.startswith("-"):
+                old -= 1
+            elif not row.startswith("\\"):
+                old, new, at = old - 1, new - 1, at + 1
+            continue
+        if row.startswith("+++ "):
+            path = row[4:].strip('"')
+        elif hunk := HUNK.match(row):
+            old, at, new = int(hunk.group(1) or 1), int(hunk.group(2)), int(hunk.group(3) or 1)
+    return out
 
 
 def sending_repo() -> str:
@@ -2107,6 +2134,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--range", dest="span")
     parser.add_argument("--text", type=Path)
+    parser.add_argument("--diff", type=Path, help="a file holding `git diff --cached --no-prefix`: "
+                        "the lines a commit adds, each read from the folder of its file")
     parser.add_argument("--settings", action="store_true",
                         help="name every line of the areas' own settings (areas/<area>/) that is not read, and why")
     parser.add_argument("--repo", type=Path, help="where the sending repository lives (default: here)")
@@ -2210,8 +2239,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             say("fingerprints not built yet")
         return 0
-    if not (args.span or args.text or args.where):
-        parser.error("give --range, --text, --where, --refresh, --refresh-public, --status or --summary")
+    if not (args.span or args.text or args.diff or args.where):
+        parser.error("give --range, --text, --diff, --where, --refresh, --refresh-public, --status or --summary")
 
     sender = expand(str(args.repo or (sending_repo() if args.span else os.getcwd())))
     here: Path | None = sender
@@ -2267,6 +2296,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.text:
         lines = [(args.text.name, f"{args.text.name}:{n}", line) for n, line in enumerate(
             args.text.read_text(encoding="utf-8", errors="replace").splitlines(), start=1)]
+    elif args.diff:
+        lines = added_lines(args.diff.read_text(encoding="utf-8", errors="replace"))
+        if not lines:
+            return 0
     else:
         lines = [(where, where, line) for where, line in outgoing(args.span)]
 
@@ -2278,7 +2311,7 @@ def main(argv: list[str] | None = None) -> int:
     allowed = shared_places(areas) + [normalize(p) for p in read_lines(guard_places.setting("allow.txt"))]
     public = background_prints()
     own_roots = [root for n in own if n not in UNSCANNED for root in areas.get(n, [])]
-    compared = [without_own_paths(line, written_from(where, sender), own_roots) for _, where, line in lines]
+    compared = [without_own_paths(line, written_from(group, sender), own_roots) for group, _, line in lines]
     found = []
     for name in checked:
         shapes = patterns(name, areas)

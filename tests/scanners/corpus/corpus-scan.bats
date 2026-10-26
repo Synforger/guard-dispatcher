@@ -1664,6 +1664,29 @@ commit_scan() {
     [[ "$output" == *"client text"* ]]
 }
 
+@test "pre-commit: a link a commit adds is read from the folder of its file, and every added line is scanned" {
+    local deck="the-fitting-room-schedule-for-the-winter-collection.txt" link
+    mkdir -p "${CLIENT}/slides"
+    echo "a deck" > "${CLIENT}/slides/${deck}"
+    printf 'the deck is clients/acme/slides/%s\n' "${deck}" >> "${WORK}/meetings/plan.md"
+    mk_repo_at "${CLIENT}/records"
+    git config guard.scope corpus
+    mkdir -p pages/tab
+    # Relative to the file's own folder: read from the repository's top it names no place.
+    link="$(python3 -c 'import os, sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' \
+        "$(cd -P "${CLIENT}" && pwd)/slides/${deck}" "$(cd -P pages/tab && pwd)")"
+    printf '<li><a href="%s">deck</a>\n' "${link}" > pages/tab/index.html
+    git add pages/tab/index.html
+    run_pre_commit
+    [ "$status" -eq 0 ]
+    printf '++ %s\n' "${COMPANY_TEXT}" >> pages/tab/index.html
+    git add pages/tab/index.html
+    run_pre_commit
+    [ "$status" -eq 1 ]                                   # a line of the file, not the next file's header
+    [[ "$output" == *"company text"* ]]
+    [[ "$output" == *"pages/tab/index.html:2"* ]]
+}
+
 @test "pre-push: a corpus-scope repository runs only the private-document scan" {
     mk_repo other
     git config guard.scope corpus
