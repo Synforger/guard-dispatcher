@@ -878,6 +878,35 @@ print(place == m.Path('${CASE_REPO}'), note)
     done
 }
 
+@test "area-guard: a path Python code only reads or turns into text is not a place it writes" {
+    mkdir -p "${CASE_REPO}/pages/tab" "${PERSONAL}/notes"
+    printf 'x\n' > "${CASE_REPO}/pages/tab/index.html"
+    printf 'x\n' > "${PERSONAL}/notes/a.md"
+    read_case
+    local c
+    local -a fine=(
+        $'python3 - <<\'EOF\'\nimport os, pathlib\np = pathlib.Path("pages/tab/index.html")\np.write_text(p.read_text() + os.path.relpath("'"${PERSONAL}"$'/notes/a.md", "pages/tab"))\nEOF'
+        $'python3 - <<\'EOF\'\ntext = open("'"${PERSONAL}"$'/notes/a.md").read()\nopen("pages/tab/index.html", "w").write(text.replace("/old/x", "/new/y"))\nEOF'
+        "python3 -c \"from os.path import relpath as r; print(r('${PERSONAL}/notes/a.md'))\""
+    )
+    for c in "${fine[@]}"; do
+        bash_in "${CASE_REPO}" "${c}"
+        passed || { echo "refused: ${c}"; return 1; }
+    done
+    local -a writes=(
+        $'python3 - <<\'EOF\'\nimport pathlib\nq = pathlib.Path("'"${PERSONAL}"$'/notes/a.md")\nq.write_text("x")\nEOF'
+        $'python3 - <<\'EOF\'\nimport shutil\nshutil.copy("pages/tab/index.html", "'"${PERSONAL}"$'/notes/b.md")\nEOF'
+        $'python3 - <<\'EOF\'\ndef keep(where, text):\n    with open(where, "a") as f:\n        f.write(text)\nkeep("'"${PERSONAL}"$'/notes/a.md", "x")\nEOF'
+        $'python3 - <<\'EOF\'\nimport somelib\nsomelib.save("'"${PERSONAL}"$'/notes/a.md")\nEOF'
+        $'python3 - <<\'EOF\'\nparts = []\nparts.append("'"${PERSONAL}"$'/notes/a.md")\nopen(parts[0], "w")\nEOF'
+        $'python3 - <<\'EOF\'\nthis is not ( python "'"${PERSONAL}"$'/notes/a.md"\nEOF'
+    )
+    for c in "${writes[@]}"; do
+        bash_in "${CASE_REPO}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+    done
+}
+
 @test "area-guard: a heredoc's body runs where the command it feeds stands" {
     mkdir -p "${H}/scratch"
     read_case

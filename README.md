@@ -496,10 +496,17 @@ step earlier, before each tool call, from the same `areas.txt`:
   (`D=/a/b; echo x > $D/out`) is written out. Where neither can be read
   (`cd $X`, a value that comes from a substitution), the name is judged as it
   was written, from where the command stood. A shell's `-c` string, and a heredoc fed to a
-  shell, is read as a command line of its own. Every path that other code
-  written into the command names counts (`python3 -c`, `node -e`, a heredoc or
-  a here-string fed to an interpreter), since code that reads a file cannot be
-  told apart from code that writes it: an absolute or home path that stands by
+  shell, is read as a command line of its own. Python code written into the
+  command (`python3 -c`, a heredoc or a here-string fed to it) is read as a
+  syntax tree, and counts only the parts that reach a call that writes (an
+  `open` in a writing mode, `Path.write_text` and the other methods of a path
+  that write it, the destination of a rename) or a call the guard does not
+  know (`shutil.copy`, `subprocess.run`, a library's `save`), following a name
+  back to the values it was given: a path handed to `os.path.relpath`, a
+  string's methods, `print` or an `open` that reads is text. Python that does
+  not parse, and every other interpreter's code (`node -e`, `ruby -e`), counts
+  every path it names, since code that reads a file cannot be told apart from
+  code that writes it. Either way a path is an absolute or home path that stands by
   itself, as above, and a whole string that reads as a relative path (one word
   that holds a `/`, ends in an extension, or names something in the command's
   folder). A word quoted inside a longer string (`` "see `notes.md`" ``) is
