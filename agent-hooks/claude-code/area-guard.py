@@ -109,6 +109,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import children  # noqa: E402
+import code_writes  # noqa: E402
 import guard_places  # noqa: E402
 import service_reads  # noqa: E402
 
@@ -692,10 +693,12 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
     """(paths a Bash command names as a place it writes, paths it names as removed).
 
     Written: a redirection's target (`>`, `>>`), the files of tee / touch / truncate, the
-    destination of cp / mv / install / ln, the existing files sed -i edits, dd's of=, and every
-    path that code written into the command names (`python3 -c`, `node -e`, a heredoc or a
-    here-string fed to an interpreter; see code_paths), relative ones included: code that reads a
-    file cannot be told apart from code that writes it. A shell's `-c` string, and a heredoc fed to
+    destination of cp / mv / install / ln, the existing files sed -i edits, dd's of=, and the
+    paths that code written into the command names (`python3 -c`, `node -e`, a heredoc or a
+    here-string fed to an interpreter; see code_paths), relative ones included. Python code gives
+    only the parts that reach a call that writes or that the guard does not know (code_writes);
+    other code gives every path it names, since code that reads a file cannot be told apart from
+    code that writes it. A shell's `-c` string, and a heredoc fed to
     a shell, is a command line of its own, read the same way. Removed: the files of rm / unlink / rmdir /
     shred, and what mv moves away. A glob stands for the files it matches now. What stands
     before a command (`sudo`, `env`, a variable) is skipped. A script run from a file is not
@@ -727,6 +730,8 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
             found[0].extend(inner[0])
             found[1].extend(inner[1])
         elif code_flags(tool):
+            if tool.startswith("python"):
+                code = code_writes.python.written_code(code)
             written.extend((path, base) for path in code_paths(code, base))
 
     def one(words: list[str], stdin: str | None) -> None:
