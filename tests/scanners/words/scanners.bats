@@ -329,6 +329,61 @@ STUB
     [ "$status" -eq 0 ]
 }
 
+# --- binary files and archives ------------------------------------------------------
+
+@test "anon-scan: a binary file is read by its runs of text, not by letters that fall together by chance" {
+    mk_repo other
+    printf 'qzx\n' > "${BATS_TEST_TMPDIR}/short.txt"
+    printf '\0\001\002qzx\003\0\377\376' > chance.dat
+    ANON_WORDS_FILE="${BATS_TEST_TMPDIR}/short.txt" ANON_SCAN_PATHS="$(pwd)/chance.dat" \
+        run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -eq 0 ]
+    printf '\0\001/home/build/qzx/out.o\0\377' > built.dat
+    ANON_WORDS_FILE="${BATS_TEST_TMPDIR}/short.txt" ANON_SCAN_PATHS="$(pwd)/built.dat" \
+        run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"built.dat:text 1:"*"/home/build/qzx/out.o"* ]]
+    printf 'ズクヌ\n' > "${BATS_TEST_TMPDIR}/wide.txt"
+    printf '\0\001ズクヌの設定\0\377' > wide.dat
+    ANON_WORDS_FILE="${BATS_TEST_TMPDIR}/wide.txt" ANON_SCAN_PATHS="$(pwd)/wide.dat" \
+        run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -ne 0 ]                                   # Japanese text inside a binary is read too
+}
+
+@test "anon-scan: a zip archive is read member by member, inside a nested archive too" {
+    mk_repo other
+    python3 - "$(pwd)" "${SENTINEL}" <<'PY'
+import io, sys, zipfile
+folder, word = sys.argv[1], sys.argv[2]
+inner = io.BytesIO()
+with zipfile.ZipFile(inner, "w", zipfile.ZIP_DEFLATED) as jar:
+    jar.writestr("a/Config.class", b"\xca\xfe\xba\xbe\0\0\x10/home/" + word.encode() + b"/src\0")
+with zipfile.ZipFile(f"{folder}/lib.aar", "w", zipfile.ZIP_DEFLATED) as aar:
+    aar.writestr("AndroidManifest.xml", "<manifest/>\n" * 50)
+    aar.writestr("classes.jar", inner.getvalue())
+with zipfile.ZipFile(f"{folder}/clean.aar", "w", zipfile.ZIP_DEFLATED) as aar:
+    aar.writestr("AndroidManifest.xml", "<manifest/>\n" * 50)
+PY
+    ANON_SCAN_PATHS="$(pwd)/lib.aar" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"lib.aar!classes.jar!a/Config.class:text 1:"* ]]
+    ANON_SCAN_PATHS="$(pwd)/clean.aar" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -eq 0 ]
+    printf 'PK\003\004 cut short' > broken.aar
+    ANON_SCAN_PATHS="$(pwd)/broken.aar" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"broken.aar"*"NOT scanned"* ]]
+}
+
+@test "anon-scan: a text file with bytes that are not UTF-8 is scanned without a warning" {
+    mk_repo other
+    printf 'caf\351 au lait\n%s\n' "${SENTINEL}" > latin.txt
+    ANON_SCAN_PATHS="$(pwd)/latin.txt" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"latin.txt:2:${SENTINEL}"* ]]
+    [[ "$output" != *"Malformed"* ]]
+}
+
 @test "anon-scan: a file that cannot be opened as an Office document is not called clean" {
     mk_repo other
     printf 'not a zip at all\n' > broken.pptx
@@ -511,6 +566,37 @@ leak_in_history() {
     grep -qE -- "^--- .*/$(basename "${outside}") \(full, area -\) ---$" "${HOME}"/.local/state/guard-dispatcher/weekly-audit-*.log
     run bash "${GUARD_ROOT}/scripts/weekly-audit.sh" --accept --as-of 2026-10-20 "${repo}"
     [ "$status" -ne 0 ]
+}
+
+@test "weekly audit: ACCEPT_BEFORE holds every repository to one line, with no --accept run for it" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    GIT_COMMITTER_DATE="2026-10-18T09:00:00Z" GIT_AUTHOR_DATE="2026-10-18T09:00:00Z" leak_in_history old
+    local repo known
+    repo="$(pwd)"
+    export HOME="${BATS_TEST_TMPDIR}/home"
+    known="${HOME}/.config/guard-dispatcher/known/$(basename "${repo}").known"
+    mkdir -p "${HOME}/.config/guard-dispatcher"
+    printf 'REPOS_GLOB="%s"\nACCEPT_BEFORE="2026-10-19T15:00:00Z"\n' "${repo}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -eq 0 ]                                   # what went out before the line is not reported
+    grep -qx "since 2026-10-19T15:00:00Z" "${known}"
+    grep -qE -- "\(full, known findings accepted before 2026-10-19T15:00:00Z, area -\) ---$" \
+        "${HOME}"/.local/state/guard-dispatcher/weekly-audit-*.log
+    GIT_COMMITTER_DATE="2026-10-21T09:00:00Z" GIT_AUTHOR_DATE="2026-10-21T09:00:00Z" leak_in_history late
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -ne 0 ]                                   # what went out after it still is
+    # a record made before the line is made again at the line; one made after it is kept
+    printf 'since 2026-10-01T00:00:00Z\n' > "${known}"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    grep -qx "since 2026-10-19T15:00:00Z" "${known}"
+    printf 'since 2026-10-25T00:00:00Z\n' > "${known}"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    grep -qx "since 2026-10-25T00:00:00Z" "${known}"
+    printf 'REPOS_GLOB="%s"\nACCEPT_BEFORE="2026-10-20"\n' "${repo}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -eq 2 ]
 }
 
 @test "weekly audit: an argument the run does not take stops it before anything is audited" {
