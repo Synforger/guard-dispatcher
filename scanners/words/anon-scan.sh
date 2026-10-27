@@ -127,8 +127,8 @@ scan_with_perl() {
     # half-width word list. `(?i)` still folds case. Match on the normalized
     # form, print the original line.
     # A binary file is read by the runs of text inside it and a zip archive member by member
-    # (_internal/scan_file.pl): compressed bytes read as text match three letters by chance.
-    ANON_LABEL="$label" perl "${SCRIPT_DIR}/_internal/scan_file.pl" "$file"
+    # (_internal/scan_files.pl): compressed bytes read as text match three letters by chance.
+    ANON_LABEL="$label" perl "${SCRIPT_DIR}/_internal/scan_files.pl" "$file"
 }
 
 # An Office document is a zip: its text lives in the XML parts inside it, and a
@@ -215,6 +215,7 @@ else
 fi
 
 found=0
+plain=()
 for path in "${scan_paths[@]}"; do
     # Skip binary formats quickly. Text-bearing data formats stay IN scope:
     # .csv holds free-text columns and .ipynb embeds outputs (usernames,
@@ -231,10 +232,13 @@ for path in "${scan_paths[@]}"; do
             continue
             ;;
     esac
-    if ! scan_with_perl "$path"; then
-        found=1
-    fi
+    plain+=("$path")
 done
+# Every other file in one process: started once per file, perl spent most of a repository of many
+# small files starting up.
+if [ "${#plain[@]}" -gt 0 ] && ! printf '%s\0' "${plain[@]}" | perl "${SCRIPT_DIR}/_internal/scan_files.pl" --stdin0; then
+    found=1
+fi
 
 if [ "${found}" -ne 0 ]; then
     echo ""

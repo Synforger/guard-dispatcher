@@ -375,6 +375,19 @@ PY
     [[ "$output" == *"broken.aar"*"NOT scanned"* ]]
 }
 
+@test "anon-scan: every file of one run is read on its own, line by line" {
+    mk_repo other
+    printf 'one\ntwo\n' > a.txt
+    printf '\0\001 no word in here at all \0' > b.dat
+    printf 'first\nthe owner is %s\n' "${SENTINEL}" > c.txt
+    ANON_SCAN_PATHS="$(printf '%s\n' "$(pwd)/a.txt" "$(pwd)/b.dat" "$(pwd)/c.txt")" \
+        run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"/c.txt:2:the owner is ${SENTINEL}"* ]]
+    [[ "$output" != *"/a.txt:"* ]]
+    [[ "$output" != *"/b.dat:"* ]]
+}
+
 @test "anon-scan: a text file with bytes that are not UTF-8 is scanned without a warning" {
     mk_repo other
     printf 'caf\351 au lait\n%s\n' "${SENTINEL}" > latin.txt

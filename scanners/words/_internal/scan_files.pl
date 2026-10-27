@@ -1,16 +1,19 @@
 #!/usr/bin/env perl
-# The word-list scan of one file, run by anon-scan.sh for each file it scans: a text file line by
-# line, a binary file by the runs of text inside it, a zip archive (an .aar, a .jar) member by member.
+# The word-list scan of files, run once by anon-scan.sh for all the files it scans: a text file line
+# by line, a binary file by the runs of text inside it, a zip archive (an .aar, a .jar) member by
+# member.
 #
-#   ANON_PATTERN=<alternation> [ANON_LABEL=<name to report>] perl scan_file.pl <file>
+#   ANON_PATTERN=<alternation> perl scan_files.pl --stdin0 < <NUL-separated paths>
+#   ANON_PATTERN=<alternation> [ANON_LABEL=<name to report>] perl scan_files.pl <file>
 #
 # Prints `<label>:<line>:<text>` for each hit (`<label>!<member>` inside an archive, `text <n>` for
 # the n-th run of a binary), and exits 1 when anything was found or could not be read, else 0.
 # Compressed bytes are never read as text: three letters of a word list fall in them by chance.
+# One process reads every file: started once per file, it spent most of a repository of many
+# small assets starting up.
 use strict;
 use warnings;
 use Encode qw(decode);
-use IO::Uncompress::Unzip qw($UnzipError);
 use Unicode::Normalize qw(NFKC);
 
 # git's own test: a NUL in the first 8000 bytes makes a file binary.
@@ -95,8 +98,10 @@ sub scan_runs {
 
 sub scan_zip {
     my ($label, $source, $depth) = @_;
+    # Loaded only for an archive: it costs every start as much as the rest of the scan's modules.
+    require IO::Uncompress::Unzip;
     my $zip = IO::Uncompress::Unzip->new($source)
-        or return unreadable($label, "could not be opened as a zip archive ($UnzipError)");
+        or return unreadable($label, "could not be opened as a zip archive ($IO::Uncompress::Unzip::UnzipError)");
     my $status = 1;
     while ($status > 0) {
         my $name = $zip->getHeaderInfo()->{Name} // "";
@@ -108,7 +113,7 @@ sub scan_zip {
         scan_bytes("$label!$name", \$data, $depth + 1) unless $name =~ m{/\z};
         $status = $zip->nextStream();
     }
-    unreadable($label, "a member could not be read ($UnzipError)") if $status < 0;
+    unreadable($label, "a member could not be read ($IO::Uncompress::Unzip::UnzipError)") if $status < 0;
 }
 
 sub scan_bytes {
@@ -140,6 +145,13 @@ sub scan_path {
     scan_lines($label, sub { scalar <$handle> });
 }
 
-my $path = shift @ARGV // die "usage: scan_file.pl <file>\n";
-scan_path($path, decode("UTF-8", $ENV{ANON_LABEL} // $path));
+if (@ARGV == 1 && $ARGV[0] eq "--stdin0") {
+    # The list is read whole first: the files are read by lines, with the usual separator.
+    my @paths = do { local $/ = "\0"; map { chomp; length ? $_ : () } <STDIN> };
+    scan_path($_, decode("UTF-8", $_)) for @paths;
+} elsif (@ARGV == 1) {
+    scan_path($ARGV[0], decode("UTF-8", $ENV{ANON_LABEL} // $ARGV[0]));
+} else {
+    die "usage: scan_files.pl --stdin0 < <paths> | scan_files.pl <file>\n";
+}
 exit($found ? 1 : 0);
