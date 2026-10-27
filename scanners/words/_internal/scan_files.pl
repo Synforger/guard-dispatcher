@@ -146,11 +146,9 @@ sub scan_path {
 }
 
 if (@ARGV == 1 && $ARGV[0] eq "--stdin0") {
-    local $/ = "\0";
-    while (defined(my $path = <STDIN>)) {
-        chomp $path;
-        scan_path($path, decode("UTF-8", $path)) if length $path;
-    }
+    # The list is read whole first: the files are read by lines, with the usual separator.
+    my @paths = do { local $/ = "\0"; map { chomp; length ? $_ : () } <STDIN> };
+    scan_path($_, decode("UTF-8", $_)) for @paths;
 } elsif (@ARGV == 1) {
     scan_path($ARGV[0], decode("UTF-8", $ENV{ANON_LABEL} // $ARGV[0]));
 } else {
