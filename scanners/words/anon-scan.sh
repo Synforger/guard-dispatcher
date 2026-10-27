@@ -126,10 +126,9 @@ scan_with_perl() {
     # (`Ｎａｍｅ` -> `Name`) and half-width katakana can no longer slip past a
     # half-width word list. `(?i)` still folds case. Match on the normalized
     # form, print the original line.
-    ANON_LABEL="$label" perl -CSD -MUnicode::Normalize -MEncode -ne '
-              BEGIN { my $pat = NFKC(decode_utf8($ENV{ANON_PATTERN})); $re = qr/(?i)$pat/ }
-              if (NFKC($_) =~ /$re/) { print "$ENV{ANON_LABEL}:$.:$_"; $found = 1 }
-              END { exit($found ? 1 : 0) }' "$file"
+    # A binary file is read by the runs of text inside it and a zip archive member by member
+    # (_internal/scan_file.pl): compressed bytes read as text match three letters by chance.
+    ANON_LABEL="$label" perl "${SCRIPT_DIR}/_internal/scan_file.pl" "$file"
 }
 
 # An Office document is a zip: its text lives in the XML parts inside it, and a

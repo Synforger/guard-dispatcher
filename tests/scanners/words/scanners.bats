@@ -329,6 +329,61 @@ STUB
     [ "$status" -eq 0 ]
 }
 
+# --- binary files and archives ------------------------------------------------------
+
+@test "anon-scan: a binary file is read by its runs of text, not by letters that fall together by chance" {
+    mk_repo other
+    printf 'qzx\n' > "${BATS_TEST_TMPDIR}/short.txt"
+    printf '\0\001\002qzx\003\0\377\376' > chance.dat
+    ANON_WORDS_FILE="${BATS_TEST_TMPDIR}/short.txt" ANON_SCAN_PATHS="$(pwd)/chance.dat" \
+        run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -eq 0 ]
+    printf '\0\001/home/build/qzx/out.o\0\377' > built.dat
+    ANON_WORDS_FILE="${BATS_TEST_TMPDIR}/short.txt" ANON_SCAN_PATHS="$(pwd)/built.dat" \
+        run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"built.dat:text 1:"*"/home/build/qzx/out.o"* ]]
+    printf 'ズクヌ\n' > "${BATS_TEST_TMPDIR}/wide.txt"
+    printf '\0\001ズクヌの設定\0\377' > wide.dat
+    ANON_WORDS_FILE="${BATS_TEST_TMPDIR}/wide.txt" ANON_SCAN_PATHS="$(pwd)/wide.dat" \
+        run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -ne 0 ]                                   # Japanese text inside a binary is read too
+}
+
+@test "anon-scan: a zip archive is read member by member, inside a nested archive too" {
+    mk_repo other
+    python3 - "$(pwd)" "${SENTINEL}" <<'PY'
+import io, sys, zipfile
+folder, word = sys.argv[1], sys.argv[2]
+inner = io.BytesIO()
+with zipfile.ZipFile(inner, "w", zipfile.ZIP_DEFLATED) as jar:
+    jar.writestr("a/Config.class", b"\xca\xfe\xba\xbe\0\0\x10/home/" + word.encode() + b"/src\0")
+with zipfile.ZipFile(f"{folder}/lib.aar", "w", zipfile.ZIP_DEFLATED) as aar:
+    aar.writestr("AndroidManifest.xml", "<manifest/>\n" * 50)
+    aar.writestr("classes.jar", inner.getvalue())
+with zipfile.ZipFile(f"{folder}/clean.aar", "w", zipfile.ZIP_DEFLATED) as aar:
+    aar.writestr("AndroidManifest.xml", "<manifest/>\n" * 50)
+PY
+    ANON_SCAN_PATHS="$(pwd)/lib.aar" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"lib.aar!classes.jar!a/Config.class:text 1:"* ]]
+    ANON_SCAN_PATHS="$(pwd)/clean.aar" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -eq 0 ]
+    printf 'PK\003\004 cut short' > broken.aar
+    ANON_SCAN_PATHS="$(pwd)/broken.aar" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"broken.aar"*"NOT scanned"* ]]
+}
+
+@test "anon-scan: a text file with bytes that are not UTF-8 is scanned without a warning" {
+    mk_repo other
+    printf 'caf\351 au lait\n%s\n' "${SENTINEL}" > latin.txt
+    ANON_SCAN_PATHS="$(pwd)/latin.txt" run bash "${GUARD_ROOT}/scanners/words/anon-scan.sh"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"latin.txt:2:${SENTINEL}"* ]]
+    [[ "$output" != *"Malformed"* ]]
+}
+
 @test "anon-scan: a file that cannot be opened as an Office document is not called clean" {
     mk_repo other
     printf 'not a zip at all\n' > broken.pptx
