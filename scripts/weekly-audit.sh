@@ -18,17 +18,23 @@
 #   MESSAGE_DIR="<dir to drop a report into>"      # optional — when set and
 #                                                  # findings exist, a markdown
 #                                                  # report lands there
+#   ACCEPT_BEFORE="<UTC time>"                     # optional — what had gone out
+#                                                  # before it is not reported, in
+#                                                  # every repository (see below)
 #
 # Known findings (optional, operator-private):
 #   $HOME/.config/guard-dispatcher/known/<repo folder name>.known
 #   written by `weekly-audit.sh --accept [--as-of <UTC time>] <repo>...`; a repository
 #   with one is audited for what appeared after it was recorded, or after the
 #   time given (anon-audit-deep.sh --known / --record-known --as-of)
+#   With ACCEPT_BEFORE set, a repository with no record, or with one made before that time,
+#   is recorded as of that time before it is audited: a repository put in the audit later is
+#   held to the same line as the rest, with no --accept run for it.
 #
 # Output:
 #   - full log:  $HOME/.local/state/guard-dispatcher/weekly-audit-<date>.log
 #                (<root>/state/guard/audit/ under a platform root). Each repository
-#                opens with `--- <repo> (<sweep>[, known findings accepted], area <name>) ---`:
+#                opens with `--- <repo> (<sweep>[, known findings accepted[ before <time>]], area <name>) ---`:
 #                the innermost area holding it, `-` for one outside every area
 #   - findings:  $MESSAGE_DIR/<date>-weekly-anon-audit.md  (only on findings)
 #
@@ -83,6 +89,10 @@ if [ ! -f "${CONF}" ]; then
 fi
 # shellcheck source=/dev/null
 source "${CONF}"
+if [ -n "${ACCEPT_BEFORE:-}" ] && ! [[ "${ACCEPT_BEFORE}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+    echo "error: ACCEPT_BEFORE in ${CONF} is a UTC time (2026-10-19T15:00:00Z), not ${ACCEPT_BEFORE}" >&2
+    exit 2
+fi
 
 # Every repository inside an area is audited as well, found from areas.txt: one put in an area
 # tomorrow is in the next audit without anyone listing it. A listed glob covers only what someone
@@ -182,7 +192,12 @@ summary=""
         sweep="${since_args[1]:-full}"
         known="${KNOWN_DIR}/$(basename "${repo}").known"
         known_note=""
-        if [ -f "${known}" ]; then
+        recorded=""
+        [ -f "${known}" ] && recorded="$(sed -n 's/^since //p' "${known}" | head -1)"
+        if [ -n "${ACCEPT_BEFORE:-}" ] && { [ -z "${recorded}" ] || [[ "${recorded}" < "${ACCEPT_BEFORE}" ]]; }; then
+            since_args+=(--record-known "${known}" --as-of "${ACCEPT_BEFORE}")
+            known_note=", known findings accepted before ${ACCEPT_BEFORE}"
+        elif [ -f "${known}" ]; then
             since_args+=(--known "${known}")
             known_note=", known findings accepted"
         fi

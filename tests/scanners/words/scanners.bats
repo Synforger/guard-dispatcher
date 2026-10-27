@@ -513,6 +513,37 @@ leak_in_history() {
     [ "$status" -ne 0 ]
 }
 
+@test "weekly audit: ACCEPT_BEFORE holds every repository to one line, with no --accept run for it" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    GIT_COMMITTER_DATE="2026-10-18T09:00:00Z" GIT_AUTHOR_DATE="2026-10-18T09:00:00Z" leak_in_history old
+    local repo known
+    repo="$(pwd)"
+    export HOME="${BATS_TEST_TMPDIR}/home"
+    known="${HOME}/.config/guard-dispatcher/known/$(basename "${repo}").known"
+    mkdir -p "${HOME}/.config/guard-dispatcher"
+    printf 'REPOS_GLOB="%s"\nACCEPT_BEFORE="2026-10-19T15:00:00Z"\n' "${repo}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -eq 0 ]                                   # what went out before the line is not reported
+    grep -qx "since 2026-10-19T15:00:00Z" "${known}"
+    grep -qE -- "\(full, known findings accepted before 2026-10-19T15:00:00Z, area -\) ---$" \
+        "${HOME}"/.local/state/guard-dispatcher/weekly-audit-*.log
+    GIT_COMMITTER_DATE="2026-10-21T09:00:00Z" GIT_AUTHOR_DATE="2026-10-21T09:00:00Z" leak_in_history late
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -ne 0 ]                                   # what went out after it still is
+    # a record made before the line is made again at the line; one made after it is kept
+    printf 'since 2026-10-01T00:00:00Z\n' > "${known}"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    grep -qx "since 2026-10-19T15:00:00Z" "${known}"
+    printf 'since 2026-10-25T00:00:00Z\n' > "${known}"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    grep -qx "since 2026-10-25T00:00:00Z" "${known}"
+    printf 'REPOS_GLOB="%s"\nACCEPT_BEFORE="2026-10-20"\n' "${repo}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -eq 2 ]
+}
+
 @test "weekly audit: an argument the run does not take stops it before anything is audited" {
     export HOME="${BATS_TEST_TMPDIR}/home"
     mkdir -p "${HOME}/.config/guard-dispatcher"
