@@ -742,7 +742,9 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   another client's. One cloned elsewhere sits in the declared area.
 
   The pattern is a glob over the tool name, over `host:<name>` for a
-  network command, over `repo:<owner>/<name>` for a GitHub repository a push
+  network command (and for a WebFetch of that host, when a `host:` line names
+  it: `host:*.example.com company` lets a session that reads the company read
+  the company's own pages), over `repo:<owner>/<name>` for a GitHub repository a push
   or a `gh` call sends to, over `app:<name>` for an application an `osascript`
   script names, or over `browser:<host>` for a browser tool (an MCP call
   naming a `tabId`) whose tab this session opened at a page there; a tab it did
@@ -758,6 +760,11 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   tools, WebFetch, WebSearch and claude.ai's connectors (`mcp__claude_ai_*`);
   a line in the file overrides that. To hold every other destination to the
   scan, end the file with `* outside`.
+
+  A refusal by the word list names the word it hit and the line it sits on
+  (`line 2: word list '<word>' in '<text around it>'`, the first five), as a
+  refusal by the private-document scan names the run: the agent rewrites that
+  word.
 
 #### A message to another session
 
