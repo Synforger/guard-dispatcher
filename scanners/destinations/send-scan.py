@@ -24,7 +24,9 @@ A destination no line names is undeclared and passes unscanned: the guard stops 
 leaves an area, and a server or a service at work (a build machine, an internal API) is not
 stopped for being unlisted. What publishes to the internet or to a personal account is outside
 every area without a line (DEFAULTS: the Artifact tools, WebFetch, WebSearch and claude.ai's
-connectors); a line in the file overrides it.
+connectors); a line in the file overrides it. A WebFetch is named by the host it reads
+(`host:<host>`) when a `host:` line names that host, so a site sits where its line puts it: the
+company's own pages take the company's words (`host:*.example.com company`).
 
 The pattern `browser:<host>` names the page a browser tool types into (see agent-hooks'
 outgoing.py): `browser:*.example.com company`. The pattern `app:<name>` names an application an
@@ -85,6 +87,8 @@ OUTSIDE = "outside"
 BLOCK = "block"
 UNDECLARED = "undeclared"
 ORDER = "order"
+# How many word-list hits a refusal shows; the rest are counted.
+SHOWN_HITS = 5
 # Destinations outside every area with no line in destinations.txt: they publish to the internet
 # (a search, a fetched URL) or to the operator's personal account on claude.ai.
 DEFAULTS = [("Artifact*", OUTSIDE, False), ("WebFetch", OUTSIDE, False), ("WebSearch", OUTSIDE, False),
@@ -96,6 +100,7 @@ DEFAULTS = [("Artifact*", OUTSIDE, False), ("WebFetch", OUTSIDE, False), ("WebSe
 # Nothing leaves the machine through them, so a catch-all line (`* outside`) does not reach them:
 # only a line that names the kind does.
 FILE = "file:"
+HOST = "host:"
 ON_THIS_MACHINE = ("local:", "tmux:", FILE)
 
 
@@ -217,6 +222,12 @@ def find(name: str) -> tuple[str, bool]:
     return UNDECLARED, False
 
 
+def host_named(name: str) -> bool:
+    """Whether a `host:` line names this host (`host:<host>`). A fetch is named by the host it
+    reads only then: a line for every destination (`*`) or for the tool itself does not move it."""
+    return any(p.lower().startswith(HOST) and fnmatch.fnmatchcase(name.lower(), p.lower()) for p, _, _ in rules())
+
+
 def where(name: str) -> str:
     return find(name)[0]
 
@@ -251,13 +262,18 @@ def judge(name: str, payload: Path, reading: bool = False, handles: Path | None 
         import subprocess   # loaded where it is used: the agent's entry guard reads this file on every call
         try:
             r = subprocess.run(["bash", str(ANON)], capture_output=True, text=True, timeout=60,
-                               env={**env, "ANON_SCAN_PATHS": "\n".join(map(str, filter(None, (payload, handles))))})
+                               env={**env, "ANON_SHOW_MATCH": "1",
+                                    "ANON_SCAN_PATHS": "\n".join(map(str, filter(None, (payload, handles))))})
         except subprocess.TimeoutExpired:
             return 2, (f"not sent to {name}: the word-list scan did not finish within 60s -- refused "
                        f"because it could not be judged in time, not because of what it found")
         except OSError as error:
             return 2, f"not sent to {name}: the word-list scan could not run ({error})"
         if r.returncode != 0:
+            # Which word was hit, ahead of the one line why, as the private-document scan does: the
+            # agent that wrote it rewrites that word, not a guess at it.
+            for line in word_hits(r.stdout, payload, handles):
+                print(f"    {line}", file=sys.stderr)
             return 1, f"not sent to {name} ({place}): it carries a flagged identifier (word list)"
     if held or name.lower().startswith(FILE):
         # 人に届く前に operator が中身を見る (= 指示の枠に出した呼び、 operator が送る下書き、 operator が
@@ -265,6 +281,21 @@ def judge(name: str, payload: Path, reading: bool = False, handles: Path | None 
         return 0, ""
     return documents(name, place, "OUTSIDE" if destination == OUTSIDE else destination, payload, env,
                      f"Replace the text, or declare where it sits in {DESTINATIONS}")
+
+
+def word_hits(printed: str, payload: Path, handles: Path | None) -> list[str]:
+    """The word-list scan's hits (`<file>:<line>:<word>\t<text around it>`, ANON_SHOW_MATCH) as
+    lines naming the word and where it sits in what is sent, the first SHOWN_HITS of them."""
+    found = []
+    for line in printed.splitlines():
+        for label, source in ((f"{payload}:", "line"), (f"{handles}:", "id on line") if handles else (None, None)):
+            if label and line.startswith(label):
+                where, _, rest = line[len(label):].partition(":")
+                word, _, around = rest.partition("\t")
+                found.append(f"{source} {where}: word list {word!r} in {around[:80]!r}")
+                break
+    shown = found[:SHOWN_HITS]
+    return shown + ([f"... and {len(found) - SHOWN_HITS} more"] if len(found) > SHOWN_HITS else [])
 
 
 def documents(name: str, place: str, dest_area: str, payload: Path, env: dict, remedy: str) -> tuple[int, str]:

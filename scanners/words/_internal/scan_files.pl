@@ -8,6 +8,8 @@
 #
 # Prints `<label>:<line>:<text>` for each hit (`<label>!<member>` inside an archive, `text <n>` for
 # the n-th run of a binary), and exits 1 when anything was found or could not be read, else 0.
+# With ANON_SHOW_MATCH set, `<text>` is the word hit, a tab, and the text around it: a refusal of
+# a send names the word to rewrite (send-scan.py).
 # Compressed bytes are never read as text: three letters of a word list fall in them by chance.
 # One process reads every file: started once per file, it spent most of a repository of many
 # small assets starting up.
@@ -37,6 +39,7 @@ my $ZIP = "PK\x03\x04";
 
 my $pattern = NFKC(decode("UTF-8", $ENV{ANON_PATTERN} // ""));
 my $re = qr/(?i)$pattern/;
+my $SHOW_MATCH = $ENV{ANON_SHOW_MATCH} // "";
 binmode STDOUT, ":encoding(UTF-8)";
 binmode STDERR, ":encoding(UTF-8)";
 my $found = 0;
@@ -54,13 +57,22 @@ sub unreadable {
     $found = 1;
 }
 
+# The word a match of $re in $folded hit, a tab, and the text around it (ANON_SHOW_MATCH).
+sub matched {
+    my ($folded) = @_;
+    my $from = $-[0] > $LEAD ? $-[0] - $LEAD : 0;
+    return substr($folded, $-[0], $+[0] - $-[0]) . "\t" . substr($folded, $from, $SHOWN);
+}
+
 sub scan_lines {
     my ($label, $next_line) = @_;
     my $n = 0;
     while (defined(my $line = $next_line->())) {
         $n++;
         my $text = decode("UTF-8", $line);
-        report($label, $n, $text) if NFKC($text) =~ $re;
+        my $folded = NFKC($text);
+        next unless $folded =~ $re;
+        report($label, $n, $SHOW_MATCH ? matched($folded) : $text);
     }
 }
 
@@ -82,7 +94,7 @@ sub scan_runs {
             my $folded = NFKC($run->[1]);
             next unless $folded =~ $re;
             my $from = $-[0] > $LEAD ? $-[0] - $LEAD : 0;
-            report($label, "text $count", substr($folded, $from, $SHOWN));
+            report($label, "text $count", $SHOW_MATCH ? matched($folded) : substr($folded, $from, $SHOWN));
         }
     };
     while (defined(my $chunk = $next_chunk->())) {

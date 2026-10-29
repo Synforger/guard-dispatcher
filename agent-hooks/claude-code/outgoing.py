@@ -11,6 +11,8 @@ judgement in `scanners/destinations/send-scan.py`, which decides as for a push (
   (too large, or not text) is refused once the session has read inside an area or when the file
   sits inside one; otherwise it passes unscanned.
 - WebFetch and WebSearch are named by the tool; their payload is the URL, the prompt and the query.
+  A WebFetch whose host a `host:` line of destinations.txt names is named `host:<host>` instead, as
+  a `curl` reading it is: a site sits where its line puts it.
 - A browser tool (an MCP call naming a `tabId`) types into the page its tab shows, so it is named
   `browser:<host>` once this session has opened that tab at a page (an MCP call carrying both the
   `tabId` and an http(s) `url`, a navigate); until then it is named by the tool. The tab keeps the
@@ -321,11 +323,26 @@ def destination_of(tool: str, args: dict, tabs: dict | None) -> str:
     return f"browser:{hosts.pop()}" if len(hosts) == 1 and None not in hosts else tool
 
 
+def fetched_host(args: dict, send_scan: Path) -> str | None:
+    """`host:<host>` of a WebFetch's URL when a `host:` line names that host, else None. A
+    destinations.txt that cannot be read leaves the tool's name, which then stops the call."""
+    url = args.get("url")
+    name = place_of(url) if isinstance(url, str) else ""
+    if not name.startswith("host:"):
+        return None
+    judged = send_scan_module(send_scan)
+    try:
+        return name if judged.host_named(name) else None
+    except judged.Broken:
+        return None
+
+
 def tool_send(tool: str, args: dict, cwd: str, send_scan: Path, tabs: dict | None = None) -> Send | None:
     """The send of a tool call that sends, else None."""
     if not (tool.startswith("mcp__") or tool in HOST_SENDERS):
         return None
-    name = destination_of(tool, args, tabs)
+    name = fetched_host(args, send_scan) if tool == "WebFetch" else None
+    name = name or destination_of(tool, args, tabs)
     texts, handles = carried(args)
     named = "\n".join(handles)
     if reads_only(tool, args):
