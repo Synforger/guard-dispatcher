@@ -1402,6 +1402,19 @@ write_text() {
     bash_in "${PERSONAL}" "cd ${PERSONAL} && (cd ${H} && grep -rn someword .)"; denied
 }
 
+@test "area-guard: a cd on a line of its own moves where the next lines stand" {
+    export GUARD_WORK_FOLDER="${PERSONAL}"
+    # each line ends a command, after a heredoc's closing line too: the walk of `.` reads the folder the cd went to
+    bash_in "${H}" $'cat > /tmp/probe.txt <<\'EOF\'\nx\nEOF\ncd '"${PERSONAL}"$' && true && find . -name a -exec cat {} + ; echo done'; passed
+    bash_in "${H}" $'echo start\ncd '"${PERSONAL}"$'\nfind . -type f | xargs cat'; passed
+    bash_in "${PERSONAL}" $'echo start\ncd '"${H}"$'\ngrep -rn someword .'; denied
+    [[ "${output}" == *"reads inside client, company"* ]]
+    # a line that goes on (a backslash, a control operator) and a comment are still one command
+    bash_in "${PERSONAL}" $'cd '"${H}"$' &&\n  grep -rn someword .'; denied
+    bash_in "${PERSONAL}" $'cd '"${H}"$' # into the home\ngrep -rn someword .'; denied
+    bash_in "${H}" $'grep -rn someword \\\n  '"${PERSONAL}"; passed
+}
+
 @test "area-guard: the areas a work folder's guard-reads.txt names are read too" {
     export GUARD_WORK_FOLDER="${PERSONAL}"
     printf 'client   # the client this tool is built for\n' > "${PERSONAL}/guard-reads.txt"
