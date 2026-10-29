@@ -79,8 +79,10 @@ from typing import NamedTuple
 from urllib.parse import unquote_plus, urlsplit
 
 # This file is loaded by path (area-guard.py, handed.py): the parts beside it are found from here.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_events  # noqa: E402
+from shell_lines import with_line_breaks  # noqa: E402
 
 # The words of a tool's own name (`mcp__server__slack_read_channel` -> slack, read, channel), however
 # they are joined: `_`, `-` (`notion-get-users`) or case (`getUsers`). The first word that is a verb
@@ -148,8 +150,8 @@ def shell_words(command: str) -> list[str]:
     """The words of a shell command, with each control operator (SHELL_BREAK) a word of its own
     and each redirection (`> f`, `2>&1`, `< f`) left out. `shlex.split` keeps `a;` as one word, so
     a break glued to a word was read as an argument of the command before it. Raises ValueError
-    on an unclosed quote, as `shlex.split` does."""
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    on an unclosed quote, as `shlex.split` does. A line break that ends a command is a `;`."""
+    lexer = shlex.shlex(with_line_breaks(command), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     words: list[str] = []
     target = False
@@ -388,8 +390,8 @@ def simple_commands(command: str) -> list[Command]:
     """The simple commands of a shell command line, each with where its standard input comes
     from: `< file`, a here-string `<<< text`, or something only known when it runs (a heredoc,
     or a pipe from the command before). Other redirections are left out, as in shell_words.
-    Raises ValueError on an unclosed quote."""
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    A line break that ends a command is a `;`. Raises ValueError on an unclosed quote."""
+    lexer = shlex.shlex(with_line_breaks(command), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     out: list[Command] = []
     words: list[str] = []

@@ -112,6 +112,7 @@ import children  # noqa: E402
 import code_writes  # noqa: E402
 import guard_places  # noqa: E402
 import service_reads  # noqa: E402
+from shell_lines import with_line_breaks  # noqa: E402
 
 CONFIG = guard_places.settings_folder()
 AREAS = guard_places.setting("areas.txt")
@@ -424,8 +425,8 @@ def stepped_commands(line: str):
     """The simple commands of a command line whose heredoc bodies are taken out, in order:
     (its words, its redirections as (operator, word), its here-string or None, the control operator
     that ends it, "" for the last). `2>&1` names no file and is left out. Raises ValueError on an
-    unclosed quote, as `shlex.split` does."""
-    lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+    unclosed quote, as `shlex.split` does. A line break that ends a command is a `;`."""
+    lexer = shlex.shlex(with_line_breaks(line), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     breaks = outgoing_module().SHELL_BREAK
     words: list[str] = []

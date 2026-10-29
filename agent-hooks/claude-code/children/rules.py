@@ -17,19 +17,21 @@ import shlex
 from pathlib import Path
 from typing import Callable, Iterable
 
+from shell_lines import with_line_breaks
+
 AREA_KIND = "area"
 TOOL_KIND = "tool"
 WRAPPERS = {"env", "sudo", "nohup", "command", "exec", "time"}
 MESSAGE_ENDPOINT = "/agent-messages"
 DOWNLOADERS = {"curl", "wget"}
 GUARD_ENTRY = "area-guard.py"
-BREAKS = set(";&|()\n")
+BREAKS = set(";&|()")
 
 
 def commands(command: str) -> list[list[str]]:
     """The simple commands of a command line, as words. A line that cannot be split is one command
-    split on spaces."""
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    split on spaces. A line break that ends a command is a `;`."""
+    lexer = shlex.shlex(with_line_breaks(command), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     try:
         tokens = list(lexer)
