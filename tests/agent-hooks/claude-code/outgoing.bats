@@ -716,6 +716,42 @@ browser() { call "mcp__claude-in-chrome__$1" "$2"; }
     passed
 }
 
+@test "outgoing: a web fetch of a host a host: line puts in the company takes the company's words" {
+    words_for_areas
+    destinations 'host:*.acme-corp.example company'
+    call WebFetch '{"url": "https://www.acme-corp.example/privacy", "prompt": "what does Taro Example say about cookies"}'
+    passed
+    call WebFetch "$(jq -n --arg p "summarise ${SENTINEL}" '{url: "https://www.acme-corp.example/privacy", prompt: $p}')"
+    denied
+    [[ "${output}" == *"host:www.acme-corp.example (in company)"* ]]
+    call WebFetch "$(jq -n --arg p "summarise how ${CLIENT_TEXT}" '{url: "https://www.acme-corp.example/", prompt: $p}')"
+    denied                                              # the client's text is outside the company
+    call WebFetch '{"url": "https://pricing.example.org/", "prompt": "what does Taro Example say"}'
+    denied                                              # a host no host: line names stays outside
+    [[ "${output}" == *"WebFetch (outside every area)"* ]]
+}
+
+@test "outgoing: a web fetch keeps the tool's own line when no host: line names its host" {
+    words_for_areas
+    destinations 'WebFetch company'
+    call WebFetch '{"url": "https://pricing.example.org/", "prompt": "what does Taro Example say"}'
+    passed
+}
+
+@test "outgoing: a refusal by the word list names the word and where it sits" {
+    call WebFetch "$(jq -n --arg u "https://example.com/?q=${SENTINEL}" '{url: $u, prompt: "summarise"}')"
+    denied
+    [[ "${output}" == *"line 1: word list '${SENTINEL}'"* ]]
+    call mcp__acme__drive_read_file_content "$(jq -n --arg i "proj-${SENTINEL}" '{project_id: $i}')"
+    denied
+    [[ "${output}" == *"id on line 1: word list '${SENTINEL}'"* ]]
+    send mcp__acme__docs_create "$(for i in 1 2 3 4 5 6 7; do printf 'line %s %s\n' "$i" "${SENTINEL}"; done)"
+    denied
+    [[ "${output}" == *"line 5: word list"* ]]
+    [[ "${output}" != *"line 6: word list"* ]]
+    [[ "${output}" == *"... and 2 more"* ]]
+}
+
 # --- a destination held to the operator's order ------------------------------------------
 # The hook reads the session's transcript: a made-up one is written row by row, as Claude Code
 # writes it, and handed to the hook as `transcript_path` with the prompt the call belongs to.
