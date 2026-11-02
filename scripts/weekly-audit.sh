@@ -21,6 +21,8 @@
 #   ACCEPT_BEFORE="<UTC time>"                     # optional — what had gone out
 #                                                  # before it is not reported, in
 #                                                  # every repository (see below)
+#   ACCEPT_REPORTED=0                              # optional — keep reporting what an
+#                                                  # earlier run reported (see below)
 #
 # Known findings (optional, operator-private):
 #   $HOME/.config/guard-dispatcher/known/<repo folder name>.known
@@ -30,6 +32,13 @@
 #   With ACCEPT_BEFORE set, a repository with no record, or with one made before that time,
 #   is recorded as of that time before it is audited: a repository put in the audit later is
 #   held to the same line as the rest, with no --accept run for it.
+#   Each run then writes the record anew from what it looked at (anon-audit-deep.sh
+#   --next-known): what one run reported, the next takes as seen, and reports only what came
+#   after it. A run that could not reach GitHub leaves the record as it was. ACCEPT_REPORTED=0
+#   keeps the record where --accept or ACCEPT_BEFORE put it.
+#
+# Archives are not audited: a repository under a folder named `archive` or `_archive` is left out
+# (`left out: <folder> (archive)` in the log), as kept and no longer worked in.
 #
 # Output:
 #   - full log:  $HOME/.local/state/guard-dispatcher/weekly-audit-<date>.log
@@ -111,6 +120,8 @@ except ValueError:
     sys.exit(0)
 SKIP = {"node_modules", ".build", "DerivedData", "Pods",
         "third_party", "third-party", "_deps", ".fetchcontent-cache"}
+# Repositories kept and no longer worked in: the folder is named in the log and not walked.
+ARCHIVES = {"archive", "_archive"}
 scanned = {name: roots for name, roots in areas.items() if name not in module.UNSCANNED}
 def innermost(path):
     holding = [(len(str(root)), name) for name, roots in scanned.items() for root in roots
@@ -122,6 +133,9 @@ for name, roots in scanned.items():
             # Someone else's code cloned in (third_party, CMake's fetched sources) is not text the
             # agent wrote, and its history holds other people's words: it is left out
             dirs[:] = [d for d in dirs if d not in SKIP]
+            for d in [d for d in dirs if d in ARCHIVES]:
+                print(f"ARCHIVE\t{os.path.join(here, d)}")
+                dirs.remove(d)
             if ".git" in dirs or ".git" in files:
                 print(f"{innermost(here)}\t{here}")
                 dirs.remove(".git") if ".git" in dirs else None
@@ -140,6 +154,9 @@ add_repo() {
     real="$(cd "$1" 2>/dev/null && pwd -P)" || return 0
     case "${seen}" in *" ${real} "*) return 0 ;; esac
     seen="${seen}${real} "
+    case "$(dirname "${real}")/" in
+        */archive/*|*/_archive/*) left_out+=("$1 (archive)"); return 0 ;;
+    esac
     kind="$(cd "$1" && dispatcher::detect_repo_kind)"
     case "${kind}" in
         corpus|exempt) left_out+=("$1 (guard.scope ${kind})"); return 0 ;;
@@ -148,7 +165,9 @@ add_repo() {
     repo_areas+=("$2")
 }
 if [ "${AREA_REPOS:-1}" != 0 ]; then
-    while IFS=$'\t' read -r area repo; do add_repo "${repo}" "${area}"; done < <(area_repos)
+    while IFS=$'\t' read -r area repo; do
+        if [ "${area}" = ARCHIVE ]; then left_out+=("${repo} (archive)"); else add_repo "${repo}" "${area}"; fi
+    done < <(area_repos)
 fi
 # shellcheck disable=SC2086 — the glob is the point
 for repo in ${REPOS_GLOB:-}; do add_repo "${repo}" -; done
@@ -201,6 +220,7 @@ summary=""
             since_args+=(--known "${known}")
             known_note=", known findings accepted"
         fi
+        [ "${ACCEPT_REPORTED:-1}" = 0 ] || since_args+=(--next-known "${known}")
 
         echo ""
         echo "--- ${repo} (${sweep}${known_note}, area ${repo_areas[$i]}) ---"

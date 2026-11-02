@@ -1032,10 +1032,19 @@ contract:
   Findings that will not be rewritten (history, PR text) can be accepted as
   known: `scripts/weekly-audit.sh --accept <repo>...` records each
   repository as it stands in `~/.config/guard-dispatcher/known/<repo>.known`
-  (the ref tips, the time, and the matching lines of branch names, tags,
-  metadata and releases). From then on only what appears later is red — a new
-  commit carrying a known word included — and the files in the tree are
-  always scanned whole (`anon-audit-deep.sh --known FILE` / `--record-known FILE`).
+  (the ref tips, HEAD's commit, the time, and the matching lines of branch
+  names, tags, metadata and releases). From then on only what appears later is
+  red — a new commit carrying a known word included. A hit in a tracked file is
+  known when its line stood in the same file at the recorded commit, or the
+  file is unchanged since; a record that names no commit scans the files whole
+  (`anon-audit-deep.sh --known FILE` / `--record-known FILE`).
+  Each weekly run then writes the record anew from what it looked at
+  (`--next-known FILE`): what one run reported, the next takes as seen, so a
+  finding is reported by the run that first finds it and not again. A run that
+  could not reach GitHub leaves the record as it was. `ACCEPT_REPORTED=0` in
+  `weekly-audit.conf` keeps the record where `--accept` put it.
+  A repository under a folder named `archive` or `_archive` is not audited
+  (`left out: <folder> (archive)` in the log).
   `--accept --as-of <UTC time>` (`2026-10-19T15:00:00Z`) records what had gone
   out before that time instead: each ref's newest commit before it is its tip,
   and PR / Issue text and run records are read from that time, so whatever came
