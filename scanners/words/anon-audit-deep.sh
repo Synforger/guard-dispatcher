@@ -38,6 +38,8 @@
 #   bash .tooling/local-ci/anon-audit-deep.sh --record-known FILE --as-of 2026-10-19T15:00:00Z
 #                                                                  (= その時刻より前に出た分を既知として記録)
 #   bash .tooling/local-ci/anon-audit-deep.sh --known FILE          (= 記録より後に出た分だけを赤に)
+#   bash .tooling/local-ci/anon-audit-deep.sh --known FILE --next-known FILE
+#                                                                  (= 走り終わったら、 この回が見た物を次の記録に)
 #   task audit:deep    (= Taskfile 経由、 full mode)
 #
 # Exit:
@@ -53,6 +55,7 @@ GITHUB_SINCE=""
 KNOWN=""
 RECORD=""
 AS_OF=""
+NEXT=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --known)
@@ -66,6 +69,10 @@ while [ $# -gt 0 ]; do
         --as-of)
             shift
             AS_OF="${1:-}"
+            ;;
+        --next-known)
+            shift
+            NEXT="${1:-}"
             ;;
         --range)
             shift
@@ -106,8 +113,8 @@ if [ -n "${AS_OF}" ] && { [ -z "${RECORD}" ] || ! [[ "${AS_OF}" =~ ^[0-9]{4}-[0-
     echo "error: --as-of goes with --record-known, as a UTC time (2026-10-19T15:00:00Z)" >&2
     exit 2
 fi
-if [ -n "${RANGE}" ] && { [ -n "${KNOWN}" ] || [ -n "${RECORD}" ]; }; then
-    echo "error: --known / --record-known audit the whole repository; --range is a push range" >&2
+if [ -n "${RANGE}" ] && { [ -n "${KNOWN}" ] || [ -n "${RECORD}" ] || [ -n "${NEXT}" ]; }; then
+    echo "error: --known / --record-known / --next-known audit the whole repository; --range is a push range" >&2
     exit 2
 fi
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -225,7 +232,7 @@ scan_lines() {
 }
 # scan_untimed — what a source without a time cut reports: whole lines once known findings are in play.
 scan_untimed() {
-    if [ -n "${KNOWN}" ]; then scan_lines; else scan_perl; fi
+    if [ -n "${KNOWN}${NEXT}" ]; then scan_lines; else scan_perl; fi
 }
 
 count_hits() {
@@ -250,26 +257,42 @@ total=0
 #   - PR / Issue text and run records (7-8/11): records updated or created after `since`
 #   - branch names, tags, repo metadata, releases (4/5/9/10) cannot be cut by time: the
 #     matches recorded (`hit <source>\t<match>`) are taken out, any other match is red
-#   - tracked files (1) are always scanned whole: a file in the tree is fixed, not accepted
+#   - tracked files (1): a hit whose line stands in the same file at the commit recorded (`tree
+#     <sha>`), or in a file unchanged since that commit; a record without one scans them whole
 # --record-known writes the file from the repository as it stands, then audits against it. With
 # --as-of, what had gone out before that time is known instead: each ref's newest commit before it
 # is its tip, and `since` is that time, so a commit or a record made later is red at once. The
 # matches of the sources that cannot be cut by time are recorded as they stand.
+# --next-known writes, once the audit has run through, a record of what this run looked at: its
+# start, the tips and HEAD then, and every match of the sources that cannot be cut by time. What a
+# run reported is then known to the next one, which reports only what came after. A run that could
+# not reach a GitHub source writes none: what it did not read stays to be read.
+# known_header <time> — the lines that open a record: the time, the ref tips and HEAD's commit then.
+known_header() {
+    printf '# findings accepted as known by anon-audit-deep.sh (%s)\n' "${PROJECT_ROOT}"
+    printf 'since %s\n' "$1"
+    if [ -n "${AS_OF}" ] && [ "$1" = "${AS_OF}" ]; then
+        git for-each-ref --format='%(refname)' | while IFS= read -r ref; do
+            git rev-list -1 --before="${AS_OF}" "${ref}" 2>/dev/null
+        done | sort -u | sed 's/^/tip /'
+        git rev-list -1 --before="${AS_OF}" HEAD 2>/dev/null | sed 's/^/tree /'
+    else
+        git rev-list --all --no-walk 2>/dev/null | sed 's/^/tip /'
+        git rev-parse --verify --quiet HEAD 2>/dev/null | sed 's/^/tree /'
+    fi
+}
 RECORD_TMP=""
+NEXT_TMP=""
+UNREACHED=0
+if [ -n "${NEXT}" ]; then
+    mkdir -p "$(dirname "${NEXT}")" || exit 2
+    NEXT_TMP="$(mktemp -t audit-next.XXXXXX)" || exit 2
+    known_header "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${NEXT_TMP}"
+fi
 if [ -n "${RECORD}" ]; then
     mkdir -p "$(dirname "${RECORD}")" || exit 2
     RECORD_TMP="$(mktemp -t audit-known.XXXXXX)" || exit 2
-    {
-        printf '# findings accepted as known by anon-audit-deep.sh --record-known (%s)\n' "${PROJECT_ROOT}"
-        printf 'since %s\n' "${AS_OF:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-        if [ -n "${AS_OF}" ]; then
-            git for-each-ref --format='%(refname)' | while IFS= read -r ref; do
-                git rev-list -1 --before="${AS_OF}" "${ref}" 2>/dev/null
-            done | sort -u | sed 's/^/tip /'
-        else
-            git rev-list --all --no-walk 2>/dev/null | sed 's/^/tip /'
-        fi
-    } > "${RECORD_TMP}"
+    known_header "${AS_OF:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" > "${RECORD_TMP}"
     KNOWN="${RECORD_TMP}"
 elif [ -n "${KNOWN}" ] && [ ! -f "${KNOWN}" ]; then
     echo "error: --known file not found: ${KNOWN}" >&2
@@ -287,9 +310,15 @@ if [ -n "${KNOWN}" ]; then
 fi
 
 # known_filter <source> <hits> — the hits not accepted as known for that source. While
-# recording, every hit is written down as known instead, and none is left.
+# recording, every hit is written down as known instead, and none is left. Every hit also goes
+# into the next record.
 known_filter() {
     local label="$1" hits="$2" h
+    if [ -n "${NEXT_TMP}" ]; then
+        printf '%s\n' "${hits}" | while IFS= read -r h; do
+            [ -n "${h}" ] && printf 'hit %s\t%s\n' "${label}" "${h}" >> "${NEXT_TMP}"
+        done
+    fi
     if [ -z "${KNOWN}" ]; then
         printf '%s' "${hits}"
         return
@@ -308,12 +337,18 @@ known_filter() {
 # range mode では skip (= pre-commit 段階で既に staged 単位に scan 済)
 if [ -z "${RANGE}" ]; then
     printf '\n=== source 1/11: tracked files (= anon-scan.sh) ===\n' >&2
-    if bash "${SCRIPT_DIR}/anon-scan.sh" >/dev/null 2>&1; then
+    known_tree="$( { [ -n "${KNOWN}" ] && sed -n 's/^tree //p' "${KNOWN}" | head -1; } || true)"
+    scan_err="$(mktemp -t audit-scan.XXXXXX)" || exit 2
+    if scanned="$(bash "${SCRIPT_DIR}/anon-scan.sh" 2>"${scan_err}")"; then
         log_ok "tracked files: clean"
+    elif [ -n "${known_tree}" ] && ! grep -q "NOT scanned" "${scan_err}" \
+            && [ -z "$(printf '%s\n' "${scanned}" | python3 "${SCRIPT_DIR}/_internal/known_tree.py" "${known_tree}")" ]; then
+        log_ok "tracked files: clean (every hit stood in the tree at ${known_tree:0:12})"
     else
         log_fail "tracked files: leak found (run bash anon-scan.sh for details)"
         total=$((total + 1))
     fi
+    rm -f "${scan_err}"
 fi
 
 # --- source 2: git history blob ---
@@ -391,8 +426,10 @@ total=$((total + n))
 if [ -z "${RANGE}" ]; then
     if ! command -v gh >/dev/null 2>&1; then
         log_warn "gh CLI not installed, skipping GitHub-side sources 7-11"
+        UNREACHED=1
     elif ! gh auth status >/dev/null 2>&1; then
         log_warn "gh CLI not authenticated, skipping GitHub-side sources 7-11"
+        UNREACHED=1
     else
         # repo 名を git remote から推定。 github.com / github-* SSH alias 両対応。
         # BSD sed の ERE が alternation + quantifier で詰むので python に逃す。
@@ -461,6 +498,7 @@ print(f'{m.group(1)}/{m.group(2)}' if m else '')
             unreachable() {
                 log_fail "$1: UNREACHABLE (= counted as a finding, never clean)"
                 total=$((total + 1))
+                UNREACHED=1
             }
             # --- source 7-8: PR + Issue title/body + comment threads ---
             # The issues endpoint returns PRs too, so one paginated walk
@@ -554,6 +592,12 @@ fi
 printf '\n' >&2
 if [ -n "${RECORD_TMP}" ]; then
     mv "${RECORD_TMP}" "${RECORD}" && log_ok "known findings recorded: ${RECORD}"
+fi
+if [ -n "${NEXT_TMP}" ] && [ "${UNREACHED}" -eq 0 ]; then
+    mv "${NEXT_TMP}" "${NEXT}" && log_ok "what this run looked at is known to the next: ${NEXT}"
+elif [ -n "${NEXT_TMP}" ]; then
+    rm -f "${NEXT_TMP}"
+    log_warn "a GitHub source was not reached: the known findings stay as they were"
 fi
 if [ "${total}" -eq 0 ]; then
     if [ -n "${RANGE}" ]; then

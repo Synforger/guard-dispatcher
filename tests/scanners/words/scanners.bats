@@ -471,16 +471,69 @@ leak_in_history() {
     [[ "$output" == *"branch names"* ]]
 }
 
-@test "deep audit: a file in the tree is never accepted as known" {
+@test "deep audit: a line of a tracked file that stood at the recorded commit is known; a new line is red" {
     mk_repo synforger
     export STUB_SENTINEL=""
     setup_gh_stub
     echo "${SENTINEL}" > leak.txt && git add leak.txt && commit_bypassing_hooks "feat: leak"
     audit --record-known "$(known_file)"
-    [ "$status" -ne 0 ]
+    [ "$status" -eq 0 ]
+    grep -q "^tree $(git rev-parse HEAD)$" "$(known_file)"
+    audit --known "$(known_file)"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"tracked files: clean (every hit stood in the tree"* ]]
+    # a line added since, in the same file or a new one, is red
+    printf 'moved\n%s\nand again %s\n' "${SENTINEL}" "${SENTINEL}" > leak.txt
     audit --known "$(known_file)"
     [ "$status" -ne 0 ]
     [[ "$output" == *"tracked files: leak found"* ]]
+    git checkout -q leak.txt
+    echo "new ${SENTINEL}" > other.txt && git add other.txt && commit_bypassing_hooks "feat: other"
+    audit --known "$(known_file)"
+    [ "$status" -ne 0 ]
+    # a record that names no commit scans the files whole, as before
+    git rm -q other.txt && commit_bypassing_hooks "chore: drop other"
+    sed -i.bak '/^tree /d' "$(known_file)"
+    audit --known "$(known_file)"
+    [ "$status" -ne 0 ]
+}
+
+@test "deep audit: --next-known makes what one run looked at known to the next" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    leak_in_history old
+    git branch "feat-${SENTINEL}"
+    local known
+    known="$(known_file)"
+    audit --next-known "${known}"
+    [ "$status" -ne 0 ]                                   # reported once
+    grep -q "^since " "${known}"
+    audit --known "${known}" --next-known "${known}"
+    [ "$status" -eq 0 ]                                   # and not again
+    leak_in_history new
+    git branch "other-${SENTINEL}"
+    audit --known "${known}" --next-known "${known}"
+    [ "$status" -ne 0 ]                                   # what came after it is
+    [[ "$output" == *"git history blob"* ]]
+    [[ "$output" == *"branch names"* ]]
+    audit --known "${known}"
+    [ "$status" -eq 0 ]
+    audit --next-known "${known}" --range "HEAD~1..HEAD"
+    [ "$status" -eq 2 ]
+}
+
+@test "deep audit: a run that does not reach GitHub leaves the known findings as they were" {
+    mk_repo synforger
+    setup_gh_stub_api_error
+    local known
+    known="$(known_file)"
+    mkdir -p "$(dirname "${known}")"
+    printf 'since 2026-10-01T00:00:00Z\n' > "${known}"
+    audit --known "${known}" --next-known "${known}"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"the known findings stay as they were"* ]]
+    [ "$(cat "${known}")" = "since 2026-10-01T00:00:00Z" ]
 }
 
 @test "deep audit: GitHub records are read from the time the known findings were recorded" {
@@ -591,7 +644,7 @@ leak_in_history() {
     export HOME="${BATS_TEST_TMPDIR}/home"
     known="${HOME}/.config/guard-dispatcher/known/$(basename "${repo}").known"
     mkdir -p "${HOME}/.config/guard-dispatcher"
-    printf 'REPOS_GLOB="%s"\nACCEPT_BEFORE="2026-10-19T15:00:00Z"\n' "${repo}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    printf 'REPOS_GLOB="%s"\nACCEPT_BEFORE="2026-10-19T15:00:00Z"\nACCEPT_REPORTED=0\n' "${repo}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
     run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
     [ "$status" -eq 0 ]                                   # what went out before the line is not reported
     grep -qx "since 2026-10-19T15:00:00Z" "${known}"
@@ -610,6 +663,61 @@ leak_in_history() {
     printf 'REPOS_GLOB="%s"\nACCEPT_BEFORE="2026-10-20"\n' "${repo}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
     run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
     [ "$status" -eq 2 ]
+}
+
+@test "weekly audit: each run reports only what came after the run before it" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    leak_in_history old
+    local repo conf
+    repo="$(pwd)"
+    export HOME="${BATS_TEST_TMPDIR}/home"
+    conf="${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    mkdir -p "$(dirname "${conf}")"
+    printf 'REPOS_GLOB="%s"\n' "${repo}" > "${conf}"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -ne 0 ]
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -eq 0 ]
+    leak_in_history new
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -ne 0 ]
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -eq 0 ]
+    # with ACCEPT_REPORTED=0 the record stays where it was, and the same finding is reported again
+    printf 'REPOS_GLOB="%s"\nACCEPT_REPORTED=0\n' "${repo}" > "${conf}"
+    leak_in_history late
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -ne 0 ]
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -ne 0 ]
+}
+
+@test "weekly audit: a repository under an archive folder is left out" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    local repo archived listed
+    repo="$(pwd)"
+    mkdir -p "${GUARD_CONFIG_DIR}"
+    printf 'company %s\n' "$(dirname "${repo}")" > "${GUARD_CONFIG_DIR}/areas.txt"
+    for archived in "$(dirname "${repo}")/archive/old" "${BATS_TEST_TMPDIR}/kept/_archive/listed"; do
+        mkdir -p "${archived}"
+        git -C "${archived}" init -q
+        (cd "${archived}" && leak_in_history kept)
+    done
+    export HOME="${BATS_TEST_TMPDIR}/home"
+    mkdir -p "${HOME}/.config/guard-dispatcher"
+    printf 'REPOS_GLOB="%s"\n' "${BATS_TEST_TMPDIR}/kept/_archive/listed" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -eq 0 ]
+    local log
+    log="$(cat "${HOME}"/.local/state/guard-dispatcher/weekly-audit-*.log)"
+    [[ "${log}" == *"left out: $(cd -P "$(dirname "${repo}")" && pwd)/archive (archive)"* ]]
+    [[ "${log}" == *"left out: ${BATS_TEST_TMPDIR}/kept/_archive/listed (archive)"* ]]
+    [[ "${log}" == *"--- $(cd -P "${repo}" && pwd) ("* ]]
+    [[ "${log}" != *"/archive/old ("* ]]
 }
 
 @test "weekly audit: an argument the run does not take stops it before anything is audited" {
