@@ -117,6 +117,8 @@ HANDLE = re.compile(r"[!-~]+")
 # Keys of a tool's input that name local files whose contents are uploaded.
 FILE_KEYS = {"file_path", "file_paths", "files", "path", "paths", "attachment", "attachments"}
 MAX_FILE = 8 * 1024 * 1024
+# git's own test of a binary: a NUL in this many bytes at the head of the file.
+TEXT_PROBE = 8192
 LOOPBACK = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 CURL_BODY = {"-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode",
              "-F", "--form", "--form-string", "--json", "-T", "--upload-file"}
@@ -286,11 +288,13 @@ def file_text(path: Path, send_scan: Path) -> tuple[str | None, str]:
         if suffix == ".pdf":
             return "\n".join(corpus.pdf_units(path)), ""
         if path.stat().st_size > MAX_FILE:
-            return None, f"larger than {MAX_FILE // (1024 * 1024)} MB"
+            with path.open("rb") as fh:
+                binary = b"\0" in fh.read(TEXT_PROBE)
+            return None, "not a text file" if binary else f"larger than {MAX_FILE // (1024 * 1024)} MB"
         data = path.read_bytes()
     except Exception:  # noqa: BLE001 — whatever stops the reading, the file counts as unscanned
         return None, "its text could not be taken out"
-    if b"\0" in data[:8192]:
+    if b"\0" in data[:TEXT_PROBE]:
         return None, "not a text file"
     return data.decode("utf-8", "replace"), ""
 
