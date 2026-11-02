@@ -118,6 +118,39 @@ reported() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"decision": "block"'* 
     passed
 }
 
+@test "handed: a large file that is not text carries no words; a large text file cannot be scanned" {
+    python3 -c "open('${H}/out/GoogleDrive.dmg', 'wb').write(b'\0' + b'x' * (9 * 1024 * 1024))"
+    after
+    passed
+    python3 -c "open('${H}/out/big.log', 'w').write('x' * (9 * 1024 * 1024))"
+    after
+    reported
+    [[ "${output}" == *"file:~/out/big.log cannot be scanned (larger than 8 MB)"* ]]
+}
+
+@test "handed: a file that arrived from outside is not judged until it changes" {
+    command -v xattr >/dev/null || skip "no xattr on this system"
+    local now; now="$(date +%s)"
+    # marked as it arrived: the operator's download, whatever it says
+    printf 'a page naming %s\n' "${SENTINEL}" > "${H}/out/page.md"
+    xattr -w com.apple.quarantine "$(printf '0281;%x;Chrome;ID' "${now}")" "${H}/out/page.md"
+    python3 -c "open('${H}/out/large.log', 'w').write('x' * (9 * 1024 * 1024))"
+    xattr -w com.apple.quarantine "$(printf '0281;%x;Chrome;ID' "${now}")" "${H}/out/large.log"
+    after
+    passed
+    # marked an hour ago and changed now: written here after it arrived
+    printf 'edited, naming %s\n' "${SENTINEL}" > "${H}/out/edited.md"
+    xattr -w com.apple.quarantine "$(printf '0281;%x;Chrome;ID' "$((now - 3600))")" "${H}/out/edited.md"
+    # a mark that cannot be read says nothing
+    printf 'naming %s\n' "${SENTINEL}" > "${H}/out/odd.md"
+    xattr -w com.apple.quarantine "not a mark" "${H}/out/odd.md"
+    after
+    reported
+    [[ "${output}" == *"file:~/out/edited.md (in company)"* ]]
+    [[ "${output}" == *"file:~/out/odd.md (in company)"* ]]
+    [[ "${output}" != *"page.md"* ]]
+}
+
 @test "handed: a file written after the session's last call ended is reported at its next call" {
     after
     passed

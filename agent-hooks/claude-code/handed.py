@@ -14,6 +14,12 @@ background writes after its own call has ended. Each change of a file is judged 
 first session to see it (`<marks folder>/handed/`), so another session's file is not reported
 twice.
 
+A file that arrived from outside and has not changed since is nobody's writing here, and is not
+judged: a browser or a chat application marks what it takes in (macOS's quarantine attribute) with
+the time, and the operator's download lands in the folder during whatever call happens to be
+running. One changed after the mark is judged like any other, and a command's own download (`curl`)
+carries no mark.
+
 This file is the entry point and does its own reading of the folders and of what it judged; where
 a file sits and what it may carry are decided by send-scan.py, and a file's text is taken out by
 outgoing.py.
@@ -47,6 +53,11 @@ SLACK_S = 2.0
 UNTIMED_CALL_S = 600.0
 GLOB = re.compile(r"[*?\[]")
 SEND_SCAN_TIMEOUT_S = 180
+QUARANTINE = "com.apple.quarantine"
+# How long after its mark a file may still be the one that arrived: the application marks it when
+# the download starts or ends. Over the marked files of a working Downloads folder the longest was
+# 13 s. A download that takes longer is judged like any other file.
+ARRIVING_S = 60.0
 
 
 def load(path: Path, name: str) -> ModuleType:
@@ -131,9 +142,22 @@ def call_began(event: dict, session: str) -> float:
     return began
 
 
-def refusal(name: str, path: Path, outgoing: ModuleType) -> str | None:
-    """Why the file may not be handed on, or None. A file that is not text (an image, an archive)
-    carries no words to judge and passes."""
+def arrived_unchanged(path: Path, mtime_ns: int) -> bool:
+    """Whether the file carries an application's quarantine mark (`flags;<hex seconds>;app;id`) and
+    has not changed since it arrived. No mark, or one that cannot be read, is False."""
+    try:
+        r = subprocess.run(["xattr", "-p", QUARANTINE, str(path)], capture_output=True, text=True, timeout=10)
+        marked_s = int(r.stdout.split(";")[1], 16) if r.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, IndexError, ValueError):
+        return False
+    return marked_s is not None and mtime_ns / 1e9 <= marked_s + ARRIVING_S
+
+
+def refusal(name: str, path: Path, mtime_ns: int, outgoing: ModuleType) -> str | None:
+    """Why the file may not be handed on, or None. A file that arrived from outside as it is, and a
+    file that is not text (an image, an archive), carry no words to judge and pass."""
+    if arrived_unchanged(path, mtime_ns):
+        return None
     text, why = outgoing.file_text(path, SEND_SCAN)
     if text is None:
         return None if why == "not a text file" else f"{name} cannot be scanned ({why})"
@@ -167,7 +191,7 @@ def main() -> int:
         if not judged.file_matches(name, patterns) or judged_before(path, mtime_ns):
             continue
         outgoing = outgoing or load(OUTGOING, "outgoing")
-        if why := refusal(name, path, outgoing):
+        if why := refusal(name, path, mtime_ns, outgoing):
             found.append(why)
         remember(path, mtime_ns)
     if found:
