@@ -757,7 +757,8 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   guard stops what it knows leaves an area, and a build machine or an internal
   service is not stopped for being unlisted. What publishes to the internet or
   to a personal account is outside every area with no line — the Artifact
-  tools, WebFetch, WebSearch and claude.ai's connectors (`mcp__claude_ai_*`);
+  tools, built in or over MCP (`mcp__claude-artifacts__*`), WebFetch,
+  WebSearch and claude.ai's connectors (`mcp__claude_ai_*`);
   a line in the file overrides that. To hold every other destination to the
   scan, end the file with `* outside`.
 

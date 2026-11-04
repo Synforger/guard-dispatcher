@@ -340,6 +340,21 @@ mk_binary() { printf '\x89PNG\r\n\x1a\n\0\0\0\rIHDR' > "$1"; }
     passed
 }
 
+@test "outgoing: the Artifact tools served over MCP are outside every area with no line" {
+    undeclared
+    for tool in mcp__claude-artifacts__publish_version mcp__claude_artifacts__edit_version; do
+        send "${tool}" "notes: ${CLIENT_TEXT}"
+        denied
+    done
+    mkdir -p "${H}/${SENTINEL}-pages"
+    printf 'notes: %s\n' "${CLIENT_TEXT}" > "${H}/${SENTINEL}-pages/index.html"
+    call mcp__claude-artifacts__publish_files "$(jq -n --arg f "${H}/${SENTINEL}-pages/index.html" '{files: [{as: "index.html", path: $f}]}')"
+    denied
+    printf 'a page of my own\n' > "${H}/${SENTINEL}-pages/index.html"
+    call mcp__claude-artifacts__publish_files "$(jq -n --arg f "${H}/${SENTINEL}-pages/index.html" '{files: [{as: "index.html", path: $f}]}')"
+    passed
+}
+
 @test "outgoing: a line in destinations.txt overrides the default for a tool" {
     destinations 'Artifact company'
     send Artifact "${COMPANY_TEXT}"
