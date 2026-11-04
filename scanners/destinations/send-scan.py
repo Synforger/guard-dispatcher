@@ -23,8 +23,8 @@ word stop every send until the line is fixed.
 A destination no line names is undeclared and passes unscanned: the guard stops what it knows
 leaves an area, and a server or a service at work (a build machine, an internal API) is not
 stopped for being unlisted. What publishes to the internet or to a personal account is outside
-every area without a line (DEFAULTS: the Artifact tools, WebFetch, WebSearch and claude.ai's
-connectors); a line in the file overrides it. A WebFetch is named by the host it reads
+every area without a line (DEFAULTS: the Artifact tools, the same tools served over MCP
+(`mcp__claude-artifacts__*`), WebFetch, WebSearch and claude.ai's connectors); a line in the file overrides it. A WebFetch is named by the host it reads
 (`host:<host>`) when a `host:` line names that host, so a site sits where its line puts it: the
 company's own pages take the company's words (`host:*.example.com company`).
 
@@ -90,9 +90,10 @@ ORDER = "order"
 # How many word-list hits a refusal shows; the rest are counted.
 SHOWN_HITS = 5
 # Destinations outside every area with no line in destinations.txt: they publish to the internet
-# (a search, a fetched URL) or to the operator's personal account on claude.ai.
-DEFAULTS = [("Artifact*", OUTSIDE, False), ("WebFetch", OUTSIDE, False), ("WebSearch", OUTSIDE, False),
-            ("mcp__claude_ai_*", OUTSIDE, False)]
+# (a search, a fetched URL) or to the operator's personal account on claude.ai. The Artifact tools
+# reach a session either built in or through an MCP server of their own, under either spelling.
+DEFAULTS = [("Artifact*", OUTSIDE, False), ("mcp__claude[-_]artifacts__*", OUTSIDE, False),
+            ("WebFetch", OUTSIDE, False), ("WebSearch", OUTSIDE, False), ("mcp__claude_ai_*", OUTSIDE, False)]
 
 
 # Names for what stays on this machine: a service on the loopback host (`local:<port><path>`), a
