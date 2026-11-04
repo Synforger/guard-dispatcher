@@ -126,7 +126,6 @@ import argparse
 import contextlib
 import fcntl
 import fnmatch
-import hashlib
 import importlib
 import importlib.util
 import itertools
@@ -1400,6 +1399,7 @@ def tables_mark(areas: dict[str, list[Path]]) -> str:
     """A mark of the settings an area's table is made with besides its documents: the folders kept
     out of the walk and the phrases allowed. A table made under another mark holds what they now
     leave out (a folder put in ignore.txt, a phrase added to allow.txt) until it is merged anew."""
+    import hashlib   # loaded where it is used: the agent's entry guard reads this file on every call
     allowed = sorted(read_lines(guard_places.setting("allow.txt")))
     ignored = sorted(str(p) for p in ignored_folders(areas))
     return hashlib.sha256(json.dumps([allowed, ignored]).encode()).hexdigest()[:16]
