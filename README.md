@@ -1038,11 +1038,13 @@ contract:
   known when its line stood in the same file at the recorded commit, or the
   file is unchanged since; a record that names no commit scans the files whole
   (`anon-audit-deep.sh --known FILE` / `--record-known FILE`).
-  Each weekly run then writes the record anew from what it looked at
-  (`--next-known FILE`): what one run reported, the next takes as seen, so a
-  finding is reported by the run that first finds it and not again. A run that
-  could not reach GitHub leaves the record as it was. `ACCEPT_REPORTED=0` in
-  `weekly-audit.conf` keeps the record where `--accept` put it.
+  A finding stays reported, week after week, until the operator decides to
+  accept it: one no one has looked at is not taken as seen. With
+  `ACCEPT_REPORTED=1` in `weekly-audit.conf`, each weekly run instead writes the
+  record anew from what it looked at (`--next-known FILE`): what one run
+  reported, the next takes as seen, so a finding is reported by the run that
+  first finds it and not again. A run that could not reach GitHub leaves the
+  record as it was.
   A repository under a folder named `archive` or `_archive` is not audited
   (`left out: <folder> (archive)` in the log).
   `--accept --as-of <UTC time>` (`2026-10-19T15:00:00Z`) records what had gone

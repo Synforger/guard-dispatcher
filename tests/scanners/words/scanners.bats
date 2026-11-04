@@ -644,7 +644,7 @@ leak_in_history() {
     export HOME="${BATS_TEST_TMPDIR}/home"
     known="${HOME}/.config/guard-dispatcher/known/$(basename "${repo}").known"
     mkdir -p "${HOME}/.config/guard-dispatcher"
-    printf 'REPOS_GLOB="%s"\nACCEPT_BEFORE="2026-10-19T15:00:00Z"\nACCEPT_REPORTED=0\n' "${repo}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    printf 'REPOS_GLOB="%s"\nACCEPT_BEFORE="2026-10-19T15:00:00Z"\n' "${repo}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
     run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
     [ "$status" -eq 0 ]                                   # what went out before the line is not reported
     grep -qx "since 2026-10-19T15:00:00Z" "${known}"
@@ -665,7 +665,7 @@ leak_in_history() {
     [ "$status" -eq 2 ]
 }
 
-@test "weekly audit: each run reports only what came after the run before it" {
+@test "weekly audit: a finding is reported until it is accepted; with ACCEPT_REPORTED=1, only by the run that first finds it" {
     mk_repo synforger
     export STUB_SENTINEL=""
     setup_gh_stub
@@ -675,7 +675,15 @@ leak_in_history() {
     export HOME="${BATS_TEST_TMPDIR}/home"
     conf="${HOME}/.config/guard-dispatcher/weekly-audit.conf"
     mkdir -p "$(dirname "${conf}")"
+    # by default the same finding is reported again, and no record is written for it
     printf 'REPOS_GLOB="%s"\n' "${repo}" > "${conf}"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -ne 0 ]
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -ne 0 ]
+    [ ! -f "${HOME}/.config/guard-dispatcher/known/$(basename "${repo}").known" ]
+    # with ACCEPT_REPORTED=1 a run reports what came after the run before it
+    printf 'REPOS_GLOB="%s"\nACCEPT_REPORTED=1\n' "${repo}" > "${conf}"
     run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
     [ "$status" -ne 0 ]
     run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
@@ -685,13 +693,6 @@ leak_in_history() {
     [ "$status" -ne 0 ]
     run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
     [ "$status" -eq 0 ]
-    # with ACCEPT_REPORTED=0 the record stays where it was, and the same finding is reported again
-    printf 'REPOS_GLOB="%s"\nACCEPT_REPORTED=0\n' "${repo}" > "${conf}"
-    leak_in_history late
-    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
-    [ "$status" -ne 0 ]
-    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
-    [ "$status" -ne 0 ]
 }
 
 @test "weekly audit: a repository under an archive folder is left out" {
