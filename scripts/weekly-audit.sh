@@ -21,8 +21,8 @@
 #   ACCEPT_BEFORE="<UTC time>"                     # optional — what had gone out
 #                                                  # before it is not reported, in
 #                                                  # every repository (see below)
-#   ACCEPT_REPORTED=0                              # optional — keep reporting what an
-#                                                  # earlier run reported (see below)
+#   ACCEPT_REPORTED=1                              # optional — what a run reported is
+#                                                  # not reported again (see below)
 #
 # Known findings (optional, operator-private):
 #   $HOME/.config/guard-dispatcher/known/<repo folder name>.known
@@ -32,10 +32,11 @@
 #   With ACCEPT_BEFORE set, a repository with no record, or with one made before that time,
 #   is recorded as of that time before it is audited: a repository put in the audit later is
 #   held to the same line as the rest, with no --accept run for it.
-#   Each run then writes the record anew from what it looked at (anon-audit-deep.sh
-#   --next-known): what one run reported, the next takes as seen, and reports only what came
-#   after it. A run that could not reach GitHub leaves the record as it was. ACCEPT_REPORTED=0
-#   keeps the record where --accept or ACCEPT_BEFORE put it.
+#   A finding stays reported, run after run, until the operator decides to accept it (--accept):
+#   a finding no one has looked at is not taken as seen. With ACCEPT_REPORTED=1, each run instead
+#   writes the record anew from what it looked at (anon-audit-deep.sh --next-known): what one run
+#   reported, the next takes as seen, and reports only what came after it. A run that could not
+#   reach GitHub leaves the record as it was.
 #
 # Archives are not audited: a repository under a folder named `archive` or `_archive` is left out
 # (`left out: <folder> (archive)` in the log), as kept and no longer worked in.
@@ -220,7 +221,7 @@ summary=""
             since_args+=(--known "${known}")
             known_note=", known findings accepted"
         fi
-        [ "${ACCEPT_REPORTED:-1}" = 0 ] || since_args+=(--next-known "${known}")
+        [ "${ACCEPT_REPORTED:-0}" = 1 ] && since_args+=(--next-known "${known}")
 
         echo ""
         echo "--- ${repo} (${sweep}${known_note}, area ${repo_areas[$i]}) ---"
