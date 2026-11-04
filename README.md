@@ -220,7 +220,9 @@ documents themselves. Everything it reads is configured on this machine only:
                                         (product codes, client names), case-insensitive
 ~/.config/guard/allow.txt               phrases that are fine to send
 ~/.config/guard/ignore.txt              folders inside an area that hold none of its
-                                        documents (an external corpus, build logs)
+                                        documents (an external corpus, build logs); a name
+                                        may hold `*`, `?` or `[...]`, matched within that one
+                                        name (`~/notes/*/handouts`)
 ~/.config/guard/background.txt          folders of public text and code, and `published <dir>`
                                         for your own repositories as their remote has them
 ~/.config/guard/handoff.txt             <path> per line, `~` and `$VAR` expanded from the session:
@@ -256,7 +258,7 @@ inside the area only:
 | `destinations.txt` | a destination placed in the area or an area within it, or `block`ed; `order` as in the machine's file | `outside`, a pattern that catches every destination (`*`), an area outside it |
 | `allow.txt` | a phrase fine to send of the text of the areas within it | — |
 | `patterns/<name>.txt` | a shape of the identifiers of an area within it | a shape that does not compile |
-| `ignore.txt` | a folder inside it that holds none of its documents | a folder outside it |
+| `ignore.txt` | a folder inside it that holds none of its documents; with a wildcard in a name, when the names before it lead to the area or a folder inside it | a folder outside it |
 | `reads.txt` | a service whose reading calls read inside the area or an area within it (below) | an area outside it, a pattern that catches every destination, a line that is not `<destination> <area> [<argument>=<shape>]...` |
 
 `reads.txt` places what a service holds inside an area, so a session that may not

@@ -35,7 +35,8 @@ used when the guard runs on its own; under a platform root the same files sit in
         that area that follow a shape: product codes, client names
     ~/.config/guard/allow.txt          phrases that are fine to send
     ~/.config/guard/ignore.txt         folders inside an area that hold no documents
-                                       of it (an external corpus, build logs)
+                                       of it (an external corpus, build logs); a name may
+                                       hold `*`, `?` or `[...]`, within that one name
     ~/.config/guard/background.txt     folders of public text and code; whatever
                                        also appears there is not specific to an
                                        area and is dropped (a table of it keeps for a
@@ -127,6 +128,7 @@ import fcntl
 import fnmatch
 import importlib
 import importlib.util
+import itertools
 import json
 import os
 import re
@@ -512,12 +514,34 @@ def shared_places(areas: dict[str, list[Path]]) -> list[str]:
     return sorted(places, key=len, reverse=True)
 
 
+# A wildcard in a folder's name on an ignore line: `*`, `?` or `[...]`, matched within one name.
+IGNORE_WILDCARD = re.compile(r"[*?\[]")
+
+
+def is_ignored(path: Path, ignored: list[Path]) -> bool:
+    """Whether the path is an ignored folder or lies inside one. A name of an ignore line may hold
+    a wildcard, matched against the name at that depth only (`subprojects/*/pages` reaches one
+    level of subprojects, never a folder deeper down)."""
+    for folder in ignored:
+        if not IGNORE_WILDCARD.search(str(folder)):
+            if path == folder or folder in path.parents:
+                return True
+        elif len(path.parts) >= len(folder.parts) and all(
+                fnmatch.fnmatchcase(name, pattern) for name, pattern in zip(path.parts, folder.parts)):
+            return True
+    return False
+
+
 def kept_ignored(areas: dict[str, list[Path]]) -> list[Path]:
-    """Folders an area keeps out of its own walk (no document of it there): only inside its folders."""
+    """Folders an area keeps out of its own walk (no document of it there): only inside its folders.
+    A line with a wildcard is inside when the folder its fixed names lead to is the area's or lies
+    inside it, so the wildcard never reaches past the area."""
     out = []
     for owner, path, line in kept_lines("ignore.txt", areas):
         folder = expand(line)
-        if line.startswith(("/", "~", "$")) and inside(folder, areas[owner]):
+        fixed = Path(*itertools.takewhile(lambda name: not IGNORE_WILDCARD.search(name), folder.parts))
+        reaches = fixed != folder and (fixed in areas[owner] or inside(fixed, areas[owner]))
+        if line.startswith(("/", "~", "$")) and (inside(folder, areas[owner]) if fixed == folder else reaches):
             out.append(folder)
         else:
             skip(path, line, f"is not a folder inside {owner}")
@@ -979,7 +1003,7 @@ def documents(roots: list[Path], inner: list[Path], ignored: list[Path], repos: 
             if here != root:
                 repo_of[here] = here if (here / ".git").exists() else repo_of[here.parent]
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")
-                       and here / d not in inner and here / d not in ignored]
+                       and here / d not in inner and not is_ignored(here / d, ignored)]
             if folders is not None:
                 with contextlib.suppress(OSError):
                     folders[folder] = here.stat().st_mtime_ns
@@ -1352,13 +1376,14 @@ def merged(fids: list[str], allowed: set[int], public: array) -> array:
     return out
 
 
-def build(areas: dict[str, list[Path]], full: bool = True) -> dict:
+def build(areas: dict[str, list[Path]], full: bool = True, wait: bool = False) -> dict:
     """_build_locked, but only one process at a time walks and writes: the lock is taken first, and
     a process that cannot take it right away uses the summary already on disk instead of waiting or
     walking beside whoever holds it. Waiting is only worth it when there is nothing on disk yet to
-    fall back to (a fresh machine, or the cache wiped by --refresh)."""
+    fall back to (a fresh machine, or the cache wiped by --refresh), or when the build was asked
+    for by hand (`wait`): a walk under way may be keeping the tables it found."""
     have_index = (CACHE / "summary.json").is_file()
-    with lock_file(wait=not have_index) as acquired:
+    with lock_file(wait=wait or not have_index) as acquired:
         if acquired:
             return _build_locked(areas, full)
     existing = built_summary()
@@ -1370,11 +1395,24 @@ def build(areas: dict[str, list[Path]], full: bool = True) -> dict:
         return _build_locked(areas, full)
 
 
+def tables_mark(areas: dict[str, list[Path]]) -> str:
+    """A mark of the settings an area's table is made with besides its documents: the folders kept
+    out of the walk and the phrases allowed. A table made under another mark holds what they now
+    leave out (a folder put in ignore.txt, a phrase added to allow.txt) until it is merged anew."""
+    import hashlib   # loaded where it is used: the agent's entry guard reads this file on every call
+    allowed = sorted(read_lines(guard_places.setting("allow.txt")))
+    ignored = sorted(str(p) for p in ignored_folders(areas))
+    return hashlib.sha256(json.dumps([allowed, ignored]).encode()).hexdigest()[:16]
+
+
 def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
     """Walk every area and reuse the runs of every document whose stamp holds. A full build merges
     each area's table anew; otherwise the documents that changed go to the area's delta table and
     the merge waits until the delta grows past MAX_DELTA (= a walk costs the walk, not the merge).
-    A document gone from disk stays in the table until the next full build (= the safe side)."""
+    The table is merged anew all the same when it holds prints no document gives any more: a
+    document of it gone from disk, rewritten, moved out of the area or into an ignored folder (seen
+    here, or by catch_up() before: `stale` in the summary), or the table made under other settings
+    (tables_mark)."""
     started = time.time()
     public = background_prints()
     allowed: set[int] = set()
@@ -1386,7 +1424,9 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
     index: dict = {}
     ignored = ignored_folders(areas)
     repos = Repos()
-    summary = {"built": started, "checked": started, "run": [RUN, LATIN_RUN], "areas": {}, "unreadable": []}
+    mark = tables_mark(areas)
+    summary = {"built": started, "checked": started, "run": [RUN, LATIN_RUN], "areas": {}, "unreadable": [],
+               "settings": mark}
     folders: dict = {}
     merged_all = True       # every area's table was merged anew against this table of public text
     for name, roots in areas.items():
@@ -1405,8 +1445,13 @@ def _build_locked(areas: dict[str, list[Path]], full: bool) -> dict:
                 index[key].append("delta")
                 changed.append(index[key][1])
         base = CACHE / f"{name}.bin"
+        # Prints in the table that no document gives now: the document left it or changed.
+        stale = name in previous.get("stale", []) or any(
+            entry[2] == name and entry[-1] != "delta"
+            and (key not in index or index[key][0] != entry[0] or index[key][2] != name)
+            for key, entry in old.items())
         keep_base = (not full and base.is_file() and name in previous.get("areas", {})
-                     and len(changed) <= MAX_DELTA)
+                     and len(changed) <= MAX_DELTA and not stale and previous.get("settings") == mark)
         if keep_base:
             merged_all = False
             atomic_write(CACHE / f"{name}.delta.bin", merged(changed, allowed, public).tobytes())
@@ -1632,7 +1677,7 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
         changed = list(dict.fromkeys(database_read_with(expand(str(c))) for c in changed))
         for path in changed:
             found = area_root(areas, path)
-            if found is None or found[0] == EXEMPT or any(path == i or i in path.parents for i in ignored):
+            if found is None or found[0] == EXEMPT or is_ignored(path, ignored):
                 continue
             area, root = found
             if path == root:
@@ -1666,7 +1711,9 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
             for name in replaced:
                 fids = [v[1] for v in index.values() if v[2] == name]
                 if len(fids) > SMALL_AREA:
+                    # The walk merges this table anew: the index no longer tells it what is stale.
                     summary["walk_soon"] = True
+                    summary["stale"] = sorted(set(summary.get("stale", [])) | {name})
                     continue
                 table = merged(fids, allowed, public)
                 atomic_write(CACHE / f"{name}.bin", table.tobytes())
@@ -1771,10 +1818,11 @@ def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
         if not fits(summary, areas):
             # Nothing on disk fits these areas: nothing to judge with until they are built anew.
             summary = None
-        elif summary.get("public", "") != public_now:
-            # The areas' tables were merged against another table of public text: what became
-            # public since is still in them, and what is public no longer is still missing. They
-            # are merged anew apart; the tables on disk answer meanwhile.
+        elif summary.get("public", "") != public_now or summary.get("settings") != tables_mark(areas):
+            # The areas' tables were merged against another table of public text, or under other
+            # settings: what became public or was kept out since is still in them, and what is
+            # public no longer is still missing. They are merged anew apart; the tables on disk
+            # answer meanwhile.
             summary = walk_apart(summary)
         else:
             summary = catch_up(areas, summary)
@@ -1786,7 +1834,7 @@ def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
                 summary = walk_apart(summary, wait=0)
     if summary is None and refresh:
         say("walking the private documents (unchanged ones are reused)...")
-        summary = build(areas, full=True)
+        summary = build(areas, full=True, wait=True)
         say_built(summary)
     elif summary is None:
         summary = build_apart(areas)
