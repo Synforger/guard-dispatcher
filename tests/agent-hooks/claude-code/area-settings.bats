@@ -105,6 +105,14 @@ EOF
     [[ "$output" != *"/lab'"* ]]
 }
 
+@test "area settings: a folder with a wildcard is read when the names before it lie in the area" {
+    printf '%s\n%s\n%s\n' "${WORK}/*/pages/_common" "${WORK}/lab/*/cache" "${BATS_TEST_TMPDIR}/*/pages" > "${OWN}/ignore.txt"
+    corpus --settings
+    [[ "$output" == *"/*/pages'"*"is not a folder inside company"* ]]
+    [[ "$output" != *"pages/_common'"* ]]
+    [[ "$output" != *"/cache'"* ]]
+}
+
 @test "area settings: a folder for no area is not read at all" {
     mkdir -p "${GUARD_CONFIG_DIR}/areas/ghost"
     printf '*svc_ghost*    company\n' > "${GUARD_CONFIG_DIR}/areas/ghost/destinations.txt"

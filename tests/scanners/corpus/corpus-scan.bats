@@ -615,6 +615,62 @@ print(c.join_wrapped(['採寸表の三段目は夜', '明けに読み直すこ�
     [ "$status" -eq 0 ]
 }
 
+@test "corpus: a folder put in ignore.txt after the tables were built takes its text out at the next scan" {
+    mkdir -p "${WORK}/corpus-external"
+    printf '%s\n' "${COMPANY_TEXT}" > "${WORK}/corpus-external/a.txt"
+    rm "${WORK}/meetings/plan.md"
+    mk_repo other
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 1 ]
+    printf '%s\n' "${WORK}/corpus-external" > "${GUARD_CONFIG_DIR}/ignore.txt"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a phrase taken out of allow.txt after the tables were built is caught at the next scan" {
+    printf '%s\n' "${COMPANY_TEXT}" > "${GUARD_CONFIG_DIR}/allow.txt"
+    mk_repo other
+    commit_line "${COMPANY_TEXT}"
+    scan_last
+    [ "$status" -eq 0 ]
+    : > "${GUARD_CONFIG_DIR}/allow.txt"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: a deleted document's text leaves a large area's table at the next walk" {
+    export GUARD_CORPUS_SMALL_AREA=0
+    printf 'the loom in the east hall is retuned each spring\n' > "${WORK}/meetings/loom.md"
+    mk_repo other
+    commit_line "the loom in the east hall is retuned each spring"
+    scan_last
+    [ "$status" -eq 1 ]
+    rm "${WORK}/meetings/loom.md"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: an ignore line may name a folder with a wildcard in one name, and reaches no deeper" {
+    local tier
+    for tier in alpha beta; do
+        mkdir -p "${WORK}/tiers/${tier}/pages/_common" "${WORK}/tiers/${tier}/deep/pages/_common"
+        printf 'shared widget %s draws the table of contents\n' "${tier}" > "${WORK}/tiers/${tier}/pages/_common/toc.md"
+        printf 'the deep copy of %s is a document all the same\n' "${tier}" > "${WORK}/tiers/${tier}/deep/pages/_common/note.md"
+    done
+    printf '%s\n' "${WORK}/tiers/*/pages/_common" > "${GUARD_CONFIG_DIR}/ignore.txt"
+    mk_repo other
+    commit_line "shared widget alpha draws the table of contents"
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "shared widget beta draws the table of contents"
+    scan_last
+    [ "$status" -eq 0 ]
+    commit_line "the deep copy of beta is a document all the same"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
 # --- a new client folder is an area at once -----------------------------------------
 
 @test "corpus: a client folder made after the areas were written is its own area" {
