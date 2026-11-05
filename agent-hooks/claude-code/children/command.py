@@ -10,6 +10,10 @@ supplies the judgements that need its areas and git (`Guard`).
         register the child; prints the kind; exit 0 registered, 1 refused
     area-guard.py marks SESSION
         the areas a session is held to, one per line
+    area-guard.py marks SESSION --carry-from EARLIER
+        add the areas EARLIER is held to to SESSION's own marks, and print SESSION's: the client
+        runs it when it writes a conversation out under a new session id (a fork, a move to
+        another account), which carries what EARLIER read. It only adds
 
 FILE lists the places the child may write, one folder per line. A refusal is one line on stderr.
 On a machine with no areas, or with the entry guard off, both `child` commands pass and register
@@ -38,6 +42,7 @@ class Guard:
     may_write: Callable[[Path, set[str]], bool]
     publishes: Callable[[Path], bool]
     scan: Callable[[Path, set[str]], tuple[int, str]]
+    add_marks: Callable[[str, set[str]], None]
     real: Callable[[str], Path]
 
 
@@ -53,7 +58,9 @@ def _parser() -> argparse.ArgumentParser:
     check.add_argument("--parent", required=True)
     check.add_argument("--writes", type=Path)
     check.add_argument("--text", type=Path, required=True)
-    top.add_parser("marks").add_argument("session")
+    marks = top.add_parser("marks")
+    marks.add_argument("session")
+    marks.add_argument("--carry-from", metavar="EARLIER")
     return parser
 
 
@@ -129,6 +136,8 @@ def _check(args: argparse.Namespace, guard: Guard) -> int:
 def run(argv: list[str], guard: Guard) -> int:
     args = _parser().parse_args(argv)
     if args.command == "marks":
+        if args.carry_from:
+            guard.add_marks(args.session, registry.marks_of(args.carry_from, guard.own_marks(args.carry_from)))
         print("\n".join(sorted(registry.marks_of(args.session, guard.own_marks(args.session)))))
         return 0
     return _add(args, guard) if args.action == "add" else _check(args, guard)

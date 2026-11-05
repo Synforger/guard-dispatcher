@@ -1324,6 +1324,15 @@ def load_state(session: str) -> dict:
     return {"areas": sorted(data.get("areas") or []), "tabs": dict(data.get("tabs") or {})}
 
 
+def add_marks(session: str, names: set[str]) -> None:
+    """Add areas to a session's own marks (a conversation carried over from a session that read there)."""
+    if not names:
+        return
+    state = load_state(session)
+    state["areas"] = sorted(set(state["areas"]) | names)
+    save_state(session, state)
+
+
 def save_state(session: str, state: dict) -> None:
     STATE.mkdir(parents=True, exist_ok=True)
     (STATE / f"{session}.json").write_text(json.dumps(state))
@@ -1731,6 +1740,7 @@ def child_guard() -> children.command.Guard:
         may_write=lambda place, marks: may_write(place, marks, areas),
         publishes=lambda place: publishes_outside(place, areas),
         scan=lambda text, marks: peers.scan("session:child", text, sorted(marks)),
+        add_marks=add_marks,
         real=real)
 
 
