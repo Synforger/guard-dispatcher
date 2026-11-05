@@ -709,6 +709,13 @@ step earlier, before each tool call, from the same `areas.txt`:
   `area-guard.py marks SESSION` prints the areas a session is held to. An agent does not run
   `child add` itself, nor write the register under the guard's state folder.
 
+- **A conversation written out under a new session id carries what it read.** A client that forks
+  a conversation, or moves it to another account, writes its lines out under a new id, and the
+  new session would start with no marks while it holds the earlier one's text. The client runs
+  `area-guard.py marks NEW --carry-from EARLIER` once it has written the new conversation: the
+  areas EARLIER is held to (a child's inherited ones too) are added to NEW's own marks, which it
+  then prints. It only adds, so it never lets a session reach further.
+
 The hook is registered for every tool (`matcher: "*"`): a send can go through any tool, and a call the
 guard is not asked about is one it cannot judge. A call that passes prints nothing, so nothing is added to the agent's context.
 A refusal is one line naming the area and the destination. `doctor.sh` reports
