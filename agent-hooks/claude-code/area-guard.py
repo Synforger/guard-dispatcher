@@ -231,23 +231,37 @@ def shell_words(command: str) -> list[str]:
 
 def service_areas(tool: str, args: dict, cwd: str, tabs: dict) -> set[str]:
     """The areas a call to a service reads inside, by the lines the areas keep in `reads.txt`
-    (service_reads): a reading MCP call, any call to a browser tab at the site, a curl with no body.
-    A call that sends or drafts reads nothing there; its send is judged apart."""
+    (service_reads): a reading MCP call, any call to a browser tab at the site, a curl with no body,
+    an rclone that takes files from a remote. A call that sends or drafts reads nothing there; its
+    send is judged apart. A call that a list of Drive files (`fileId=@meetings`) cannot be checked
+    against reads inside the line's area; a session that may not read there is refused here, with
+    the reason."""
     corpus = corpus_module()
     try:
-        lines = corpus.kept_reads(corpus.load_areas(AREAS))
+        areas = corpus.load_areas(AREAS)
+        lines = service_reads.list_files.located(corpus.kept_reads(areas), corpus.kept_lines("reads.txt", areas))
     except Exception:  # noqa: BLE001 — a broken checkout must not stop the agent, as in load_areas
         return set()
     if not lines:
         return set()
     out = outgoing_module()
+    lists = service_reads.drive_lists.DriveLists()
+    found: set[str] = set()
     if tool == "Bash":
-        return {area for send in out.sends(tool, args, cwd, SEND_SCAN, tabs) if send.reading
-                for area in service_reads.rules.areas_read(lines, send.dest, {})}
-    destination = out.destination_of(tool, args, tabs)
-    if destination.startswith("browser:") or (tool.startswith("mcp__") and out.reads_only(tool, args)):
-        return service_reads.rules.areas_read(lines, destination, args)
-    return set()
+        found = {area for send in out.sends(tool, args, cwd, SEND_SCAN, tabs) if send.reading
+                 for area in service_reads.rules.areas_read(lines, send.dest, send.arguments, lists)}
+    else:
+        destination = out.destination_of(tool, args, tabs)
+        if destination.startswith("browser:") or (tool.startswith("mcp__") and out.reads_only(tool, args)):
+            found = service_reads.rules.areas_read(lines, destination, args, lists)
+    reachable = reach(load_areas()) if lists.unverified else None
+    if reachable is not None and (beyond := found - reachable):
+        deny(f"area-guard: this call may read inside {', '.join(sorted(beyond))} and cannot be checked: "
+             f"{'; '.join(lists.unverified)}. This session reads only inside "
+             f"{', '.join(sorted(reachable)) or 'no area'} (it works in {work_folder()}). "
+             f"Ask a session that works there")
+        raise SystemExit(0)
+    return found
 
 
 def load_areas() -> list[tuple[str, Path]]:
