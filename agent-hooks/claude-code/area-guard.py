@@ -112,6 +112,7 @@ import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
 import guard_places  # noqa: E402
+import orders_edit  # noqa: E402
 import service_reads  # noqa: E402
 import work_reads  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
@@ -912,6 +913,20 @@ def kept(path: Path, transcript: str | None, marks: set[str] | None = None) -> t
         if home in path.parents and TRANSCRIPT.fullmatch(path.relative_to(home).as_posix()):
             return "a session's transcript", TRANSCRIPT_WHY
     return None
+
+
+def adds_relay_lines(path: Path, tool: str, args: dict) -> bool:
+    """Whether an Edit or a Write of `orders.txt` only adds openings of relayed messages, which only
+    take words out of what counts as the operator's (orders_edit). A shell command is not read: what
+    it leaves in the file is not known before it runs."""
+    if settings_name(path) != "orders.txt":
+        return False
+    try:
+        before = path.read_text(encoding="utf-8") if path.exists() else ""
+    except OSError:
+        return False
+    after = orders_edit.text_after(tool, args, before)
+    return after is not None and orders_edit.only_adds_relay_lines(before, after)
 
 
 def kept_by(command: str, cwd: str, transcript: str | None,
@@ -1839,6 +1854,8 @@ def main() -> int:
         writer |= remote_marks(command, cwd)
     what = kept(Path(written), transcript, writer) if tool in WRITES else \
         kept_by(args.get("command", ""), cwd, transcript, writer) if tool == "Bash" else None
+    if what and tool in WRITES and not writer and adds_relay_lines(Path(written), tool, args):
+        what = None
     # The guard's settings change on the operator's yes; a transcript, which judges that yes, never.
     if what:
         is_setting = what[1].startswith(SETTINGS_WHY)
