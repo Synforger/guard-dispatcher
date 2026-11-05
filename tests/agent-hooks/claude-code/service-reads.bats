@@ -338,3 +338,15 @@ denied() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"permissionDecision": "d
     passed
     [ "$(asked)" -eq 4 ]
 }
+
+@test "service reads: a shortcut on the list holds the file it points to, which the search does not find" {
+    drive_lists
+    printf '[{"id": "%s", "name": "1on1 - Gemini によるメモ", "mimeType": "application/vnd.google-apps.document"}, {"id": "sc1", "name": "Review - Gemini によるメモ", "mimeType": "application/vnd.google-apps.shortcut", "shortcutDetails": {"targetId": "target9"}}]\n' \
+        "${MEETING_B}" > "${H}/answer-b.json"
+    as "${CLIENT}"
+    call "${DRIVE_READ}" '{"fileId": "target9"}'
+    denied
+    [[ "${output}" == *"this call reads inside hub"* ]]
+    call "${DRIVE_READ}" '{"fileId": "sc1"}'
+    denied
+}

@@ -76,7 +76,13 @@ class DriveTable:
                 raise Unreadable(f"rclone answered for {drive_list.remote} with something that is not a list of files")
             for item in found:
                 if isinstance(item, dict) and isinstance(item.get("id"), str):
-                    files[item["id"]] = str(item.get("name") or "")
+                    name = str(item.get("name") or "")
+                    files[item["id"]] = name
+                    # A shortcut is found by its name, but a read names the file it points to, which
+                    # the search may not find itself (a document shared to the meeting's guests).
+                    target = (item.get("shortcutDetails") or {}).get("targetId")
+                    if isinstance(target, str) and target:
+                        files.setdefault(target, name)
         return cls(files, time.time())
 
     @staticmethod
