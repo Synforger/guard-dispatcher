@@ -261,6 +261,7 @@ inside the area only:
 | `ignore.txt` | a folder inside it that holds none of its documents; with a wildcard in a name, when the names before it lead to the area or a folder inside it | a folder outside it |
 | `roles.txt` | `<role> <folder>`: the name the session working in a folder inside the area goes by (below) | a folder outside it, a line that is not two words |
 | `reads.txt` | a service whose reading calls read inside the area or an area within it (below) | an area outside it, a pattern that catches every destination, a line that is not `<destination> <area> [<argument>=<shape>]...` |
+| `lists/<list>.drive` | a list of Drive files that a `reads.txt` line of the same area names with `<argument>=@<list>` (below) | — (a list that is missing or broken refuses the calls it would have judged) |
 
 `reads.txt` places what a service holds inside an area, so a session that may not
 read there is refused a reading call to the service before it runs, as it is a
@@ -299,6 +300,50 @@ messages between sessions lists the roles a session may see and resolves a
 role to the session working in its folder: `peers.py --roles --folder <the
 viewing session's work folder> [--session <its id>]` prints `<role>\t<folder>`
 per line.
+
+A condition can name a list of Drive files instead of a glob: `<argument>=@<list>`
+fits a value that is the id of a file on the list. The list is the file
+`lists/<list>.drive` beside the `reads.txt` that holds the line, and says which
+files the area holds apart (the notes and transcripts of its meetings) without
+placing the rest of a Drive in it:
+
+```
+# areas/company/reads.txt
+mcp__*Google_Drive__*   hub   fileId=@meetings    # a tool call that names a file by its id
+rclone:<remote>         hub   id=@meetings        # rclone copyid / backend copyid
+rclone:<remote>         hub   path=@meetings      # rclone cat / copy / copyto / lsjson / lsf ...
+# areas/company/lists/meetings.drive
+remote <remote>
+query name contains 'Notes by Gemini'
+query name contains 'Gemini によるメモ'
+```
+
+A list file has one `remote <name>` line (an rclone remote that reaches the Drive)
+and one or more `query <expression>` lines (a Drive search expression, as
+`rclone backend query` takes it); `#` opens a comment on a line of its own. The
+guard asks the Drive for each query and keeps the files it finds, by id and name,
+in its cache.
+
+- **Only a call that names a file fits.** A call that gives no value (a
+  `search_files`, a `list_recent_files`) is outside such a line, unlike a glob
+  condition, which a call with no value still fits. Files outside the list stay
+  readable by everyone.
+- **A new file is found.** A kept table of 60 seconds or less is trusted. An older
+  one is trusted for a file it holds; for a file it does not hold the Drive is
+  asked again before the call is judged, so a document made since (a meeting that
+  has just ended) is caught.
+- **A call that cannot be checked is refused.** When rclone is missing, the remote
+  is not there, a query fails, the list file is missing or broken, or the file is
+  only known when the command runs (`$ID`), the call counts as reading inside the
+  line's area. A session that may read there passes and is marked; any other is
+  refused with the reason in one line.
+- **rclone is read as a service.** A command that takes content or a listing from a
+  remote is a reading call to `rclone:<remote>`: `copyid` and `backend copyid` name
+  a file by `id`; `cat`, `copy`, `copyto`, `sync`, `move`, `lsjson`, `lsf`, `ls`,
+  `size`, `check` and the like name a path by `path`, which fits when its last
+  name (with or without the extension an export adds) is the name of a file on the
+  list. `backend query` and a bare listing give no value. A copy toward a remote is
+  a send, judged as before.
 
 The machine's own files come first and win, and the areas' destination lines
 come ahead of the built-in defaults (a connector the defaults put outside every

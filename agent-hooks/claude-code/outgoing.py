@@ -62,6 +62,10 @@ payload is the text written, and for an edit the file's text too. Other calls wr
 a command line does not tell (a program writes its own output), so the files they leave are
 judged after the call (handed.py, next to this file).
 
+An `rclone` command that takes files or a listing from a remote is a reading call to `rclone:<remote>`
+(service_reads/rclone_reads.py): the id or the path it names is the argument a line of an area's
+reads.txt can match (`id=@meetings`), as an MCP call's argument is. A copy toward a remote is a send.
+
 A message to another agent session (`SendMessage`) is named `session:<receiver>` and judged by
 where that session has read, not by a line of destinations.txt (`peers.py`, next to this file).
 """
@@ -82,6 +86,7 @@ from urllib.parse import unquote_plus, urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_events  # noqa: E402
+from service_reads import rclone_reads  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
 
 # The words of a tool's own name (`mcp__server__slack_read_channel` -> slack, read, channel), however
@@ -248,6 +253,7 @@ class Send(NamedTuple):
     unknown: str | None = None          # why the body is only known when the command runs, if it is
     reading: bool = False                # a reading call: only its own strings reach the service
     handles: str = ""                    # the ids it names objects of the service by: not text it carries
+    arguments: dict = {}                 # a reading call's arguments by name, matched by reads.txt (read only)
 
 
 @functools.lru_cache(maxsize=None)
@@ -774,6 +780,14 @@ def bucket_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) 
     return [Send(dest, "\n".join(texts), unreadable)]
 
 
+def rclone_read_sends(words: list[str]) -> list[Send]:
+    """rclone: what it takes from a remote is a reading call to `rclone:<remote>` (service_reads.rclone_reads).
+    The path it names is text the call carries; the id of a Drive file names an object the remote holds."""
+    return [Send(f"rclone:{remote}", arguments.get("path", ""), [], reading=True, handles=arguments.get("id", ""),
+                 arguments=arguments)
+            for remote, arguments in rclone_reads.reads(words)]
+
+
 def socat_sends(words: list[str]) -> list[Send]:
     """socat relays whatever it reads to a network address: its payload cannot be named."""
     hosts = [m.group(2) for w in words[1:] if (m := SOCKET_ADDRESS.match(w))]
@@ -910,6 +924,8 @@ def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
             out += http_sends(args, stdin, cwd, send_scan)
         elif tool in ("aws", "gcloud", "gsutil", "rclone"):
             out += bucket_sends(tool, words, stdin, cwd, send_scan)
+            if tool == "rclone":
+                out += rclone_read_sends(words)
         elif tool == "socat":
             out += socat_sends(words)
         elif tool in ("websocat", "wscat"):
@@ -1022,7 +1038,7 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
     from the hook's `event` (its transcript); once everything else has passed it takes one of
     the order's shown blocks, kept under `state`."""
     judged = send_scan_module(send_scan)
-    for name, payload, unreadable, unknown, reading, handles in sends(tool, args, cwd, send_scan, tabs):
+    for name, payload, unreadable, unknown, reading, handles, _arguments in sends(tool, args, cwd, send_scan, tabs):
         if name.startswith(SESSION):
             if why := to_session(name[len(SESSION):], payload, event):
                 return why
