@@ -990,6 +990,22 @@ its pasted-text tag; the opening is looked for inside that tag too.
 This holds as long as agents cannot reach the client's own way of typing as
 the operator: block it (see *What stays on this machine*).
 
+The `>` and `>>` lines may also sit in `openings.txt`, beside `orders.txt`. A
+line there only takes words out of what counts as the operator's, so an agent
+keeps that file under the operator's grant (`agent-writes.txt`) with no yes;
+anything but a `>` or `>>` line there is not read, so it never orders or
+approves. `include <file>` there reads the `>` and `>>` lines of another file,
+one level deep: a client keeps the openings of everything it types in its own
+repository and adds one with no hand on the machine.
+
+```
+# openings.txt
+include ~/tools/client/contracts/openings.txt
+```
+
+`order.py --openings` prints every opening, one per line with its `>` or `>>`,
+for whatever else has to tell a relayed message apart.
+
 #### A message from another machine
 
 A client may also carry messages between machines. Whoever sits at the other
