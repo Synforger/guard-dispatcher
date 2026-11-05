@@ -33,6 +33,14 @@ the session they were typed in has read inside: they pass only to a session that
 each of those areas (and are scanned like any message besides).
 
     peers.py --to SESSION --text FILE --typed-in SESSION    FILE is what the operator typed there
+
+A session addresses another by the role it holds (`roles.txt` among an area's own settings: a name
+and the folder the session works in), and a relaying client shows that name in place of a hidden
+one. A role is shown only to a session that reads inside the area keeping it:
+
+    peers.py --roles --folder FOLDER [--session SESSION]
+                                          `<role>\t<folder>` per line, for every role a session
+                                          working in FOLDER (and holding SESSION's marks) may see
 """
 
 from __future__ import annotations
@@ -48,7 +56,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import area_roles  # noqa: E402
 import guard_places  # noqa: E402
+import work_reads  # noqa: E402
 from children import registry  # noqa: E402
 
 STATE = guard_places.marks_folder()
@@ -170,6 +180,22 @@ def covers(to: str, sender: str) -> bool:
     return True
 
 
+def roles(folder: Path, session: str | None) -> list[tuple[str, Path]]:
+    """(role, folder) for every role a session working in `folder`, holding `session`'s marks,
+    may see: those an area it reads inside keeps (area_roles.visible)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("corpus_scan", SEND_SCAN.parents[1] / "corpus/corpus-scan.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    named_areas = module.load_areas()
+    areas = [(name, root) for name, roots in named_areas.items() for root in roots]
+    home = Path(os.path.realpath(folder))
+    seen = area_roles.reach_from(home, areas, work_reads.named(home)) | set(marks(session) if session else [])
+    shown = area_roles.visible(module.kept_roles(named_areas), seen,
+                               lambda name, owner: module.within(name, owner, named_areas))
+    return [(name, place) for name, place, _ in shown]
+
+
 def typed_in(to: str, sender: str) -> tuple[int, str]:
     """(exit status, the line why) for the operator's own words, typed in `sender`, bound for
     `to`: they go only where every area `sender` has read inside has been read too."""
@@ -185,13 +211,25 @@ def typed_in(to: str, sender: str) -> tuple[int, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--to", required=True, help="the receiving session: its id, or its name")
+    parser.add_argument("--to", help="the receiving session: its id, or its name")
     parser.add_argument("--text", type=Path, help="a file holding the message")
     parser.add_argument("--covers", metavar="SESSION", help="exit 0 when the receiver knows every area this "
                         "sending session has read inside (its name may be shown to it), 1 when not")
     parser.add_argument("--typed-in", metavar="SESSION", help="the text is what the operator typed in this "
                         "session (its id, or its name): it carries every area that session has read inside")
+    parser.add_argument("--roles", action="store_true", help="print the roles a session working in --folder "
+                        "may see, one `<role>\\t<folder>` per line")
+    parser.add_argument("--folder", type=Path, help="with --roles: the folder the viewing session works in")
+    parser.add_argument("--session", help="with --roles: the viewing session, whose marks count too")
     args = parser.parse_args()
+    if args.roles:
+        if args.folder is None:
+            parser.error("--roles needs --folder")
+        for name, place in roles(args.folder, args.session):
+            print(f"{name}\t{place}")
+        return 0
+    if not args.to:
+        parser.error("give --to")
     if args.covers:
         return 0 if covers(args.to, args.covers) else 1
     if args.text is None:
