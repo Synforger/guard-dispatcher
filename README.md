@@ -638,7 +638,11 @@ step earlier, before each tool call, from the same `areas.txt`:
   and a session that has done so writes none of them. The grant itself,
   `orders.txt` and `agent-off` are never granted: an agent that wrote those on
   its own would grant itself, order its own sends, or switch the guard off. They
-  change on the operator's yes alone. `may-write` answers for the settings as an Edit of them is judged.
+  change on the operator's yes alone, with one exception: an Edit or a Write of
+  `orders.txt` that only adds openings of relayed messages (`>` and `>>` lines,
+  comments and blank lines), from a session that has read inside no area. Such
+  a line only takes words out of what counts as the operator's; a line added
+  through the shell is not known before the command runs, and still needs the yes. `may-write` answers for the settings as an Edit of them is judged.
   A line may name areas after the setting (`areas/company/ company hub`): then a
   session whose every mark is one of those areas, or lies within one of them,
   writes it too. The session that gathers the company keeps the company's own
