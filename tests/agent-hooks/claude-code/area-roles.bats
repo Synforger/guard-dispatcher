@@ -106,3 +106,12 @@ LINES
     run python3 "${PEERS}" --roles --folder "${TEAM}"
     [[ "${output}" != *"stranger"* ]]
 }
+
+@test "area roles: a Drive file that cannot be checked against the meetings names the role too, and why" {
+    printf 'mcp__*Google_Drive__*   hub   fileId=@meetings\n' >> "${GUARD_CONFIG_DIR}/areas/company/reads.txt"
+    as "${TEAM}"
+    call mcp__claude_ai_Google_Drive__read_file_content '{"fileId": "1AbC"}'
+    denied
+    [[ "${output}" == *"this call reads inside hub (it cannot be checked: the list meetings could not be checked"* ]]
+    [[ "${output}" == *"tabs send gatherer"* ]]
+}
