@@ -108,10 +108,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
 import guard_places  # noqa: E402
 import service_reads  # noqa: E402
+import work_reads  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
 
 CONFIG = guard_places.settings_folder()
@@ -128,15 +130,15 @@ GRANT = guard_places.setting("agent-writes.txt")
 OPERATOR_ONLY = (GRANT.name, "orders.txt", OFF.name)
 CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus/corpus-scan.py"
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/destinations/send-scan.py"
-EXEMPT = "_exempt"
-NO_AREA = "_outside"
+EXEMPT = area_roles.EXEMPT
+NO_AREA = area_roles.NO_AREA
 READS = {"Read", "Grep", "Glob"}
 # The folder a session works in, named by whatever started it. When it is set, the session reads only
 # inside the areas that hold that folder, the areas around them, and the areas the folder's READS_FILE
 # names; a call that reads inside any other area is refused before it runs, instead of marking the
 # session after. Unset, the session marks what it reads, as before.
 WORK_FOLDER = "GUARD_WORK_FOLDER"
-READS_FILE = "guard-reads.txt"
+READS_FILE = work_reads.READS_FILE
 # What still runs while a message from another machine holds the session: reading, and asking
 # the operator.
 HELD_RUNS = READS | {"AskUserQuestion"}
@@ -1306,9 +1308,7 @@ def save_state(session: str, state: dict) -> None:
     (STATE / f"{session}.json").write_text(json.dumps(state))
 
 
-def outer(name: str, inner: str, areas) -> bool:
-    """A root of `name` holds a root of `inner` (the company around one of its clients)."""
-    return any(n == name and m == inner and r != i and r in i.parents for n, r in areas for m, i in areas)
+outer = area_roles.outer
 
 
 def carried(target: Path, areas) -> list[str]:
@@ -1609,7 +1609,8 @@ def approval(tool: str, args: dict, event: dict, places: list[Path], areas) -> s
     acted = {a for p in places if (a := setting_area(p) or area_of(real(p), areas)) and a != EXEMPT}
     if reachable is not None and (beyond := acted - reachable):
         return (f"it acts inside {', '.join(sorted(beyond))}, which this session does not read "
-                f"(it works in {work_folder()}). Ask a session that works there")
+                f"(it works in {work_folder()}). "
+                f"{ask_whom(beyond, areas, set(load_state(event.get('session_id', 'unknown'))['areas']))}")
     why, found = order_module().ordered(tool, args, event, kind=order_module().CHANGE)
     return why or order_module().spend(found, event, STATE)
 
@@ -1739,17 +1740,25 @@ def reach(areas) -> set[str] | None:
     home = work_folder()
     if home is None:
         return None
-    held = {n for n, r in areas if n not in (EXEMPT, NO_AREA) and (home == r or r in home.parents)}
-    around = {n for n, _ in areas if n not in (EXEMPT, NO_AREA) and any(outer(n, h, areas) for h in held)}
+    return area_roles.reach_from(home, areas, work_reads.named(home))
+
+
+def ask_whom(wanted: set[str], areas, marks: set[str]) -> str:
+    """Whom to ask for what this session may not do inside `wanted`: the roles (`roles.txt`) this
+    session may see whose folder reaches all of it, each with the command that asks it; a session
+    that works there, when no role does."""
     try:
-        lines = (home / READS_FILE).read_text(encoding="utf-8").splitlines()
-    except OSError:
-        lines = []
-    named = {w for line in lines for w in line.split("#", 1)[0].split()}
-    # A name written as a glob (`client-*`) reaches every area it matches when the call is judged,
-    # so an area made later is read without a line of its own
-    globbed = {n for n, _ in areas if n not in (EXEMPT, NO_AREA) and any(fnmatch.fnmatchcase(n, w) for w in named)}
-    return held | around | named | globbed
+        corpus = corpus_module()
+        named_areas = corpus.load_areas(AREAS)
+        roles = corpus.kept_roles(named_areas)
+    except Exception:  # noqa: BLE001 — a broken checkout names no role; the refusal stands as it is
+        return "Ask a session that works there"
+    seen = (reach(areas) or set()) | marks
+    shown = area_roles.visible(roles, seen, lambda name, owner: corpus.within(name, owner, named_areas))
+    names = area_roles.asked(shown, wanted, lambda folder: area_roles.reach_from(folder, areas, work_reads.named(folder)))
+    if not names:
+        return "Ask a session that works there"
+    return "Ask " + " or ".join(f"the tab of {n} (`tabs send {n} <a file with what to do>`)" for n in names)
 
 
 def deny(reason: str) -> None:
@@ -1921,7 +1930,7 @@ def main() -> int:
     if (reachable := reach(areas)) is not None and (beyond := new - reachable):
         deny(f"area-guard: this session reads only inside {', '.join(sorted(reachable)) or 'no area'} "
              f"(it works in {work_folder()}), and this call reads inside {', '.join(sorted(beyond))}. "
-             f"Ask a session that works there")
+             f"{ask_whom(beyond, areas, marks)}")
         return 0
     if new - marks:
         state["areas"] = sorted(read_marks | new)

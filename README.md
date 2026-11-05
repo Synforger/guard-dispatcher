@@ -259,6 +259,7 @@ inside the area only:
 | `allow.txt` | a phrase fine to send of the text of the areas within it | — |
 | `patterns/<name>.txt` | a shape of the identifiers of an area within it | a shape that does not compile |
 | `ignore.txt` | a folder inside it that holds none of its documents; with a wildcard in a name, when the names before it lead to the area or a folder inside it | a folder outside it |
+| `roles.txt` | `<role> <folder>`: the name the session working in a folder inside the area goes by (below) | a folder outside it, a line that is not two words |
 | `reads.txt` | a service whose reading calls read inside the area or an area within it (below) | an area outside it, a pattern that catches every destination, a line that is not `<destination> <area> [<argument>=<shape>]...` |
 
 `reads.txt` places what a service holds inside an area, so a session that may not
@@ -282,6 +283,22 @@ conditions (`<argument>=<shape>`, a glob) sets apart what those values reach; th
 lines with none take the rest. A call that gives no value for a condition (a
 search over every channel) reads where every line of the destination points, and
 a call that gives several values reads where each of them does.
+
+`roles.txt` names the sessions of an area by what they do, so another session
+of the area can address one without learning where it works:
+
+```
+# areas/company/roles.txt
+gatherer   ~/org/hub        # the one that reads the company's mail and channels
+```
+
+A role is shown only to a session that reads inside the area keeping the line
+(it works inside it, or has read inside it). A refused read names the roles
+that may read what was wanted (*Agent entry guard*), and a client that relays
+messages between sessions lists the roles a session may see and resolves a
+role to the session working in its folder: `peers.py --roles --folder <the
+viewing session's work folder> [--session <its id>]` prints `<role>\t<folder>`
+per line.
 
 The machine's own files come first and win, and the areas' destination lines
 come ahead of the built-in defaults (a connector the defaults put outside every
@@ -431,7 +448,10 @@ step earlier, before each tool call, from the same `areas.txt`:
   refused before it runs, so the session never holds that area's text, and
   nothing is marked. A folder in no area reads inside none. The session does
   not write the `guard-reads.txt` of its own folder: what it may read is kept
-  by the operator, or by another session.
+  by the operator, or by another session. The refusal names whom to ask: each
+  role (`roles.txt`, below) the session may see whose folder reaches every area
+  the call wanted, with the command that asks it (`tabs send <role> <file>`),
+  or a session that works there when no role does.
 - A session that reads inside an area (a `Read` / `Grep` / `Glob` target, an
   area path a `Bash` command names, a `Bash` working directory) is marked
   with the name of the area the path is in. A command names a path where the

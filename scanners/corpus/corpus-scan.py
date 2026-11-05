@@ -627,12 +627,33 @@ def kept_reads(areas: dict[str, list[Path]]) -> list[tuple[str, str, tuple[tuple
     return out
 
 
+def kept_roles(areas: dict[str, list[Path]]) -> list[tuple[str, Path, str]]:
+    """(role, folder, area) of the lines each area keeps in `roles.txt`: the name a session that
+    works in the folder goes by among the sessions that read inside the area. A line is
+    `<role> <folder>`; a folder outside the area that keeps the line, or a line that does not read
+    as one, is skipped and named."""
+    out = []
+    for owner, path, line in kept_lines("roles.txt", areas):
+        words = line.split("#", 1)[0].split()
+        if len(words) != 2:
+            skip(path, line, "is not `<role> <folder>`")
+            continue
+        folder = expand(words[1])
+        roots = areas[owner]
+        if folder not in roots and not inside(folder, roots):
+            skip(path, line, f"{words[1]} is not inside {owner}")
+        else:
+            out.append((words[0], folder, owner))
+    return out
+
+
 def skipped_settings() -> list[str]:
     """Every line of the areas' own settings that is not read, with why (`--settings`)."""
     areas = load_areas()
     kept_ignored(areas)
     kept_destinations(areas)
     kept_reads(areas)
+    kept_roles(areas)
     for name in areas:
         kept_allowed(name, areas)
         patterns(name, areas)
