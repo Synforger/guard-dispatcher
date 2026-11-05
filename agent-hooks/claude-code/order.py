@@ -57,6 +57,13 @@ lines of orders.txt starting with `+` (with none, the built-in `APPROVALS`), wit
 cancelling tails. A send is ordered and a change approved apart: a ```send block takes no yes, and
 a ```guard block no order.
 
+The `>` and `>>` lines may also sit in openings.txt, beside orders.txt, which an agent may keep up
+to date under the operator's grant: a line there only takes words out of what counts as the
+operator's, so it needs no yes. A line `include <file>` there reads more of them from another file
+in the same form, so a client keeps the openings of what it types in its own repository and adds
+one with no hand here. A file that cannot be read gives none. `order.py --openings` prints every
+opening, one per line with its `>` or `>>`, for whatever else tells a relayed message apart.
+
 A line starting with `>>` is how a message relayed from a session on another machine opens. It is
 a relayed message like any other, and it also holds the session it came into (`held`): whoever
 sits at that other machine can have such a message written, so until the operator types a message
@@ -78,6 +85,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 import guard_places  # noqa: E402
 
 ORDERS = guard_places.setting("orders.txt")
+OPENINGS = guard_places.setting("openings.txt")
+INCLUDE = "include "
 # A fence of three or more backticks, closed by one of the same length.
 SEND, CHANGE = "send", "guard"
 BLOCKS = {kind: re.compile(rf"^(`{{3,}}){kind}[ \t]*\n(.*?)^\1[ \t]*$", re.S | re.M) for kind in (SEND, CHANGE)}
@@ -112,7 +121,7 @@ def settings() -> tuple[list[str], list[str], list[str], list[str], list[str]]:
     if not ORDERS.is_file():
         return [], [], [], [], []
     orders, tails, relays, far, approvals = [], [], [], [], []
-    for line in ORDERS.read_text(encoding="utf-8").splitlines():
+    for line in ORDERS.read_text(encoding="utf-8").splitlines() + opening_lines():
         line = line.split("#", 1)[0].strip()
         if line.startswith("+"):
             if line[1:].strip():
@@ -127,6 +136,26 @@ def settings() -> tuple[list[str], list[str], list[str], list[str], list[str]]:
         elif line:
             orders.append(line)
     return orders, tails, relays, far, approvals or list(APPROVALS)
+
+
+def opening_lines() -> list[str]:
+    """The `>` and `>>` lines of openings.txt and of the files its `include` lines name (one level:
+    an included file's own `include` lines are not followed). Any other line there is not read, so
+    the file never adds an order, a tail or an approving phrase."""
+    def read(path: Path) -> list[str]:
+        try:
+            return path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            return []
+    out = []
+    for line in read(OPENINGS):
+        line = line.split("#", 1)[0].strip()
+        if line.startswith(INCLUDE):
+            target = Path(os.path.expanduser(os.path.expandvars(line[len(INCLUDE):].strip())))
+            out += [x.strip() for x in read(target) if x.strip().startswith(">")]
+        elif line.startswith(">"):
+            out.append(line)
+    return out
 
 
 def phrases() -> tuple[list[str], list[str]]:
@@ -397,3 +426,11 @@ def spend(found: Ordered, event: dict | None, state: Path) -> str | None:
         (folder / (prefix + mine)).unlink(missing_ok=True)
         return "this order has already been spent on the same call: one shown block, one send"
     return None
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["--openings"]:
+        print("usage: order.py --openings", file=sys.stderr)
+        sys.exit(2)
+    _, _, relays, far, _ = settings()
+    print("\n".join([f">>{x}" for x in far] + [f">{x}" for x in relays if x not in far]))

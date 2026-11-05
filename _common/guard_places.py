@@ -7,7 +7,7 @@ With `AGENT_PLATFORM_ROOT` set, everything sits under that root, in a folder per
 
     <root>/config/guard/boundaries/   areas.txt, areas/, public.txt, ignore.txt, patterns/
     <root>/config/guard/entry/        agent-writes.txt, agent-off, handoff.txt
-    <root>/config/guard/exit/         allow.txt, destinations.txt, orders.txt, words/
+    <root>/config/guard/exit/         allow.txt, destinations.txt, orders.txt, openings.txt, words/
     <root>/config/guard/audit/        weekly-audit.conf, known/
     <root>/state/guard/marks/         what each session has read
     <root>/state/guard/audit/         the weekly audit's logs
@@ -42,6 +42,7 @@ SETTINGS = {
     "allow.txt": "exit/allow.txt",
     "destinations.txt": "exit/destinations.txt",
     "orders.txt": "exit/orders.txt",
+    "openings.txt": "exit/openings.txt",
 }
 #: The weekly audit's settings by name, and where they sit under `<root>/config/guard/`.
 AUDIT_SETTINGS = {
