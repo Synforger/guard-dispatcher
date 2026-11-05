@@ -123,9 +123,35 @@ reported() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"decision": "block"'* 
     after
     passed
     python3 -c "open('${H}/out/big.log', 'w').write('x' * (9 * 1024 * 1024))"
+    GUARD_HANDED_SETTLE_S=0 after
+    reported
+    [[ "${output}" == *"file:~/out/big.log cannot be scanned (larger than 8 MB)"* ]]
+}
+
+@test "handed: a file that cannot be read while it is still changing is held, and reported once it settles" {
+    python3 -c "open('${H}/out/big.log', 'w').write('x' * (9 * 1024 * 1024))"
+    after
+    passed
+    # Settled and still unreadable: the next call looks at it again, though it changed before that call.
+    touch -t 202601010000 "${H}/out/big.log"
     after
     reported
     [[ "${output}" == *"file:~/out/big.log cannot be scanned (larger than 8 MB)"* ]]
+    after
+    passed
+}
+
+@test "handed: a held file that turns out readable is judged as any other, and one taken away is let go" {
+    python3 -c "open('${H}/out/notes.log', 'w').write('x' * (9 * 1024 * 1024))"
+    python3 -c "open('${H}/out/gone.log', 'w').write('x' * (9 * 1024 * 1024))"
+    after
+    passed
+    printf 'meeting at ten\n' > "${H}/out/notes.log"
+    touch -t 202601010000 "${H}/out/notes.log"
+    rm "${H}/out/gone.log"
+    after
+    passed
+    [ "$(cat "${AREA_GUARD_STATE}/handed/held.json")" = "[]" ]
 }
 
 @test "handed: a file that arrived from outside is not judged until it changes" {
