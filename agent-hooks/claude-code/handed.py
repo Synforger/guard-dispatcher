@@ -14,6 +14,11 @@ background writes after its own call has ended. Each change of a file is judged 
 first session to see it (`<marks folder>/handed/`), so another session's file is not reported
 twice.
 
+A file whose text cannot be taken out while it is still being written (a PDF an application is
+saving) is held, not reported: it is looked at again at each later call, and reported only once it
+has not changed for SETTLE_S and still cannot be read (`<marks folder>/handed/held.json`). A file
+taken away or renamed in the meantime was not handed on under that name.
+
 A file that arrived from outside and has not changed since is nobody's writing here, and is not
 judged: a browser or a chat application marks what it takes in (macOS's quarantine attribute) with
 the time, and the operator's download lands in the folder during whatever call happens to be
@@ -58,6 +63,11 @@ QUARANTINE = "com.apple.quarantine"
 # the download starts or ends. Over the marked files of a working Downloads folder the longest was
 # 13 s. A download that takes longer is judged like any other file.
 ARRIVING_S = 60.0
+# How long a file that cannot be read must stay unchanged before it is reported. Two sessions saw the
+# same PDF change, unreadable each time, 56 s apart before it was renamed; the same bound as
+# ARRIVING_S. The variable shortens it for the tests.
+SETTLE_S = float(os.environ.get("GUARD_HANDED_SETTLE_S", "60"))
+HELD = "held.json"
 
 
 def load(path: Path, name: str) -> ModuleType:
@@ -153,14 +163,40 @@ def arrived_unchanged(path: Path, mtime_ns: int) -> bool:
     return marked_s is not None and mtime_ns / 1e9 <= marked_s + ARRIVING_S
 
 
+class Unsettled(Exception):
+    """The file cannot be read yet, and changed too lately to tell that it is done being written."""
+
+
+def held_files() -> list[Path]:
+    """The files held for being unreadable while still changing."""
+    try:
+        return [Path(p) for p in json.loads((STATE / "handed" / HELD).read_text())]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def keep_held(paths: list[Path]) -> None:
+    record = STATE / "handed" / HELD
+    try:
+        record.parent.mkdir(parents=True, exist_ok=True)
+        record.write_text(json.dumps(sorted({str(p) for p in paths})))
+    except OSError:
+        pass
+
+
 def refusal(name: str, path: Path, mtime_ns: int, outgoing: ModuleType) -> str | None:
     """Why the file may not be handed on, or None. A file that arrived from outside as it is, and a
-    file that is not text (an image, an archive), carry no words to judge and pass."""
+    file that is not text (an image, an archive), carry no words to judge and pass. Raises
+    Unsettled for a file that cannot be read and changed within SETTLE_S."""
     if arrived_unchanged(path, mtime_ns):
         return None
     text, why = outgoing.file_text(path, SEND_SCAN)
     if text is None:
-        return None if why == "not a text file" else f"{name} cannot be scanned ({why})"
+        if why == "not a text file":
+            return None
+        if time.time() - mtime_ns / 1e9 < SETTLE_S:
+            raise Unsettled
+        return f"{name} cannot be scanned ({why})"
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8",
                                      dir=os.environ.get("TMPDIR") or None) as fh:
         fh.write(text)
@@ -186,14 +222,29 @@ def main() -> int:
     since = call_began(event, event.get("session_id") or "unknown")
     outgoing = None
     found = []
-    for path, mtime_ns in changed_files(roots(patterns), since):
+    held = held_files()
+    still: list[Path] = []
+    candidates = dict(changed_files(roots(patterns), since))
+    for path in held:
+        try:
+            candidates.setdefault(path, path.stat().st_mtime_ns)
+        except OSError:
+            continue
+    for path, mtime_ns in candidates.items():
         name = judged.file_name(path)
         if not judged.file_matches(name, patterns) or judged_before(path, mtime_ns):
             continue
         outgoing = outgoing or load(OUTGOING, "outgoing")
-        if why := refusal(name, path, mtime_ns, outgoing):
+        try:
+            why = refusal(name, path, mtime_ns, outgoing)
+        except Unsettled:
+            still.append(path)
+            continue
+        if why:
             found.append(why)
         remember(path, mtime_ns)
+    if held or still:
+        keep_held(still)
     if found:
         print(json.dumps({"decision": "block", "reason": (
             "handed: a file left for the operator to hand to people carries what may not reach them. "
