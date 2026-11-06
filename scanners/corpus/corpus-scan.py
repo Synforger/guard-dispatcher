@@ -2212,7 +2212,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gh-argv", type=Path, help="a file holding the NUL-separated arguments of a gh call")
     parser.add_argument("--dest-area", help=f"the area the text is sent into, or {OUTSIDE} "
                         "(a service a tool sends to, declared in destinations.txt); several areas "
-                        "joined by commas are a place inside each (a session that has read in all)")
+                        "joined by commas are a session that has read in all: a place inside each when "
+                        "they nest into one, and the text of each when they do not")
     parser.add_argument("--where", action="store_true", help=f"print where the destination lives, or {OUTSIDE}")
     parser.add_argument("--commit", action="store_true",
                         help="the text is what a commit adds to the repository at --repo: it stays on this "
@@ -2314,6 +2315,7 @@ def main(argv: list[str] | None = None) -> int:
     sender = expand(str(args.repo or (sending_repo() if args.span else os.getcwd())))
     here: Path | None = sender
     also: list[Path] = []
+    names: list[str] = []
     if args.gh_argv:
         gh_args = [a for a in args.gh_argv.read_bytes().decode("utf-8", "replace").split("\0")]
         here = destination(gh_destinations(gh_args[:-1] if gh_args[-1:] == [""] else gh_args, sender),
@@ -2322,7 +2324,7 @@ def main(argv: list[str] | None = None) -> int:
         here = destination({slug}, sender, areas)
     elif args.dest_area:
         # A service has no folder: the area it sits in is declared, and stands in by its first
-        # root. Several areas (`a,b`) are a place inside each: a session that has read in all.
+        # root. Several areas (`a,b`) are a session that has read in all.
         names = [n for n in args.dest_area.split(",") if n]
         if names == [OUTSIDE]:
             here = None
@@ -2343,6 +2345,11 @@ def main(argv: list[str] | None = None) -> int:
     # A place carries its own areas' text; an area holding one of them (the company around a
     # client) is still checked: what goes to a client does not take the company's own text.
     own = {n for n in held if not any(n != m and outer(n, m, areas) for m in held)} | (OWNERS & held)
+    if names and len(own) > 1:
+        # Several areas that do not nest into one (two clients) are a session that has read inside
+        # each: it can write inside none of them, so no client takes what it is told, and the text
+        # of every area it has read (the company's too) is its own.
+        own |= set(names)
     checked = [n for n in areas if n not in UNSCANNED and n not in own]
     # A commit stays on this machine. Where areas.txt lets a repository of this area hold other
     # areas' text, those are not checked -- while the repository has no remote to send it to.
