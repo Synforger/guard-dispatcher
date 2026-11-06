@@ -1886,7 +1886,7 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
     [[ "$output" == *"ALL_OK"* ]]
 }
 
-@test "corpus: a PDF pdftotext cannot parse is unreadable, its reason names the exit code" {
+@test "corpus: a PDF pdftotext cannot parse is unreadable, its reason names the exit code and pdftotext's error" {
     command -v pdftotext >/dev/null || skip "pdftotext is not installed"
     printf 'not a real pdf file at all\n' > "${CLIENT}/received/broken.pdf"
     printf 'nothing copied here\n' > "${BATS_TEST_TMPDIR}/prime.txt"
@@ -1895,6 +1895,8 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
     [[ "$output" == *"1 documents could not be read (see --status): pdftotext exited"* ]]
     run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --status
     [[ "$output" == *"could not read (not checked): "*"/received/broken.pdf (pdftotext exited"* ]]
+    # and why pdftotext gave up, in its own words
+    [[ "$output" == *"/received/broken.pdf (pdftotext exited 1: Syntax Error: "* ]]
 }
 
 @test "corpus: a PDF whose extractor times out is unreadable within the PDF budget, not the full 300s" {
