@@ -541,6 +541,25 @@ client_code() {
     [ "$status" -eq 1 ]
 }
 
+@test "corpus: the head of a link right after digits is still the head every link shares" {
+    printf 'The weights sit in https://drive.google.com/drive/folders/1Qz9XkLmNoPqRsTuVwXyZaBcDeFgHiJk for every run.\n' > "${CLIENT}/received/notes.md"
+    mk_repo other
+    commit_line 'ref=12https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOpQrStUvWxYz01234'
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a long line of base64 data with no link in it is judged in seconds" {
+    printf 'The weights sit in https://drive.google.com/drive/folders/1Qz9XkLmNoPqRsTuVwXyZaBcDeFgHiJk for every run.\n' > "${CLIENT}/received/notes.md"
+    mk_repo other
+    # 60,000 characters of the runs a table of repeated 16-bit values encodes to
+    commit_line "const data = \"$(python3 -c 'print("QEBA" * 10000 + "AAAA" * 5000, end="")')\";"
+    local started="${SECONDS}"
+    scan_last
+    [ "$status" -eq 0 ]
+    [ "$((SECONDS - started))" -lt 30 ]
+}
+
 @test "corpus: a command called with its options is how the tool is used, not the area's text" {
     printf 'Before a run, check the board is free:\n\n    boardctl -d 0 --list-jobs=owner,mem_used --output=tsv,bare\n' > "${CLIENT}/received/runbook.md"
     mk_repo other

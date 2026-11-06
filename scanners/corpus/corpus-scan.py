@@ -203,7 +203,11 @@ SIGNS = re.compile(r"[\W_]{%d,}" % LATIN_RUN)
 # command is called or where a link points, not anyone's text: `: https://drive.google.com/drive/folders`
 # is the same after whatever sentence leads into it.
 OPTION = re.compile(r"(?<!\S)--?[A-Za-z][^\s]*")
-URL_HEAD = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/]+(?:/[A-Za-z._~-]*)*/", re.IGNORECASE)
+# The head starts at the first letter of its run of scheme characters (`head`). A search is tried only
+# where such a run begins: tried at every character of a long run with no `://` after it (base64 data),
+# each try would read to the run's end, and the time would grow with the square of the line.
+URL_HEAD = re.compile(r"(?<![a-z0-9+.-])[0-9+.-]*(?P<head>[a-z][a-z0-9+.-]*://[^\s/]+(?:/[A-Za-z._~-]*)*/)",
+                      re.IGNORECASE)
 MAX_AGE = int(os.environ.get("GUARD_CORPUS_MAX_AGE", str(6 * 3600)))
 BACKGROUND_MAX_AGE = int(os.environ.get("GUARD_CORPUS_PUBLIC_MAX_AGE", str(7 * 24 * 3600)))
 # How many prints of public text are held as one set while the table is put together.
@@ -827,11 +831,12 @@ def windows(text: str):
     # The runs that start inside [first, last] lie wholly in a stretch of signs, or start in the
     # head of a link.
     silent = sorted([(m.start(), m.end() - LATIN_RUN) for m in SIGNS.finditer(text)]
-                    + [(m.start(), m.end() - 1) for m in URL_HEAD.finditer(text)])
+                    + [(m.start("head"), m.end() - 1) for m in URL_HEAD.finditer(text)])
     # How many characters before each position belong to a command's options or to the head of a link.
     common = [0] * (len(text) + 1)
-    for m in [*OPTION.finditer(text), *URL_HEAD.finditer(text)]:
-        for k in range(m.start(), m.end()):
+    spans = [*(m.span() for m in OPTION.finditer(text)), *(m.span("head") for m in URL_HEAD.finditer(text))]
+    for start, end in spans:
+        for k in range(start, end):
             common[k + 1] = 1
     for k in range(len(text)):
         common[k + 1] += common[k]
