@@ -259,6 +259,8 @@ SMALL_AREA = int(os.environ.get("GUARD_CORPUS_SMALL_AREA", "1000"))
 # whole scan): a single huge attachment must not eat that budget, so it is marked unreadable
 # instead, on its own, well before the outer timeout could fire.
 PDF_TIMEOUT = int(os.environ.get("GUARD_CORPUS_PDF_TIMEOUT", "30"))
+# How much of pdftotext's own message a reason keeps.
+PDF_ERROR_CHARS = 100
 TEXT_RUN = re.compile(r"<(?:a:|w:)?t(?:\s[^>]*)?>([^<]*)</(?:a:|w:)?t>")
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "third_party", "dist", "build",
              "target", ".fetchcontent-cache", "DerivedData", "site-packages", ".gradle", "obj", "bin",
@@ -903,11 +905,21 @@ def join_wrapped(lines: list[str]) -> list[str]:
 
 
 def pdf_units(path: Path) -> list[str]:
-    run = subprocess.run(["pdftotext", "-q", "-enc", "UTF-8", str(path), "-"], capture_output=True,
+    run = subprocess.run(["pdftotext", "-enc", "UTF-8", str(path), "-"], capture_output=True,
                          timeout=PDF_TIMEOUT)
     if run.returncode != 0:
-        raise OSError(f"pdftotext exited {run.returncode}")
+        said = pdf_error(run.stderr.decode("utf-8", "replace"))
+        raise OSError(f"pdftotext exited {run.returncode}" + (f": {said}" if said else ""))
     return join_wrapped(run.stdout.decode("utf-8", "replace").splitlines())
+
+
+def pdf_error(printed: str) -> str:
+    """The line of pdftotext's messages that says why it gave up (a password, a broken file), for the
+    reason a document could not be read. What it quotes is left out: the reason is printed where no
+    file is named (unreadable_line)."""
+    lines = [line.strip() for line in printed.splitlines() if line.strip()]
+    errors = [line for line in lines if "Error" in line] or lines
+    return re.sub(r"'[^'\n]*[/.][^'\n]*'", "'…'", errors[-1])[:PDF_ERROR_CHARS] if errors else ""
 
 
 def text_units(path: Path) -> list[str]:
