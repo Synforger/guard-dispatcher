@@ -384,6 +384,16 @@ is judged as before. The scan says when it is at work (`it may hold the text
 of 2 areas more`). The line is the operator's to write: the agent writes
 nothing in the settings folder.
 
+What such an area writes down of a client — the words a client's session sent
+it, a line it took from that session's record — is the client's text, but kept
+among its own notes it is printed as the gathering area's, and the client's
+session that wrote the words first is refused for committing them in its own
+repository. Keep it in a folder named on the client's line instead
+(`client-acme /srv/company/clients/acme /srv/company/hub/from/acme`): the innermost name
+wins, so the folder's documents are the client's, they are left out of the
+gathering area's prints, and what the gathering area holds of its own is still
+kept from the client.
+
 An area's documents are everything under it that holds its words:
 
 | kind | files | a sent line is a hit when it |
