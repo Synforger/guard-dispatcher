@@ -1698,6 +1698,30 @@ commit_scan() {
     [[ "$output" == *"company text"* ]]
 }
 
+@test "corpus: what a gathering area keeps of a client in a folder of the client's is the client's own" {
+    local words="the bench rig keeps its calibration log next to the spare probes for the night shift"
+    local own="the quarterly review moves the spare probes budget to the second half of the year"
+    hub_records "company client"
+    mkdir -p "${WORK}/hub/notes" "${WORK}/hub/from/acme"
+    printf '%s\n' "${own}" > "${WORK}/hub/notes/plan.md"
+    printf '%s\n' "${words}" > "${WORK}/hub/from/acme/words.md"
+    mk_repo_at "${CLIENT}/repo"
+    printf '%s\n' "${words}" > "${BATS_TEST_TMPDIR}/added.txt"
+    # Kept among the hub's own notes, the client's words are hub text to the client
+    commit_scan
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"hub text"* ]]
+    # kept in a folder that is the client's, they are the client's own, and the hub's own notes are not
+    sed -i.bak "s|^client  ${CLIENT}\$|client  ${CLIENT}  ${WORK}/hub/from/acme|" "${GUARD_CONFIG_DIR}/areas.txt"
+    grep -q "hub/from/acme" "${GUARD_CONFIG_DIR}/areas.txt"
+    commit_scan
+    [ "$status" -eq 0 ]
+    printf '%s\n' "${own}" > "${BATS_TEST_TMPDIR}/added.txt"
+    commit_scan
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"hub text"* ]]
+}
+
 @test "corpus: a _carries line that names no area, or a path, refuses instead of guessing" {
     hub_records
     cp "${GUARD_CONFIG_DIR}/areas.txt" "${BATS_TEST_TMPDIR}/areas.good"
