@@ -412,7 +412,7 @@ millions of values. It takes two consecutive lines because a lone common line
 data is specific on its own, so one copied row is a hit. Inside a repository only what it tracks counts: untracked
 output and vendored folders (`third_party/`, `vendor/`, ...) are someone
 else's. Office files, PDFs and databases count wherever they sit: an attachment
-or an app's data is the area's whether a repository tracks it or not. Runs and lines that also appear in the background text and code are
+or an app's data is the area's whether a repository tracks it or not. A Finder alias named like one of them (`report.pdf` that opens with `book` and four zero bytes) is not: it holds where its original lies, not the original's words, so it is passed over rather than listed as a document that could not be read. Runs and lines that also appear in the background text and code are
 not specific to any area and are dropped.
 
 The table of that public text keeps for a week, or until the remote default

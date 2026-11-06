@@ -228,6 +228,11 @@ DATABASES = {".sqlite", ".sqlite3", ".db", ".db3"}
 # attachment or an app's data is the area's even when untracked, and a deck or a database is mostly
 # bytes that are not its text.
 ANYWHERE = OFFICE | {".pdf"} | DATABASES
+# A Finder alias opens with these bytes. It holds where its original lies, not the original's words,
+# and one named like a document (`report.pdf`) would be listed as a document that could not be read.
+ALIAS_MAGIC = b"book\0\0\0\0"
+# Aliases are a few kilobytes; a file larger than this is not looked at for one.
+ALIAS_MAX_BYTES = 1 << 20
 TEXT ={".md", ".csv", ".tsv", ".txt"}
 LOCKFILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "poetry.lock", "uv.lock",
              "Gemfile.lock", "composer.lock", "go.sum"}
@@ -1005,9 +1010,20 @@ def document(path: Path, repos: Repos, repo: Path | None | bool = False, root: P
         return None
     if not path.is_file() or (st.st_size > MAX_FILE and path.suffix.lower() not in ANYWHERE):
         return None
+    if path.suffix.lower() in ANYWHERE and st.st_size <= ALIAS_MAX_BYTES and is_alias(path):
+        return None
     # How a document is read is part of its stamp: prints made the old way are never reused.
     mtime_ns, size = content_stat(path, st)
     return f"{PRINT_FORMAT}:{reader[0]}:{mtime_ns}:{size}", reader
+
+
+def is_alias(path: Path) -> bool:
+    """Whether the file is a Finder alias: a pointer to a file elsewhere, which holds no document."""
+    try:
+        with path.open("rb") as handle:
+            return handle.read(len(ALIAS_MAGIC)) == ALIAS_MAGIC
+    except OSError:
+        return False
 
 
 def database_read_with(path: Path) -> Path:

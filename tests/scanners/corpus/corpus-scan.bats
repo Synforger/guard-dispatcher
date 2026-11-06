@@ -1899,6 +1899,18 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
     [[ "$output" == *"/received/broken.pdf (pdftotext exited 1: Syntax Error: "* ]]
 }
 
+@test "corpus: a Finder alias named like a PDF is passed over, not listed as unreadable" {
+    printf 'book\0\0\0\0mark\0\0\0\0 originals/report.pdf' > "${CLIENT}/received/report.pdf"
+    printf 'not a real pdf file at all\n' > "${CLIENT}/received/broken.pdf"
+    printf 'nothing copied here\n' > "${BATS_TEST_TMPDIR}/prime.txt"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/prime.txt"
+    [ "$status" -eq 0 ]
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --status
+    [[ "$output" != *"/received/report.pdf"* ]]
+    # a broken file beside it is still named
+    if command -v pdftotext >/dev/null; then [[ "$output" == *"/received/broken.pdf"* ]]; fi
+}
+
 @test "corpus: a PDF whose extractor times out is unreadable within the PDF budget, not the full 300s" {
     STUB="${BATS_TEST_TMPDIR}/pdf-stub"; mkdir -p "${STUB}"
     # The extractor sleeps far longer than a scan takes on a loaded machine: a scan the budget did
