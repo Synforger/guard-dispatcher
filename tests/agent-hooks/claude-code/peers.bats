@@ -96,6 +96,23 @@ denied() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"permissionDecision": "d
     denied
 }
 
+@test "peers: a session that has read inside the company and two of its clients takes the text of each" {
+    printf '%s\n' 'beta ~/org/clients/beta' 'other ~/other' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mkdir -p "${H}/org/clients/beta" "${H}/other"
+    printf '%s\n' "the beta rig idles at forty volts" > "${H}/org/clients/beta/brief.md"
+    printf '%s\n' "the other client ships a pale blue enclosure next month" > "${H}/other/spec.md"
+    session .claude-work many "55555555-5555-4555-8555-555555555555" company client beta
+    for text in "${COMPANY_TEXT}" "${CLIENT_TEXT}" "the beta rig idles at forty volts"; do
+        tell many "${text}"
+        passed
+    done
+    # an area it has not read stays out, and a session that read one client still sits inside it
+    tell many "the other client ships a pale blue enclosure next month"
+    denied
+    tell both "${COMPANY_TEXT}"
+    denied
+}
+
 @test "peers: every direction passes in words of the sender's own, whatever the sender has read" {
     jq -n '{areas: ["client", "company"], tabs: {}}' > "${AREA_GUARD_STATE}/s1.json"
     for to in plain company client both; do

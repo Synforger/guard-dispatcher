@@ -859,7 +859,13 @@ for it (`agent-hooks/claude-code/peers.py`).
 | no area | no area's text |
 | the company | the company's text, not a client's |
 | a client (with or without the company around it) | that client's text, not the company's |
-| several areas | the text of each |
+| several areas that do not nest into one (two clients, with or without the company around them) | the text of each |
+
+A session that has read inside a client writes inside that client, so the
+company's text is kept from it. A session that has read inside two clients
+writes inside neither (a place it writes lies inside every area it has read),
+so the text of each area it has read, the company's too, goes no further
+through it than it already could.
 
 Words of the sender's own pass in every direction, whatever the sender has
 read: the scan is the private-document scan a push gets, and nothing else.

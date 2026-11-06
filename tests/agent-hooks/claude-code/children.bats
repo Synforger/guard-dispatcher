@@ -323,6 +323,22 @@ to_session() {
     [ "${status}" -eq 1 ]
 }
 
+@test "children: a parent that has read inside the company and two of its clients hands the text of each" {
+    printf '%s\n' 'beta ~/org/clients/beta' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mkdir -p "${H}/org/clients/beta"
+    printf '%s\n' "the beta rig idles at forty volts" > "${H}/org/clients/beta/brief.md"
+    for doc in meetings/plan.md clients/acme/received/notes.md clients/beta/brief.md; do
+        read_as "${PARENT}" "${ID_PARENT}" "${H}/org/${doc}"
+        passed
+    done
+    task "start from this: ${COMPANY_TEXT}"
+    run python3 "${HOOK}" child check --parent "${PARENT}" --text "${TASK}"
+    [ "${status}" -eq 0 ]
+    task "start from this: ${CLIENT_TEXT}, and the beta rig idles at forty volts"
+    run python3 "${HOOK}" child check --parent "${PARENT}" --text "${TASK}"
+    [ "${status}" -eq 0 ]
+}
+
 # --- 3. a child talks to its parent only ------------------------------------------------
 
 @test "children: a child sends to its parent's tab" {
