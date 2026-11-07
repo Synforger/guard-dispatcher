@@ -112,6 +112,7 @@ import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
 import guard_places  # noqa: E402
+from path_forms import resolved  # noqa: E402
 import orders_edit  # noqa: E402
 import service_reads  # noqa: E402
 import work_reads  # noqa: E402
@@ -155,7 +156,7 @@ def real(path: str | Path, base: str | None = None) -> Path:
     p = Path(os.path.expanduser(os.path.expandvars(str(path))))
     if not p.is_absolute() and base:
         p = Path(base) / p
-    return Path(os.path.realpath(p))
+    return resolved(p)
 
 
 def corpus_module():

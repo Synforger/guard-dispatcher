@@ -363,6 +363,12 @@ folders that belong to no area: a personal folder, or one that holds only
 applications. Nothing read there marks a session and nothing there is a document.
 An `_outside` folder inside an area is cut out of it too.
 
+A path is compared in its composed spelling (Unicode NFC), whatever spelling the
+disk stores: Finder, downloads and synced drives often store a voiced kana or an
+accent decomposed (NFD), and macOS hands that spelling back from the working
+folder and a folder's listing. A line typed `client /srv/company/クライアント` holds
+the folder however its name is stored.
+
 A place's own areas are the innermost ones holding it. An area around them — the
 company around one of its clients — is still one a send there is checked against:
 what goes to a client does not take the company's own text. Text the company's

@@ -58,6 +58,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import area_roles  # noqa: E402
 import guard_places  # noqa: E402
+from path_forms import resolved  # noqa: E402
 import work_reads  # noqa: E402
 from children import registry  # noqa: E402
 
@@ -189,7 +190,7 @@ def roles(folder: Path, session: str | None) -> list[tuple[str, Path]]:
     spec.loader.exec_module(module)
     named_areas = module.load_areas()
     areas = [(name, root) for name, roots in named_areas.items() for root in roots]
-    home = Path(os.path.realpath(folder))
+    home = resolved(folder)
     seen = area_roles.reach_from(home, areas, work_reads.named(home)) | set(marks(session) if session else [])
     shown = area_roles.visible(module.kept_roles(named_areas), seen,
                                lambda name, owner: module.within(name, owner, named_areas))

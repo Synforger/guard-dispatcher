@@ -1899,6 +1899,18 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
     [[ "$output" == *"/received/broken.pdf (pdftotext exited 1: Syntax Error: "* ]]
 }
 
+@test "corpus: an ignore line typed composed passes over a folder whose name is stored decomposed" {
+    local stored
+    stored="$(python3 -c 'import sys, unicodedata; print(unicodedata.normalize("NFD", sys.argv[1]))' "${CLIENT}/received/ダウンロード")"
+    mkdir -p "${stored}"
+    printf 'the spare probe drawer is labelled in blue marker on the left side\n' > "${stored}/copied.md"
+    printf '%s\n' "${CLIENT}/received/ダウンロード" > "${GUARD_CONFIG_DIR}/ignore.txt"
+    mk_repo other
+    commit_line "the spare probe drawer is labelled in blue marker on the left side"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
 @test "corpus: a Finder alias named like a PDF is passed over, not listed as unreadable" {
     printf 'book\0\0\0\0mark\0\0\0\0 originals/report.pdf' > "${CLIENT}/received/report.pdf"
     printf 'not a real pdf file at all\n' > "${CLIENT}/received/broken.pdf"
