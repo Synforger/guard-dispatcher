@@ -46,6 +46,7 @@ from types import ModuleType
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 import guard_places  # noqa: E402
+from path_forms import resolved  # noqa: E402
 
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/destinations/send-scan.py"
 OUTGOING = Path(__file__).with_name("outgoing.py")
@@ -87,7 +88,7 @@ def roots(patterns: list[str]) -> list[Path]:
         # wildcard names one file, in its folder
         folder = Path(fixed if fixed.endswith("/") else os.path.dirname(fixed) or "/")
         if folder.is_dir():
-            found.add(Path(os.path.realpath(folder)))
+            found.add(resolved(folder))
     return sorted(found)
 
 

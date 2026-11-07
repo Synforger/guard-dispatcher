@@ -351,6 +351,23 @@ hub_repo() {
     bash_in "${PERSONAL}" "git commit -m x"; passed
 }
 
+@test "area-guard: a folder whose name is stored decomposed is inside the area its line names composed" {
+    # Finder and downloads store `ガ` as `カ` and a combining mark (NFD); a line is typed composed (NFC).
+    local stored
+    stored="$(python3 -c 'import sys, unicodedata; print(unicodedata.normalize("NFD", sys.argv[1]))' "${H}/org/clients/ガイド")"
+    mkdir -p "${stored}/received"
+    printf 'guide value 7.25\n' > "${stored}/received/memo.md"
+    printf 'guide ~/org/clients/ガイド\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    # read by the stored spelling, as a listing gives it
+    agent Read file_path "${stored}/received/memo.md" "${H}" s1
+    passed
+    [ "$(jq -c .areas "${AREA_GUARD_STATE}/s1.json")" = '["guide"]' ]
+    # read by a relative name from a working folder the system gives in the stored spelling
+    agent Read file_path "received/memo.md" "${stored}" s2
+    passed
+    [ "$(jq -c .areas "${AREA_GUARD_STATE}/s2.json")" = '["guide"]' ]
+}
+
 @test "area-guard: clearing the marks is refused" {
     bash_in "${H}" "rm -f ~/.cache/area-guard/s1.json"; denied
     write_to "${H}/.cache/area-guard/s1.json"; denied

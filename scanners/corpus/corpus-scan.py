@@ -142,6 +142,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "_internal"))
 import guard_places  # noqa: E402
+from path_forms import composed, resolved  # noqa: E402
 from own_paths import without_own_paths  # noqa: E402
 
 
@@ -349,7 +350,7 @@ def areas_count(names) -> str:
 
 
 def expand(path: str) -> Path:
-    return Path(os.path.realpath(os.path.expanduser(os.path.expandvars(path))))
+    return resolved(os.path.expanduser(os.path.expandvars(path)))
 
 
 def read_lines(path: Path) -> list[str]:
@@ -1056,8 +1057,9 @@ def documents(roots: list[Path], inner: list[Path], ignored: list[Path], repos: 
             here = Path(folder)
             if here != root:
                 repo_of[here] = here if (here / ".git").exists() else repo_of[here.parent]
+            # A listing gives names as stored: compared in the spelling the roots are in.
             dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")
-                       and here / d not in inner and not is_ignored(here / d, ignored)]
+                       and composed(here / d) not in inner and not is_ignored(composed(here / d), ignored)]
             if folders is not None:
                 with contextlib.suppress(OSError):
                     folders[folder] = here.stat().st_mtime_ns

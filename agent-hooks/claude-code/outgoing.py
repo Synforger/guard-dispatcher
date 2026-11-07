@@ -87,6 +87,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_events  # noqa: E402
 from service_reads import rclone_reads  # noqa: E402
+from path_forms import resolved  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
 
 # The words of a tool's own name (`mcp__server__slack_read_channel` -> slack, read, channel), however
@@ -973,7 +974,7 @@ def file_send(tool: str, args: dict, cwd: str, send_scan: Path) -> Send | None:
         return None
     raw = args.get("file_path") or args.get("notebook_path") or ""
     path = Path(os.path.expanduser(raw))
-    path = Path(os.path.realpath(path if path.is_absolute() else Path(cwd) / path))
+    path = resolved(path if path.is_absolute() else Path(cwd) / path)
     name = judged.file_name(path)
     if not judged.file_matches(name, patterns):
         return None
