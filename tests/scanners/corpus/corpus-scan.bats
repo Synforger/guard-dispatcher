@@ -1281,6 +1281,56 @@ os.utime(sys.argv[1], ns=(status.st_atime_ns, status.st_mtime_ns))
     [ "$status" -eq 0 ]
 }
 
+# published_notes — an agent's own notes, pushed to a remote of its own, with a tier folder for the
+# client that quotes a line of the client's document; NOTES is the notes repository.
+published_notes() {
+    export GUARD_CORPUS_CODE_LINES=1
+    QUOTED="the second fixture loses grip when the arm turns past forty degrees"
+    OWN_WORDS="every session reads the rules first and writes a journal at the end"
+    printf '%s\n' "${QUOTED}" > "${CLIENT}/received/fixture.md"
+    printf '%s\n' "${OWN_WORDS}" > "${CLIENT}/received/same-rules.md"
+    git init -q --bare "${BATS_TEST_TMPDIR}/remote.git"
+    mkdir -p "${BATS_TEST_TMPDIR}/mine"
+    NOTES="${BATS_TEST_TMPDIR}/mine/notes"
+    git clone -q "${BATS_TEST_TMPDIR}/remote.git" "${NOTES}" 2>/dev/null
+    cd "${NOTES}"
+    git config user.email "${ALLOWED_EMAIL}"
+    git config user.name "Fixture"
+    git config commit.gpgsign false
+    mkdir -p tiers/acme
+    printf 'From the client: %s\n' "${QUOTED}" > tiers/acme/journal.md
+    printf '%s\n' "${OWN_WORDS}" > rules.md
+    git add . && commit_bypassing_hooks "notes"
+    git -c core.hooksPath=/dev/null push -q origin HEAD
+    git remote set-head origin -a >/dev/null
+    printf 'published %s\n' "${BATS_TEST_TMPDIR}/mine" > "${GUARD_CONFIG_DIR}/background.txt"
+}
+
+@test "corpus: a published repository's folder inside an area does not make the area's words public" {
+    published_notes
+    sed -i.bak "s|^client  ${CLIENT}\$|client  ${CLIENT}  ${NOTES}/tiers/acme|" "${GUARD_CONFIG_DIR}/areas.txt"
+    grep -q "tiers/acme" "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo other
+    commit_line "${QUOTED}"
+    scan_last
+    [ "$status" -eq 1 ]                 # the client's line stays the client's, quoted in the notes or not
+    [[ "$output" == *"client text"* ]]
+    commit_line "${OWN_WORDS}"
+    scan_last
+    [ "$status" -eq 0 ]                 # the notes' own words outside the tier folder are public
+}
+
+@test "corpus: an edit of areas.txt rebuilds the table of public text within the scan" {
+    published_notes
+    mk_repo other
+    commit_line "${QUOTED}"
+    scan_last
+    [ "$status" -eq 0 ]                 # no area names the tier folder yet: the quote is public
+    sed -i.bak "s|^client  ${CLIENT}\$|client  ${CLIENT}  ${NOTES}/tiers/acme|" "${GUARD_CONFIG_DIR}/areas.txt"
+    scan_last
+    [ "$status" -eq 1 ]                 # the line is in effect at the next scan, not a week later
+}
+
 @test "corpus: repositories are read as themselves when the scan runs in another repository's hook" {
     # A hook runs with GIT_DIR naming its own repository, and it wins over `git -C <folder>`.
     export GUARD_CORPUS_CODE_LINES=1

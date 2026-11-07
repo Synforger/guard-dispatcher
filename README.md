@@ -430,7 +430,14 @@ wait for text that almost never changes, and until the rebuild is done the
 only cost is that text made public since may still be flagged. A rebuild reads
 only what changed — a file whose size or modification time moved, a published
 file whose content did — and one process rebuilds at a time. An edit of
-`background.txt` is read within the next scan. An area's table is merged
+`background.txt`, or of a file of areas, is read within the next scan.
+
+A file of a `published` repository whose place in the working tree lies inside
+an area is not public text: it is the area's, wherever the repository was
+pushed. An agent's own notes, pushed to a remote of the agent's own, hold a
+folder for each client it works for; were they public, a line of a client's
+document quoted there would leave the client's table, and a copy of that line
+would no longer be caught. An area's table is merged
 against one table of public text, and when that table changes the areas'
 tables are merged anew — by the process that rebuilt it, or within the scan
 that read an edited `background.txt` — so a folder added to the list clears
