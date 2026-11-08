@@ -643,6 +643,13 @@ step earlier, before each tool call, from the same `areas.txt`:
   write them would draw an area around what it wants to send, call a phrase fine
   to send, or make an order itself. Reading them and copying them out pass; a
   change of the settings passes on the operator's yes, a change of a transcript never.
+- **A transcript holds what its session read.** Every session's transcript sits under the
+  same folders, wherever the session worked, and holds the words of each file it read. A
+  call that reads one (`Read`, `Grep`, a command that names it, or a recursive read of a
+  folder that holds it) reads inside the areas that session read inside (its marks, a
+  child's inherited ones too): a session that may not read there is refused before it
+  reads, and one that may holds those areas from then on. A transcript of a session that
+  read inside no area, and a listing of names (`Glob`, `ls`), mark nothing.
 - **A change the operator approves**: the agent shows the very call in a
   `guard` block and asks; the operator answers in the chat, and types no command.
 
