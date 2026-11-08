@@ -1136,6 +1136,11 @@ then = time.time() - float(sys.argv[3]) * 86400
 for table in glob.glob(os.path.join(sys.argv[1], "background-*.bin")):
     os.utime(table, (then, then))
 os.utime(sys.argv[2], (then - 60, then - 60))
+# the files of areas were written before the table too: an edit of one would rebuild it at once
+for areas in [os.path.join(os.path.dirname(sys.argv[2]), "areas.txt"),
+              *glob.glob(os.path.join(os.path.dirname(sys.argv[2]), "areas", "*", "areas.txt"))]:
+    if os.path.isfile(areas):
+        os.utime(areas, (then - 60, then - 60))
 ' "${GUARD_CORPUS_CACHE}" "${GUARD_CONFIG_DIR}/background.txt" "$1"
 }
 
