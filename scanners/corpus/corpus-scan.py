@@ -1069,12 +1069,15 @@ def documents(roots: list[Path], inner: list[Path], ignored: list[Path], repos: 
                     yield (here / name, *found)
 
 
-def published_files(parent: Path):
+def published_files(parent: Path, areas: dict[str, list[Path]]):
     """(key, stamp, name, read) for every file of every repository under parent, as published on
     its remote: the stamp is the blob's id, and read() gives its text (None when it is not text).
 
     Only what the remote's default branch already carries -- never the working
-    tree, where the leak being prepared would whitelist itself.
+    tree, where the leak being prepared would whitelist itself. A file whose place in the working
+    tree lies inside an area is that area's document, not public text: a repository that holds the
+    folders of its own client work (an agent's notes, pushed to a remote of its own) would otherwise
+    make the client's words public, and nothing copied from them would be caught.
     """
     for gitdir in sorted(parent.glob("*/.git")) + sorted(parent.glob("*/*/.git")):
         repo = str(gitdir.parent)
@@ -1087,6 +1090,8 @@ def published_files(parent: Path):
             meta, _, name = row.partition("\t")
             words = meta.split()
             if not name or len(words) != 3 or words[1] != "blob":
+                continue
+            if in_an_area(Path(repo) / name, areas):
                 continue
 
             def read(repo: str = repo, head: str = head, name: str = name) -> str | None:
@@ -1143,11 +1148,18 @@ def walked_file(path: Path):
     return str(path), f"{status.st_size}:{status.st_mtime_ns}", path.name, read
 
 
+def in_an_area(path: Path, areas: dict[str, list[Path]]) -> bool:
+    """Whether the path lies inside an area (not one that is exempt, nor one outside every area)."""
+    found = area_root(areas, composed(path))
+    return found is not None and found[0] != EXEMPT
+
+
 def public_files(source: Path):
     """Every file background.txt makes public, with the stamp its prints were taken at."""
+    areas = load_areas()
     for entry in read_lines(source):
         if entry.startswith("published "):
-            yield from published_files(expand(entry.split(None, 1)[1]))
+            yield from published_files(expand(entry.split(None, 1)[1]), areas)
         else:
             yield from walked_files(expand(entry))
 
@@ -1227,8 +1239,11 @@ def public_is_behind(source: Path) -> bool:
 
 
 def public_is_edited(cached: Path, source: Path) -> bool:
-    """background.txt was written after the table was built: the operator changed what is public."""
-    return source.stat().st_mtime >= cached.stat().st_mtime
+    """background.txt, or a file of areas that decides which published files are an area's, was
+    written after the table was built: what is public changed."""
+    lines = [guard_places.setting("areas.txt"), *(folder / "areas.txt" for _, folder in area_folders())]
+    built = cached.stat().st_mtime
+    return source.stat().st_mtime >= built or any(f.is_file() and f.stat().st_mtime >= built for f in lines)
 
 
 def public_is_old(cached: Path) -> bool:
