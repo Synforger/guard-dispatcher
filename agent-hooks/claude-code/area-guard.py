@@ -112,6 +112,7 @@ import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
 import guard_places  # noqa: E402
+import records  # noqa: E402
 from path_forms import resolved  # noqa: E402
 import orders_edit  # noqa: E402
 import service_reads  # noqa: E402
@@ -554,16 +555,42 @@ def mentioned_paths(command: str, areas) -> list[Path]:
     """Area paths a Bash command names standing by themselves (said, standing): spelled with ~,
     $HOME or absolute, through a shortcut symlink whose target is inside an area, or by a glob
     that matches one (`ls ~/or*` names ~/org)."""
+    return [path for path in named_paths(command) if area_of(path, areas)]
+
+
+def named_paths(command: str) -> list[Path]:
+    """Every path a Bash command names standing by themselves, globs matched (mentioned_paths)."""
     found = []
     for stretch in said(command):
         for name in standing(stretch):
             try:
                 matches = list(itertools.islice(glob.iglob(name), GLOB_MATCHES)) if GLOB.search(name) else []
-                paths = [real(match) for match in [name, *matches]]
+                found += [real(match) for match in [name, *matches]]
             except (OSError, ValueError, re.error):
                 continue
-            found += [path for path in paths if area_of(path, areas)]
     return found
+
+
+def record_areas(tool: str, args: dict, cwd: str) -> set[str]:
+    """The areas the sessions read inside whose conversation records this call reads (records):
+    a record named, or every record under a folder read recursively."""
+    homes = {Path.home(), real(Path.home())}
+    files: list[Path] = []
+    folders: list[Path] = []
+    if tool in READS - {"Glob"}:      # Glob lists names: it reads no record's words
+        files += [real(args[key], cwd) for key in ("file_path", "path", "notebook_path") if args.get(key)]
+        if tool == "Grep":
+            folders.append(real(args.get("path") or cwd, cwd))
+    elif tool == "Bash":
+        command = args.get("command", "")
+        files += [] if path_only(command) else named_paths(command)
+        folders += [folder for folder, _ in recursive_reads(command, cwd)]
+    sessions = {s for f in files if (s := records.session_of(f, homes))}
+    for folder in folders:
+        if folder.is_dir():
+            sessions |= records.sessions_under(folder, homes)
+    return set().union(*(children.registry.marks_of(s, set(load_state(s)["areas"])) for s in sessions)) \
+        if sessions else set()
 
 
 # A command that says whether a path exists and what it is, never what it holds, reads
@@ -1962,11 +1989,13 @@ def main() -> int:
 
     read, unchecked = service_areas(tool, args, cwd, tabs)
     remote |= read
-    new = {a for a in (area_of(p, areas) for p in touched) if a and a != EXEMPT} | remote
+    recorded = record_areas(tool, args, cwd) - {EXEMPT, NO_AREA}
+    new = {a for a in (area_of(p, areas) for p in touched) if a and a != EXEMPT} | remote | recorded
     if (reachable := reach(areas)) is not None and (beyond := new - reachable):
         deny(f"area-guard: this session reads only inside {', '.join(sorted(reachable)) or 'no area'} "
              f"(it works in {work_folder()}), and this call reads inside {', '.join(sorted(beyond))}"
-             f"{' (it cannot be checked: ' + '; '.join(unchecked) + ')' if unchecked else ''}. "
+             f"{' (it cannot be checked: ' + '; '.join(unchecked) + ')' if unchecked else ''}"
+             f"{' (a conversation record holds what its session read inside)' if beyond & recorded else ''}. "
              f"{ask_whom(beyond, areas, marks)}")
         return 0
     if new - marks:

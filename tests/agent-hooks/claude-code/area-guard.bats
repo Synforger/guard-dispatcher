@@ -368,6 +368,45 @@ hub_repo() {
     [ "$(jq -c .areas "${AREA_GUARD_STATE}/s2.json")" = '["guide"]' ]
 }
 
+# record_of <session> [area ...] — a conversation record of a session that read inside the areas.
+record_of() {
+    local session="$1"
+    shift
+    mkdir -p "${H}/.claude/projects/-work"
+    printf '{"type": "user", "message": {"content": "notes of the session"}}\n' > "${H}/.claude/projects/-work/${session}.jsonl"
+    mkdir -p "${AREA_GUARD_STATE}"
+    jq -n '{areas: $ARGS.positional, tabs: {}}' --args "$@" > "${AREA_GUARD_STATE}/${session}.json"
+}
+
+@test "area-guard: a conversation record is read as inside what its session read" {
+    local id="0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d"
+    local record="${H}/.claude/projects/-work/${id}.jsonl"
+    record_of "${id}" client
+    # a session that may read no area is refused before it reads, by every way in
+    export GUARD_WORK_FOLDER="${PERSONAL}"
+    agent Read file_path "${record}" "${H}" s1; denied
+    [[ "${output}" == *"this call reads inside client"*"a conversation record holds what its session read inside"* ]]
+    bash_in "${H}" "python3 -c \"print(open('${record}').read())\"" s1; denied
+    bash_in "${H}" "grep -rn notes ~/.claude" s1; denied
+    agent Grep pattern "notes" "${H}" s1; denied           # a Grep of the whole home reaches it too
+    # names only: a listing reads no record
+    agent Glob pattern "*.jsonl" "${H}/.claude/projects/-work" s1; passed
+    # a session that works inside the client reads it, and holds the client from then on
+    export GUARD_WORK_FOLDER="${CASE}"
+    agent Read file_path "${record}" "${H}" s2; passed
+    [ "$(jq -c .areas "${AREA_GUARD_STATE}/s2.json")" = '["client"]' ]
+    unset GUARD_WORK_FOLDER
+}
+
+@test "area-guard: the record of a session that read inside no area marks nothing" {
+    local id="1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+    record_of "${id}"
+    export GUARD_WORK_FOLDER="${PERSONAL}"
+    agent Read file_path "${H}/.claude/projects/-work/${id}.jsonl" "${H}" s1; passed
+    [ ! -e "${AREA_GUARD_STATE}/s1.json" ] || [ "$(jq -c .areas "${AREA_GUARD_STATE}/s1.json")" = '[]' ]
+    unset GUARD_WORK_FOLDER
+}
+
 @test "area-guard: clearing the marks is refused" {
     bash_in "${H}" "rm -f ~/.cache/area-guard/s1.json"; denied
     write_to "${H}/.cache/area-guard/s1.json"; denied
