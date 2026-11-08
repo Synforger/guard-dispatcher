@@ -193,7 +193,8 @@ def roles(folder: Path, session: str | None) -> list[tuple[str, Path]]:
     home = resolved(folder)
     seen = area_roles.reach_from(home, areas, work_reads.named(home)) | set(marks(session) if session else [])
     shown = area_roles.visible(module.kept_roles(named_areas), seen,
-                               lambda name, owner: module.within(name, owner, named_areas))
+                               lambda name, owner: module.within(name, owner, named_areas),
+                               module.outward_roles(named_areas))
     return [(name, place) for name, place, _ in shown]
 
 

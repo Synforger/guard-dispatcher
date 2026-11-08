@@ -166,6 +166,8 @@ bisect, hashlib, heapq, html = later("bisect"), later("hashlib"), later("heapq")
 subprocess, tempfile = later("subprocess"), later("tempfile")
 unicodedata, zipfile = later("unicodedata"), later("zipfile")
 sqlite_text = later("sqlite_text")
+# The word-list scan: what an outward role's name is checked with (outward_name_refusals).
+ANON_SCAN = Path(__file__).resolve().parents[1] / "words/anon-scan.sh"
 
 # How many consecutive characters count as copied. Twelve characters of
 # Japanese are a phrase; twelve of English are two common words ("machine with"),
@@ -639,23 +641,84 @@ def kept_reads(areas: dict[str, list[Path]]) -> list[tuple[str, str, tuple[tuple
     return out
 
 
+#: The word after a role's folder that shows the role to sessions outside the area too.
+OUTWARD = "outside"
+
+
 def kept_roles(areas: dict[str, list[Path]]) -> list[tuple[str, Path, str]]:
     """(role, folder, area) of the lines each area keeps in `roles.txt`: the name a session that
     works in the folder goes by among the sessions that read inside the area. A line is
-    `<role> <folder>`; a folder outside the area that keeps the line, or a line that does not read
-    as one, is skipped and named."""
+    `<role> <folder> [outside]`; a folder outside the area that keeps the line, or a line that does
+    not read as one, is skipped and named."""
+    return [(name, folder, owner) for name, folder, owner, _ in _role_lines(areas)]
+
+
+def outward_roles(areas: dict[str, list[Path]]) -> list[tuple[str, Path, str]]:
+    """(role, folder, area) of the roles marked `outside`: shown to every session, inside the area or
+    not, so a session that may not read there can still address the one that works there. Such a
+    name says what the session does, never where: one that holds a name of an area (the folders it
+    is made of) or a word of the operator's word lists is skipped and named."""
+    marked = [(name, folder, owner, path) for name, folder, owner, path in _role_lines(areas) if path]
+    refused = outward_name_refusals([name for name, *_ in marked], areas)
+    out = []
+    for name, folder, owner, path in marked:
+        if name in refused:
+            skip(path, f"{name} {folder} {OUTWARD}", refused[name])
+        else:
+            out.append((name, folder, owner))
+    return out
+
+
+def outward_name_refusals(names: list[str], areas: dict[str, list[Path]]) -> dict[str, str]:
+    """name -> why it may not be shown outside its area: it holds a name of an area, or a word of a
+    word list (the operator's own, and each area's), as the word-list scan matches them."""
+    refused: dict[str, str] = {}
+    for area, words in area_words(areas).items():
+        for name in names:
+            for word in sorted(words):
+                shape = (rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])" if word.isascii() else re.escape(word))
+                if name not in refused and re.search(shape, name, re.IGNORECASE):
+                    refused[name] = f"names {area}: a role shown outside its area says what it does, not where"
+    left = [name for name in names if name not in refused]
+    # One list named for the scan (ANON_WORDS_FILE, as the word-list scan takes it), else every list.
+    named = os.environ.get("ANON_WORDS_FILE")
+    lists = ([Path(named)] if named else sorted(guard_places.words_folder().glob("*.txt"))) if left else []
+    if lists:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as fh:
+            fh.write("\n".join(left) + "\n")
+        try:
+            for words_file in lists:
+                r = subprocess.run(["bash", str(ANON_SCAN)], capture_output=True, text=True, timeout=60,
+                                   env={**os.environ, "ANON_WORDS_FILE": str(words_file), "ANON_SHOW_MATCH": "1",
+                                        "ANON_SCAN_PATHS": fh.name})
+                for hit in r.stdout.splitlines():
+                    if hit.startswith(f"{fh.name}:"):
+                        number = hit[len(fh.name) + 1:].split(":", 1)[0]
+                        if number.isdigit() and 0 < int(number) <= len(left):
+                            refused.setdefault(left[int(number) - 1],
+                                               f"holds a word of {words_file.name}: a role shown outside its area "
+                                               "says what it does, not where")
+        except (OSError, subprocess.TimeoutExpired):
+            refused.update({name: "the word lists could not be checked" for name in left if name not in refused})
+        finally:
+            os.unlink(fh.name)
+    return refused
+
+
+def _role_lines(areas: dict[str, list[Path]]) -> list[tuple[str, Path, str, Path | None]]:
+    """(role, folder, area, the file of the line when it is marked `outside`, else None)."""
     out = []
     for owner, path, line in kept_lines("roles.txt", areas):
         words = line.split("#", 1)[0].split()
-        if len(words) != 2:
-            skip(path, line, "is not `<role> <folder>`")
+        if len(words) not in (2, 3) or (len(words) == 3 and words[2] != OUTWARD):
+            skip(path, line, f"is not `<role> <folder> [{OUTWARD}]`")
             continue
         folder = expand(words[1])
         roots = areas[owner]
         if folder not in roots and not inside(folder, roots):
             skip(path, line, f"{words[1]} is not inside {owner}")
         else:
-            out.append((words[0], folder, owner))
+            out.append((words[0], folder, owner, path if len(words) == 3 else None))
     return out
 
 
@@ -666,6 +729,7 @@ def skipped_settings() -> list[str]:
     kept_destinations(areas)
     kept_reads(areas)
     kept_roles(areas)
+    outward_roles(areas)
     for name in areas:
         kept_allowed(name, areas)
         patterns(name, areas)

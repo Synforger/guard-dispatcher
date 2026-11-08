@@ -259,7 +259,7 @@ inside the area only:
 | `allow.txt` | a phrase fine to send of the text of the areas within it | — |
 | `patterns/<name>.txt` | a shape of the identifiers of an area within it | a shape that does not compile |
 | `ignore.txt` | a folder inside it that holds none of its documents; with a wildcard in a name, when the names before it lead to the area or a folder inside it | a folder outside it |
-| `roles.txt` | `<role> <folder>`: the name the session working in a folder inside the area goes by (below) | a folder outside it, a line that is not two words |
+| `roles.txt` | `<role> <folder> [outside]`: the name the session working in a folder inside the area goes by (below) | a folder outside it, a line that is not two words and `outside`, an `outside` name that names an area or holds a listed word |
 | `reads.txt` | a service whose reading calls read inside the area or an area within it (below) | an area outside it, a pattern that catches every destination, a line that is not `<destination> <area> [<argument>=<shape>]...` |
 | `lists/<list>.drive` | a list of Drive files that a `reads.txt` line of the same area names with `<argument>=@<list>` (below) | — (a list that is missing or broken refuses the calls it would have judged) |
 
@@ -294,7 +294,18 @@ gatherer   ~/org/hub        # the one that reads the company's mail and channels
 ```
 
 A role is shown only to a session that reads inside the area keeping the line
-(it works inside it, or has read inside it). A refused read names the roles
+(it works inside it, or has read inside it). A role marked `outside` is shown to
+every session, so one that may not read there can still address the session
+that works there; its name says what that session does, never where:
+
+```
+# areas/company/roles.txt
+gatherer   ~/org/hub    outside   # every session may send it a request
+```
+
+A name marked `outside` that holds a name an area goes by (the folders it is
+made of) or a word of a word list (each list beside the operator's, or the one
+`ANON_WORDS_FILE` names) is not read, and `corpus-scan.py --settings` names it. A refused read names the roles
 that may read what was wanted (*Agent entry guard*), and a client that relays
 messages between sessions lists the roles a session may see and resolves a
 role to the session working in its folder: `peers.py --roles --folder <the

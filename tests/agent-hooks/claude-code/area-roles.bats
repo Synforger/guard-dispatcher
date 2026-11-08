@@ -102,9 +102,39 @@ two words  ~/org/team
 LINES
     run python3 "${SCAN}" --settings
     [[ "${output}" == *"stranger"*"is not inside company"* ]]
-    [[ "${output}" == *"two words"*"is not \`<role> <folder>\`"* ]]
+    [[ "${output}" == *"two words"*"is not \`<role> <folder> [outside]\`"* ]]
     run python3 "${PEERS}" --roles --folder "${TEAM}"
     [[ "${output}" != *"stranger"* ]]
+}
+
+@test "area roles: a role marked outside is shown to every session, and named where a read is refused" {
+    sed -i.bak "s|^gatherer   ~/org/hub\$|gatherer   ~/org/hub   outside|" "${GUARD_CONFIG_DIR}/areas/company/roles.txt"
+    grep -q "outside" "${GUARD_CONFIG_DIR}/areas/company/roles.txt"
+    run python3 "${PEERS}" --roles --folder "${H}/agent"
+    [ "${status}" -eq 0 ]
+    [ "${output}" = "gatherer	${HUB}" ]       # the outward one only, not the desk
+    # once, among the roles a session inside sees too
+    run python3 "${PEERS}" --roles --folder "${TEAM}"
+    [ "$(grep -c "^gatherer	" <<< "${output}")" -eq 1 ]
+    [[ "${output}" == *"desk	${TEAM}"* ]]
+    # a session outside that may not read the hub is told whom to ask
+    : > "${HUB}/notes.md"
+    as "${H}/agent"
+    call Read "{\"file_path\": \"${HUB}/notes.md\"}"
+    denied
+    [[ "${output}" == *'the tab of gatherer (`tabs send gatherer <a file with what to do>`)'* ]]
+}
+
+@test "area roles: an outward name that names an area or holds a listed word is not read and is named" {
+    printf '%s\n' 'acme-desk ~/org/team outside' "${SENTINEL}-desk ~/org/hub outside" 'helper ~/org/team sideways' \
+        >> "${GUARD_CONFIG_DIR}/areas/company/roles.txt"
+    run python3 "${SCAN}" --settings
+    [[ "${output}" == *"acme-desk"*"names client"* ]]
+    [[ "${output}" == *"${SENTINEL}-desk"*"holds a word of words.txt"* ]]
+    [[ "${output}" == *"helper"*"is not \`<role> <folder> [outside]\`"* ]]
+    run python3 "${PEERS}" --roles --folder "${H}/agent"
+    [ "${status}" -eq 0 ]
+    [ -z "${output}" ]
 }
 
 @test "area roles: a Drive file that cannot be checked against the meetings names the role too, and why" {
