@@ -287,6 +287,27 @@ hub_repo() {
     done
 }
 
+@test "area-guard: -n is read as git reads the options of a commit, wherever the commit stands" {
+    for command in "git commit -qn -m x" "git commit -am x -n" "git -c user.name=x commit -n -m x" \
+                   "git commit --no-verif -m x" "bash -c 'git commit -n -m x'" \
+                   "sh -c 'cd . && git commit -qn -m x'" "eval 'git commit -n -m x'"; do
+        bash_in "${PERSONAL}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    # A word only shaped like a bundle of short options: a value, a path, or a switch git refuses.
+    for command in "git commit -m x -PenableN" "git commit -qm -nothing" "git commit -mnote" \
+                   "git commit --author -nobody -m x" "git commit -m x -- -n" "git commit -Sn -m x"; do
+        bash_in "${PERSONAL}" "${command}"
+        passed || { echo "refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: a commit message after a heredoc the shell cannot split stays one word" {
+    # The python body leaves a quote open to the shell; the message names a property flag with an n.
+    bash_in "${PERSONAL}" $'python3 - <<\'EOF\'\nold = \'a\\\'b\'\nEOF\nbash -n x.sh && git commit -q -m "x: x\n-PenableN x"'
+    passed
+}
+
 @test "area-guard: skip flags on a read pass" {
     bash_in "${PERSONAL}" "GH_GUARD_SKIP=1 gh search code x"; passed
     bash_in "${PERSONAL}" "git commit -m 'mention -n in text'"; passed
