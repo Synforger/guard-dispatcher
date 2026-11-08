@@ -1777,6 +1777,22 @@ commit_scan() {
     [[ "$output" == *"hub text"* ]]
 }
 
+@test "corpus: what a gathering area keeps from a session outside, in a folder it ignores, stops none of its sends" {
+    local words="the release notes go out on friday after the last review of the queue"
+    hub_records "company client"
+    mkdir -p "${WORK}/hub/notes" "${WORK}/hub/from/outside"
+    printf '%s\n' "${words}" > "${WORK}/hub/notes/day.md"
+    mk_repo other
+    commit_line "${words}"
+    scan_last
+    [ "$status" -eq 1 ]                 # kept among the hub's notes, the outside session's words are hub text
+    [[ "$output" == *"hub text"* ]]
+    mv "${WORK}/hub/notes/day.md" "${WORK}/hub/from/outside/day.md"
+    printf '%s\n' "${WORK}/hub/from/outside" >> "${GUARD_CONFIG_DIR}/ignore.txt"
+    scan_last
+    [ "$status" -eq 0 ]                 # kept apart in a folder the area ignores, they are no area's
+}
+
 @test "corpus: a _carries line that names no area, or a path, refuses instead of guessing" {
     hub_records
     cp "${GUARD_CONFIG_DIR}/areas.txt" "${BATS_TEST_TMPDIR}/areas.good"

@@ -411,6 +411,14 @@ wins, so the folder's documents are the client's, they are left out of the
 gathering area's prints, and what the gathering area holds of its own is still
 kept from the client.
 
+What it writes down of a session outside every area it reads — a message such a
+session sent it, the operator's words that came with one — is no area's text at
+all, and kept among its notes it would stop that session's next push of its own
+words. Keep it in a folder `ignore.txt` lists among the area's own settings
+(`/srv/company/hub/from/outside`): its documents are no area's. Nothing finds
+such text by itself: the area keeps it apart, so a session outside cannot make an
+area's text no area's by sending it in.
+
 An area's documents are everything under it that holds its words:
 
 | kind | files | a sent line is a hit when it |
