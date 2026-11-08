@@ -1783,10 +1783,11 @@ def ask_whom(wanted: set[str], areas, marks: set[str]) -> str:
         corpus = corpus_module()
         named_areas = corpus.load_areas(AREAS)
         roles = corpus.kept_roles(named_areas)
+        outward = corpus.outward_roles(named_areas)
     except Exception:  # noqa: BLE001 — a broken checkout names no role; the refusal stands as it is
         return "Ask a session that works there"
     seen = (reach(areas) or set()) | marks
-    shown = area_roles.visible(roles, seen, lambda name, owner: corpus.within(name, owner, named_areas))
+    shown = area_roles.visible(roles, seen, lambda name, owner: corpus.within(name, owner, named_areas), outward)
     names = area_roles.asked(shown, wanted, lambda folder: area_roles.reach_from(folder, areas, work_reads.named(folder)))
     if not names:
         return "Ask a session that works there"

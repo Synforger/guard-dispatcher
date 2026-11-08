@@ -37,10 +37,13 @@ def reach_from(home: Path, areas: Areas, named: Iterable[str]) -> set[str]:
     return held | around | words | globbed
 
 
-def visible(roles: list[Role], seen: set[str], within: Callable[[str, str], bool]) -> list[Role]:
+def visible(roles: list[Role], seen: set[str], within: Callable[[str, str], bool],
+            outward: Iterable[Role] = ()) -> list[Role]:
     """The roles a session that reads inside `seen` may see: those an area it reads inside, or an
-    area around one of them, keeps. `within(name, owner)` says an area lies within another."""
-    return [role for role in roles if any(within(name, role[2]) for name in seen)]
+    area around one of them, keeps, and the `outward` ones (marked to be shown outside their area)
+    after them. `within(name, owner)` says an area lies within another."""
+    shown = [role for role in roles if any(within(name, role[2]) for name in seen)]
+    return shown + [role for role in outward if role not in shown]
 
 
 def asked(roles: list[Role], wanted: set[str], reach_of: Callable[[Path], set[str]]) -> list[str]:
