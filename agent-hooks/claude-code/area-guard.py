@@ -111,6 +111,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
+import commit_options  # noqa: E402
 import guard_places  # noqa: E402
 import records  # noqa: E402
 from path_forms import resolved  # noqa: E402
@@ -1157,10 +1158,11 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
     return send_places(command, cwd)[0]
 
 
-def send_places(command: str, cwd: str) -> tuple[list[tuple[Path, list[str]]], list[str]]:
+def send_places(command: str, cwd: str) -> tuple[list[tuple[Path, list[str]]], list[str], list[str]]:
     """(every send in a command -- git commit / push, a sending gh call -- as (repository it runs
     in, arguments naming its destination for corpus-scan), the words that leave a send's folder
-    to be known only as the command runs). A commit stays local, so its arguments are empty.
+    to be known only as the command runs, the commits whose options switch their hooks off
+    (commit_options), wherever they stand). A commit stays local, so its arguments are empty.
 
     The command is read in order, following where it stands: `cd`, `pushd` / `popd` and a
     `( ... )` subshell move it, and each git runs where the command stands at that point, moved
@@ -1174,10 +1176,11 @@ def send_places(command: str, cwd: str) -> tuple[list[tuple[Path, list[str]]], l
     try:
         words = shell_words(command)
     except ValueError:
-        return [], []
+        return [], [], []
     breaks = outgoing_module().SHELL_BREAK
     found: list[tuple[Path, list[str]]] = []
     unread: list[str] = []
+    skipping: list[str] = []
     standing = Standing(cwd, unknown_stays=False)
     values: dict[str, str] = {}
     lost: str | None = None            # the word that took the command where it cannot be read
@@ -1232,10 +1235,11 @@ def send_places(command: str, cwd: str) -> tuple[list[tuple[Path, list[str]]], l
         here = Path(standing.here)
 
         def inner(code: str) -> None:
-            sends, unreadable = send_places(code, str(here))
+            sends, unreadable, skips = send_places(code, str(here))
             found.extend([] if lost else sends)
             unread.extend([lost] * len(sends) if lost else [])
             unread.extend(unreadable)
+            skipping.extend(skips)
 
         if name in SHELLS and "-c" in args[:-1]:
             inner(args[args.index("-c") + 1])
@@ -1253,6 +1257,8 @@ def send_places(command: str, cwd: str) -> tuple[list[tuple[Path, list[str]]], l
                     repo, place = real(value, str(here)), unknown(value, lost)
                 i += 1
             sub, rest = (args[i], args[i + 1:]) if i < len(args) else ("", [])
+            if sub == "commit" and commit_options.skips_hooks(rest):
+                skipping.append("git commit -n (= --no-verify)")
             if sub in ("commit", "push") and place:
                 unread.append(place)
             elif sub == "commit":
@@ -1293,7 +1299,7 @@ def send_places(command: str, cwd: str) -> tuple[list[tuple[Path, list[str]]], l
             standing.open(lost)
         elif w == ")" and standing.inside():
             lost = standing.close()
-    return found, unread
+    return found, unread, skipping
 
 
 def push_url(repo: Path, named: str | None) -> str:
@@ -1537,8 +1543,6 @@ def may_write(target: Path, marks: set[str], areas) -> bool:
 BYPASS_ENV = re.compile(r"(?<![\w-])(GH_GUARD_SKIP|GUARD_[A-Z_]+|ANON_WORDS_FILE|HUSKY"
                         r"|GIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+|VALUE_\d+|GLOBAL|SYSTEM|NOSYSTEM))=")
 GUARD_KEYS = re.compile(r"\b(core\.hookspath|guard\.scope|guard\.exemptprefix)\b", re.I)
-GIT_VALUE_FLAGS = {"-m", "-F", "-c", "-C", "--message", "--file", "--author", "--date", "--fixup", "--squash",
-                   "--reuse-message", "--reedit-message", "-t", "--template", "--cleanup", "--trailer"}
 
 
 # `git config` reads with one of these, or with a key alone; it writes with one of the others,
@@ -1686,22 +1690,17 @@ def bypass(command: str, cwd: str, areas) -> str | None:
         return "removes the guards' installed hooks"
     if config_writes_guard_key(command):
         return "a git config that switches the hooks off"
-    sends = sends_of(command, cwd)
-    if not sends:
+    sends, _, skipping = send_places(command, cwd)
+    if not sends and not skipping:
         return None
     if m := BYPASS_ENV.search(command):
         return f"sends with {m.group(1)} set"
-    if re.search(r"(^|\s)--no-verify(\s|$)", command):
+    if re.search(r"(^|\s)--no-ver(i|if|ify)?(\s|$)", command):
         return "--no-verify"
     if re.search(r"\bgit\b[^|;&]*\s-c\s*core\.hookspath", command, re.I):
         return "git -c core.hooksPath"
-    words = shell_words(command)
-    for i, w in enumerate(words):
-        if w == "commit":
-            after = upto_break(words[i + 1:])
-            for j, a in enumerate(after):
-                if (re.fullmatch(r"-[a-zA-Z]*n[a-zA-Z]*", a) and not (j and after[j - 1] in GIT_VALUE_FLAGS)):
-                    return "git commit -n (= --no-verify)"
+    if skipping:
+        return skipping[0]
     for target, dest_args in sends:
         # A machine with no areas still has the hooks' word scan to keep, so it is held to them too.
         if dest_args[:1] == ["--gh-argv-inline"] or (areas and area_of(target, areas) == EXEMPT):

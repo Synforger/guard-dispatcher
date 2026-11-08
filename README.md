@@ -632,6 +632,13 @@ step earlier, before each tool call, from the same `areas.txt`:
   `guard.exemptPrefix`, clearing the marks, creating the off switch, removing
   the installed hooks, or sending from a repository the git hooks do not reach. Each passes on
   the operator's yes (see *A change the operator approves* below), but clearing the marks.
+  `--no-verify` is also matched shortened, as git accepts it (`--no-verif`). A commit's options
+  are read as git reads them, wherever the commit stands (after `cd`, in a shell's `-c` string,
+  in `eval`): `-qn` holds `-n`, while a message (`-m "… -PenableN …"`), an option's value
+  (`-qm -nothing`), a path after `--` and a word with a switch git does not know (`-PenableN`,
+  which git refuses) do not. A heredoc's body that is not shell (python with a quote the shell
+  would leave open) is read as its words, so it does not change how the rest of the command
+  is read.
   Taking a repository's own `core.hooksPath` away (`--unset` in the repository's config) is not
   refused at all: it puts the repository back under the machine's hooks. The same unset in the
   global or system config, or in a file named with `--file`, is refused like any other change.

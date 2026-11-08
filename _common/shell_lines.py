@@ -6,12 +6,16 @@ name after it was judged from the folder the session started in. The readers of 
 (outgoing.py, area-guard.py, children/rules.py) hand the command through `with_line_breaks` first.
 
 A heredoc's body stays as it was: words of the command it feeds, read by whatever reads that
-command's input. Only the line break after its closing line ends a command.
+command's input. Only the line break after its closing line ends a command. A body that does not
+split into shell words on its own (python with a quote the shell would leave open: `'a\\'b'`) is
+kept as its words, each quoted: left as it was, its open quote ran on over the rest of the command
+line, and the readers fell back to splitting the whole line on spaces, a commit message among it.
 """
 
 from __future__ import annotations
 
 import re
+import shlex
 
 # A heredoc's opening: `<<` or `<<-`, an optional quote and the delimiter (not a `<<<` here-string).
 HEREDOC = re.compile(r"<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2")
@@ -78,11 +82,23 @@ def _body_end(command: str, at: int, pending: list[tuple[bool, str]], out: list[
         tabs = r"\t*" if stripped else ""
         close = re.compile(rf"^{tabs}{re.escape(delimiter)}[ \t]*$", re.M).search(command, at)
         if close is None:
-            out.append(" " + command[at:])
+            out.append(" " + as_words(command[at:]))
             return len(command)
-        out.append(" " + command[at:close.end()])
+        out.append(" " + as_words(command[at:close.start()]) + command[close.start():close.end()])
         at = close.end()
     if at < len(command) and command[at] == "\n":
         out.append(" ; ")
         at += 1
     return at
+
+
+def as_words(body: str) -> str:
+    """A heredoc's body as the shell words it stands for: as it is when it splits into words on its
+    own, else each of its words quoted, line by line, so that it opens no quote past its end."""
+    lexer = shlex.shlex(body, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        list(lexer)
+    except ValueError:
+        return "\n".join(" ".join(shlex.quote(word) for word in line.split()) for line in body.split("\n"))
+    return body
