@@ -1352,8 +1352,11 @@ write_text() {
     handoff_setup
     write_text "${TEAM_REPO}/rules.md" "my own words"; denied
     write_text "${TEAM_REPO}/plans/next.md" "my own words"; denied
+    [[ "${output}" != *"handoff.txt names"* ]]
     unset TEAM
     write_text "${JOURNAL}/s.md" "my own words"; denied
+    # the refusal names the variable the session lacks, so a renamed one does not go unseen
+    [[ "${output}" == *'handoff.txt names $TEAM, which this session does not have'* ]]
     export TEAM=../clients/acme
     write_text "${JOURNAL}/s.md" "my own words"; denied
 }
@@ -1370,6 +1373,28 @@ write_text() {
     git -C "${TEAM_REPO}" checkout -q rules.md
     printf 'notes: %s\n' "${BETA_TEXT}" > "${JOURNAL}/2026-10-19/session-02.md"
     bash_in "${TEAM_REPO}" "git add -A && git commit -m journal"; denied
+}
+
+@test "area-guard handoff: only what the commit takes is read, not what it leaves in the working tree" {
+    handoff_setup
+    mkdir -p "${JOURNAL}/d" "${TEAM_REPO}/_scratch"
+    printf 'my own words\n' > "${JOURNAL}/d/s.md"
+    printf 'more rules\n' >> "${TEAM_REPO}/rules.md"
+    printf 'log\n' > "${TEAM_REPO}/_scratch/x.log"
+    bash_in "${TEAM_REPO}" "git add journal/d && git commit -m journal"; passed
+    git -C "${TEAM_REPO}" add journal/d
+    bash_in "${TEAM_REPO}" "git commit -m journal"; passed
+    bash_in "${TEAM_REPO}" "git commit -m journal -- journal/d"; passed
+    # what the commit takes outside the folder: -a, an add of everything or of a path outside, a path named
+    for command in "git commit -a -m journal" "git add -A && git commit -m journal" \
+                   "git add _scratch && git commit -m journal" "git commit -m journal -- rules.md"; do
+        bash_in "${TEAM_REPO}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    # a command that does not say what it takes counts every change, as does anything staged outside
+    bash_in "${TEAM_REPO}" "cd . && git add journal/d && git commit -m journal"; denied
+    git -C "${TEAM_REPO}" add rules.md
+    bash_in "${TEAM_REPO}" "git commit -m journal"; denied
 }
 
 @test "area-guard handoff: may-write counts the handoff folder as writable and says its text is scanned" {
