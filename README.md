@@ -472,7 +472,10 @@ now instead, and only the folders whose modification time moved are listed
 again (creating, removing or renaming a file changes its folder's time) — an
 edited, deleted or created document is caught at once without walking
 everything. A full walk still comes at least every six hours, and when more than
-200 documents changed since the last one; a scan that finds one due starts it as a
+200 documents changed since the last one. The changed documents are read before the
+scan answers, however many there are (a new checkout of a large repository brings
+thousands); past 200 the scan says how many it reads, then how long they took and
+which kinds of file took most of it. A scan that finds a full walk due starts it as a
 process of its own and waits for it up to a minute, then goes on with the tables it
 has just brought up to date while the walk finishes — so a send is judged within its
 time limit however long a walk takes. When no tables on disk fit the areas (a fresh

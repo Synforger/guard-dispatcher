@@ -1793,6 +1793,12 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
             changed += [p for root in roots if not any(k.startswith(f"{root}{os.sep}") for k in index)
                         for p in unvouched_changes(root, index)]
         started = time.time()
+        # Many documents read before the scan answers: say so, then how long they took and on what.
+        loud = len(changed) > MAX_DELTA
+        if loud:
+            say(f"reading {len(changed)} documents changed since the last look before this scan...")
+        spent: Counter = Counter()
+        counted: Counter = Counter()
         ignored = ignored_folders(areas)
         repos = Repos()
         touched: set[str] = set()
@@ -1824,13 +1830,20 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
             # Its prints are in the area's table when the last walk read it (no delta mark).
             before = index.get(str(path))
             in_table = before is not None and before[-1] != "delta"
+            began = time.time()
             found = document(path, repos, root=root)
             ok = found and document_prints(path, *found, index, index, area)[0]
+            kind = path.suffix.lower() or "(no extension)"
+            spent[kind] += time.time() - began
+            counted[kind] += 1
             if ok:
                 index[str(path)].append("delta")
                 touched.add(area)
             if in_table and (not path.exists() or index[str(path)][0] != before[0]):
                 replaced.add(area)
+        if loud:
+            slowest = ", ".join(f"{kind} {seconds:.0f}s ({counted[kind]})" for kind, seconds in spent.most_common(3))
+            say(f"read {len(changed)} changed documents in {time.time() - started:.0f}s; most of it on {slowest}")
         deltas = {n: [v[1] for v in index.values() if v[2] == n and v[-1] == "delta"] for n in touched}
         if sum(len(f) for f in deltas.values()) > MAX_DELTA:
             # The delta is written all the same (= what changed is seen now); the full walk that
