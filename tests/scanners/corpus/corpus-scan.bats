@@ -1797,6 +1797,20 @@ commit_scan() {
     [ "$status" -eq 0 ]                 # kept apart in a folder the area ignores, they are no area's
 }
 
+@test "corpus: two areas around each other still leave a place its owner, and --settings names them" {
+    hub_records
+    printf 'the gathering notes keep the weekly tally of open questions\n' > "${WORK}/hub/summary.md"
+    # a folder of the company's inside the hub: each area now holds a root of the other
+    mkdir -p "${WORK}/hub/from-tabs"
+    printf 'company %s\n' "${WORK}/hub/from-tabs" >> "${GUARD_CONFIG_DIR}/areas.txt"
+    printf 'the gathering notes keep the weekly tally of open questions\n' > "${BATS_TEST_TMPDIR}/added.txt"
+    commit_scan
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"hub text"* ]]
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --settings
+    [[ "$output" == *"around each other: company and hub"* ]]
+}
+
 @test "corpus: a _carries line that names no area, or a path, refuses instead of guessing" {
     hub_records
     cp "${GUARD_CONFIG_DIR}/areas.txt" "${BATS_TEST_TMPDIR}/areas.good"

@@ -25,6 +25,21 @@ def outer(name: str, inner: str, areas: Areas) -> bool:
     return any(n == name and m == inner and r != i and r in i.parents for n, r in areas for m, i in areas)
 
 
+def innermost(place: Path, areas: Areas) -> set[str]:
+    """The areas a place lies in most closely: those whose root holding it is the deepest (a client
+    inside the company: the client), `_exempt` and `_outside` left out, and no area whose root an
+    `_outside` folder holding the place cuts it off from. Only the roots that hold this place count,
+    so two areas that each hold a root of the other elsewhere still leave the place its owner."""
+    holding = [(n, r) for n, r in areas if place == r or r in place.parents]
+    cut = max((len(r.parts) for n, r in holding if n == NO_AREA), default=0)
+    depth: dict[str, int] = {}
+    for name, root in holding:
+        if name not in (EXEMPT, NO_AREA) and len(root.parts) > cut:
+            depth[name] = max(depth.get(name, 0), len(root.parts))
+    deepest = max(depth.values(), default=0)
+    return {name for name, d in depth.items() if d == deepest}
+
+
 def reach_from(home: Path, areas: Areas, named: Iterable[str]) -> set[str]:
     """The areas a session working in `home` may read inside: the areas holding the folder, the
     areas around them, and the names the folder's reads file gives (`named`). A name written as a

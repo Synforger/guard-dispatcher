@@ -1379,8 +1379,7 @@ outer = area_roles.outer
 def carried(target: Path, areas) -> list[str]:
     """The names (or globs) of the areas whose text a repository at this place may hold: what the
     `_carries` lines give the place's own areas, the innermost ones holding it."""
-    held = {n for n, _ in areas if n not in (EXEMPT, NO_AREA) and inside(target, n, areas)}
-    own = {n for n in held if not any(n != m and outer(n, m, areas) for m in held)}
+    own = area_roles.innermost(target, areas)
     lines = load_carries()
     return [pattern for name in sorted(own) for pattern in lines.get(name, ())]
 
@@ -1459,8 +1458,7 @@ def handoff_of(target: Path) -> Path | None:
 def handoff_refusal(folder: Path, text: str, areas) -> str | None:
     """Why this text may not go into the handoff folder (a copy of a private document of an area the
     folder is outside of), or None. Judged as a send into the folder's innermost areas."""
-    held = {n for n, _ in areas if n not in (EXEMPT, NO_AREA) and inside(folder, n, areas)}
-    own = sorted(n for n in held if not any(n != m and outer(n, m, areas) for m in held))
+    own = sorted(area_roles.innermost(folder, areas))
     if not own or not text.strip():
         return None
     import subprocess

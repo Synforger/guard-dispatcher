@@ -2082,6 +2082,24 @@ def outer(name: str, inner: str, areas: dict[str, list[Path]]) -> bool:
     return any(r != i and r in i.parents for r in areas.get(name, []) for i in areas.get(inner, []))
 
 
+def innermost(place: Path, areas: dict[str, list[Path]]) -> set[str]:
+    """The areas holding a place (holding) whose root holding it is the deepest: a client inside
+    the company is the client's. Only the roots that hold this place count, so two areas that each
+    hold a root of the other elsewhere (mutually_around) still leave the place its owner."""
+    held = holding(place, areas)
+    depth = {n: max(len(r.parts) for r in areas[n] if contains([r], place)) for n in held}
+    deepest = max(depth.values(), default=0)
+    return {n for n, d in depth.items() if d == deepest}
+
+
+def mutually_around(areas: dict[str, list[Path]]) -> list[tuple[str, str]]:
+    """Pairs of areas that each hold a root of the other: neither lies around the other, so what
+    is said of an area around another (its text checked in what goes to the inner one, a session
+    in the inner one reaching it) does not hold for them."""
+    names = sorted(n for n in areas if not n.startswith("_"))
+    return [(a, b) for i, a in enumerate(names) for b in names[i + 1:] if outer(a, b, areas) and outer(b, a, areas)]
+
+
 def holding(place: Path, areas: dict[str, list[Path]]) -> frozenset[str]:
     """Every area place is inside (a client inside the company is inside both), less those an
     `_outside` folder cuts it off from: an area whose root holds that folder."""
@@ -2404,6 +2422,9 @@ def main(argv: list[str] | None = None) -> int:
         skipped = skipped_settings()
         for note in skipped:
             print(f"not read: {note}")
+        for a, b in mutually_around(areas):
+            print(f"around each other: {a} and {b} each hold a root of the other, so neither is around "
+                  f"the other; keep the inner folder in one of them (an ignore.txt line for the other)")
         say(f"{len(area_folders())} area(s) keep settings of their own; {len(skipped)} line(s) not read")
         return 0
     if args.refresh or args.status or args.summary:
@@ -2471,7 +2492,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     # A place carries its own areas' text; an area holding one of them (the company around a
     # client) is still checked: what goes to a client does not take the company's own text.
-    own = {n for n in held if not any(n != m and outer(n, m, areas) for m in held)} | (OWNERS & held)
+    # Each place's innermost areas, less an area that lies around another at any of the places (the
+    # company read beside its client): that area's text still does not go to the client.
+    places = ([here] if here is not None else []) + also
+    own = set().union(*(innermost(p, areas) for p in places))
+    own -= {n for p in places for n in holding(p, areas) - innermost(p, areas)}
+    own |= OWNERS & held
     if names and len(own) > 1:
         # Several areas that do not nest into one (two clients) are a session that has read inside
         # each: it can write inside none of them, so no client takes what it is told, and the text

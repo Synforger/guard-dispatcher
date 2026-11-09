@@ -1348,6 +1348,15 @@ write_text() {
     denied
 }
 
+@test "area-guard handoff: a copy is still refused when two areas each hold a root of the other" {
+    handoff_setup
+    # a folder of the company's inside the client: neither area is around the other now
+    printf 'company ~/org/clients/acme/from-tabs\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    write_text "${JOURNAL}/s.md" "notes: ${BETA_TEXT}"
+    denied
+    write_text "${JOURNAL}/s.md" "my own words"; passed
+}
+
 @test "area-guard handoff: the rest of the repository, a session without the variable, and .. stay refused" {
     handoff_setup
     write_text "${TEAM_REPO}/rules.md" "my own words"; denied
