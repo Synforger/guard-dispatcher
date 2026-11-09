@@ -197,9 +197,10 @@ address belongs to GitHub rather than to a person or an organisation. This
 exemption is push-only: `pre-commit` still requires `user.email` to be on the
 allowed list, because the operator is never a bot.
 
-Scanners resolve repo-local first (`.tooling/local-ci/`), then fall
-back to this checkout's `scanners/words/` — so individual repositories need
-no toolkit of their own, but can override it.
+Scanners always come from this checkout's `scanners/` — individual
+repositories need no toolkit of their own, and a copy a repository carries
+(`.tooling/local-ci/anon-scan.sh`) does not replace them. A repository's own
+checks run from its `.githooks/`, before the machine's scan.
 
 ### Private documents
 

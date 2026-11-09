@@ -56,7 +56,7 @@ setup() {
     dispatcher::allowed_emails | grep -Fxq "noreply@github.com"
 }
 
-@test "locate_scanner: bundled fallback when repo has no local toolkit" {
+@test "locate_scanner: finds each scanner in the folder of its role" {
     mk_repo synforger
     [ "$(dispatcher::locate_scanner anon-scan.sh)" = "${GUARD_ROOT}/scanners/words/anon-scan.sh" ]
     [ "$(dispatcher::locate_scanner dest-known.py)" = "${GUARD_ROOT}/scanners/destinations/dest-known.py" ]
@@ -64,13 +64,13 @@ setup() {
     [ -z "$(dispatcher::locate_scanner setup-lib.sh)" ]
 }
 
-@test "locate_scanner: repo-local copy wins over bundled" {
+@test "locate_scanner: a copy the repo carries does not replace the bundled scanner" {
     mk_repo synforger
     mkdir -p .tooling/local-ci
     echo '#!/bin/bash' > .tooling/local-ci/anon-scan.sh
-    # Compare against git's physical toplevel — on macOS $BATS_TEST_TMPDIR
-    # sits behind the /tmp symlink, so pwd and rev-parse can disagree.
-    [ "$(dispatcher::locate_scanner anon-scan.sh)" = "$(git rev-parse --show-toplevel)/.tooling/local-ci/anon-scan.sh" ]
+    echo '#!/bin/bash' > .tooling/local-ci/anon-audit-deep.sh
+    [ "$(dispatcher::locate_scanner anon-scan.sh)" = "${GUARD_ROOT}/scanners/words/anon-scan.sh" ]
+    [ "$(dispatcher::locate_scanner anon-audit-deep.sh)" = "${GUARD_ROOT}/scanners/words/anon-audit-deep.sh" ]
 }
 
 @test "guard_root: resolves through a symlinked hooks dir" {

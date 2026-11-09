@@ -9,9 +9,9 @@
 # repair scar.
 #
 # Usage:
-#   bash .tooling/local-ci/anon-fix.sh --range origin/main..HEAD
-#   bash .tooling/local-ci/anon-fix.sh --range origin/main..HEAD --auto
-#   bash .tooling/local-ci/anon-fix.sh --range origin/main..HEAD --dry-run
+#   bash scanners/words/anon-fix.sh --range origin/main..HEAD
+#   bash scanners/words/anon-fix.sh --range origin/main..HEAD --auto
+#   bash scanners/words/anon-fix.sh --range origin/main..HEAD --dry-run
 #
 # Env / flags:
 #   --range <A>..<B>  required. Only supports two-dot ranges (`A..B`).

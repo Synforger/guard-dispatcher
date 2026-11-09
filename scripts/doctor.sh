@@ -211,18 +211,17 @@ check_repo() {
         findings=$((findings + 1))
         ok=0
     fi
-    # Scanners resolve repo-local first, then the guard checkout's bundled
-    # copies — a repo with no local toolkit is still armed as long as the
-    # guard checkout is healthy.
+    # Scanners come from the guard checkout only, so a repo is armed as long
+    # as the guard checkout is healthy.
     local guard_scanners
     guard_scanners="$(dispatcher::guard_root)/scanners/words"
-    if [ ! -f "${repo}/.tooling/local-ci/anon-scan.sh" ] && [ ! -f "${guard_scanners}/anon-scan.sh" ]; then
-        printf '\n    %s✗%s anon-scan.sh unresolvable (repo-local + guard bundled both missing)' "${RED}" "${NC}"
+    if [ ! -f "${guard_scanners}/anon-scan.sh" ]; then
+        printf '\n    %s✗%s anon-scan.sh unresolvable (missing from the guard checkout)' "${RED}" "${NC}"
         findings=$((findings + 1))
         ok=0
     fi
-    if [ ! -f "${repo}/.tooling/local-ci/anon-audit-deep.sh" ] && [ ! -f "${guard_scanners}/anon-audit-deep.sh" ]; then
-        printf '\n    %s✗%s anon-audit-deep.sh unresolvable (repo-local + guard bundled both missing)' "${RED}" "${NC}"
+    if [ ! -f "${guard_scanners}/anon-audit-deep.sh" ]; then
+        printf '\n    %s✗%s anon-audit-deep.sh unresolvable (missing from the guard checkout)' "${RED}" "${NC}"
         findings=$((findings + 1))
         ok=0
     fi
