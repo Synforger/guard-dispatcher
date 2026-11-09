@@ -7,13 +7,13 @@
 #      local hook fails the commit, but a passing one does NOT skip the
 #      baseline below. Repo hooks add rules; they never replace the guard.
 #   2. On every repo except an explicit `exempt`, scan staged files with the
-#      anon scanner (repo-local override or the bundled copy). Default-on;
+#      guard's anon scanner (a copy the repo carries is not used). Default-on;
 #      opt-out is explicit only. Unresolvable scanner = hard fail.
 #   3. Identity enforcement stays scoped to synforger / enforced / no-remote —
 #      `other` repos are scanned but keep their own committer identity.
 #
-# The dispatcher never invents anon policy of its own — the source of truth
-# lives in each repo's `.tooling/local-ci/anon-scan.sh` + `anon-words.txt`.
+# The words come from the word lists (see the README's *Word list*); the
+# scanner is the guard's own.
 # =============================================================================
 set -eu
 
@@ -80,10 +80,10 @@ scanner="$(dispatcher::locate_anon_scanner || true)"
 if [ -z "${scanner}" ]; then
     cat >&2 <<'MSG'
 [pre-commit] anon-scan.sh could not be resolved.
-             Lookup order: <repo>/.tooling/local-ci/anon-scan.sh, then the
-             guard-dispatcher checkout's scanners/ directory. Neither was
-             found — the guard checkout is likely missing or moved. Re-run
-             guard-dispatcher's install.sh from a healthy checkout.
+             It is looked up in the guard-dispatcher checkout's scanners/
+             directory, and it is not there — the guard checkout is likely
+             missing or moved. Re-run guard-dispatcher's install.sh from a
+             healthy checkout.
 MSG
     exit 1
 fi

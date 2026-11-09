@@ -7,7 +7,7 @@
 #      does not skip the baseline below). stdin ref lines are captured
 #      once and re-fed to both consumers.
 #   2. On every repo except an explicit `exempt`, parse the captured ref
-#      ranges and run `.tooling/local-ci/anon-audit-deep.sh --range` on each
+#      ranges and run the guard's `scanners/words/anon-audit-deep.sh --range` on each
 #      outgoing commit range + scan the ref name. Default-on. Missing
 #      scanner = hard fail. A push of several refs is first checked once
 #      over all they send together; only a red sends it ref by ref.
@@ -60,8 +60,8 @@ corpus_only=0
 scanner="$(dispatcher::locate_deep_scanner || true)"
 if [ -z "${scanner}" ]; then
     cat >&2 <<'MSG'
-[pre-push] anon-audit-deep.sh could not be resolved (repo-local or guard
-           bundled). The guard checkout is likely missing or moved —
+[pre-push] anon-audit-deep.sh could not be resolved in the guard
+           checkout. The guard checkout is likely missing or moved —
            re-run its install.sh from a healthy checkout.
 MSG
     exit 1
@@ -227,7 +227,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     if [ "${corpus_only}" = "0" ]; then
         ref_scanner="$(dispatcher::locate_anon_scanner || true)"
         if [ -z "${ref_scanner}" ]; then
-            printf '[pre-push] anon-scan.sh could not be resolved (repo-local or guard bundled) — re-run install.sh from a healthy checkout\n' >&2
+            printf '[pre-push] anon-scan.sh could not be resolved in the guard checkout — re-run install.sh from a healthy checkout\n' >&2
             exit 1
         fi
         ref_tmp="$(mktemp)"

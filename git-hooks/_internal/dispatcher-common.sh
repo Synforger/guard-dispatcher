@@ -155,22 +155,15 @@ dispatcher::guard_root() {
     ( cd -P "$(dirname "${src}")" >/dev/null 2>&1 && cd ../.. >/dev/null 2>&1 && pwd )
 }
 
-# Locate a scanner by name. Resolution order:
-#   1. repo-local  <repo-root>/.tooling/local-ci/<name>   (repo override)
-#   2. bundled     <guard-root>/scanners/<role>/<name>    (machine default)
+# Locate a scanner by name: <guard-root>/scanners/<role>/<name>. A copy a
+# repository carries is not used: an old or broken copy would replace the
+# machine's scan without the guard knowing. A repository adds checks of its
+# own through its `.githooks/`, which run first (AND-composition).
 # Emits the path on stdout when found, nothing otherwise. Callers decide
 # whether an absent scanner is fatal. A caller names the scanner alone, so
 # the folder of its role is found here.
 dispatcher::locate_scanner() {
     local name="$1"
-
-    local repo_root
-    repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-    if [ -n "${repo_root}" ] && [ -f "${repo_root}/.tooling/local-ci/${name}" ]; then
-        printf '%s' "${repo_root}/.tooling/local-ci/${name}"
-        return 0
-    fi
-
     local bundled
     for bundled in "$(dispatcher::guard_root)"/scanners/*/"${name}"; do
         case "${bundled}" in

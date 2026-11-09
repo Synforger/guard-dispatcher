@@ -32,13 +32,13 @@
 #   findings で人間 fatigue を起こさない。
 #
 # 使い方:
-#   bash .tooling/local-ci/anon-audit-deep.sh
-#   bash .tooling/local-ci/anon-audit-deep.sh --range origin/main..HEAD
-#   bash .tooling/local-ci/anon-audit-deep.sh --record-known FILE   (= 今の検出を既知として記録)
-#   bash .tooling/local-ci/anon-audit-deep.sh --record-known FILE --as-of 2026-10-19T15:00:00Z
+#   bash scanners/words/anon-audit-deep.sh
+#   bash scanners/words/anon-audit-deep.sh --range origin/main..HEAD
+#   bash scanners/words/anon-audit-deep.sh --record-known FILE   (= 今の検出を既知として記録)
+#   bash scanners/words/anon-audit-deep.sh --record-known FILE --as-of 2026-10-19T15:00:00Z
 #                                                                  (= その時刻より前に出た分を既知として記録)
-#   bash .tooling/local-ci/anon-audit-deep.sh --known FILE          (= 記録より後に出た分だけを赤に)
-#   bash .tooling/local-ci/anon-audit-deep.sh --known FILE --next-known FILE
+#   bash scanners/words/anon-audit-deep.sh --known FILE          (= 記録より後に出た分だけを赤に)
+#   bash scanners/words/anon-audit-deep.sh --known FILE --next-known FILE
 #                                                                  (= 走り終わったら、 この回が見た物を次の記録に)
 #   task audit:deep    (= Taskfile 経由、 full mode)
 #

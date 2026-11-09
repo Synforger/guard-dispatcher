@@ -10,7 +10,7 @@
 # fallback で動作確保。
 #
 # 使い方:
-#   bash _core/.tooling/local-ci/anon-sync-truth.sh
+#   bash scanners/words/anon-sync-truth.sh
 #   task audit:sync-truth   (= Taskfile 経由)
 #
 # Exit:

@@ -5,8 +5,8 @@
 # Behaviour:
 #   1. If the repo ships `.githooks/commit-msg`, run it first (AND — a pass
 #      does not skip the baseline below).
-#   2. On every repo except an explicit `exempt`, run
-#      `.tooling/local-ci/anon-scan.sh` against the commit message file so
+#   2. On every repo except an explicit `exempt`, run the guard's
+#      `scanners/words/anon-scan.sh` against the commit message file so
 #      personal identifiers cannot leak via commit subject / body — the gap
 #      that turned `gh run` records into a public leak surface earlier this
 #      week. Default-on; opt-out is explicit only. Missing scanner = hard fail.
@@ -40,7 +40,7 @@ fi
 scanner="$(dispatcher::locate_anon_scanner || true)"
 if [ -z "${scanner}" ]; then
     cat >&2 <<'MSG'
-[commit-msg] anon-scan.sh could not be resolved (repo-local or guard bundled).
+[commit-msg] anon-scan.sh could not be resolved in the guard checkout.
              The guard checkout is likely missing or moved — re-run its
              install.sh from a healthy checkout.
 MSG
