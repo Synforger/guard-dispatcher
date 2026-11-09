@@ -112,6 +112,7 @@ import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
 import commit_options  # noqa: E402
+import commit_scope  # noqa: E402
 import guard_places  # noqa: E402
 import records  # noqa: E402
 from path_forms import resolved  # noqa: E402
@@ -1430,6 +1431,27 @@ def handoff_folders() -> tuple[Path, ...]:
     return tuple(out)
 
 
+def handoff_unset() -> list[str]:
+    """The variables handoff.txt names that this session does not have (unset or empty): a line
+    naming one opens no handoff folder, and a refusal says so instead of leaving it unseen."""
+    try:
+        lines = HANDOFF.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    names = [a or b for line in lines if not line.strip().startswith("#")
+             for a, b in HANDOFF_VARIABLE.findall(line)]
+    return sorted({name for name in names if not os.environ.get(name)})
+
+
+def handoff_unset_note() -> str:
+    """What a write refusal adds when a handoff.txt line opened no folder for want of a variable."""
+    unset = handoff_unset()
+    if not unset:
+        return ""
+    return (f" (handoff.txt names {', '.join('$' + name for name in unset)}, which this session does "
+            f"not have, so the handoff folder of that line is not open to it)")
+
+
 def handoff_of(target: Path) -> Path | None:
     return next((f for f in handoff_folders() if target == f or f in target.parents), None)
 
@@ -1471,18 +1493,14 @@ def has_head(repo: Path) -> bool:
                           capture_output=True).returncode == 0
 
 
-def handoff_commit_refusal(repo: Path, areas) -> str | None:
-    """Why a commit in this repository is not a handoff (a change outside every handoff folder, or a
-    changed text the scan refuses), or None. Every change the commit could take is read: staged,
-    unstaged and untracked."""
+def status_paths(top: Path, here: Path, untracked: str, pathspecs: tuple[str, ...] = ()) -> list[Path] | None:
+    """The changed files `git status` lists from `here` (limited to `pathspecs` when given), as paths
+    under the repository's top, a rename or copy with its source; None when git fails."""
     import subprocess
-    top = repo_root(repo)
-    if top is None:
-        return "it is not a repository"
-    r = subprocess.run(["git", "-C", str(top), "status", "--porcelain", "-z", "--untracked-files=all"],
-                       capture_output=True, text=True)
+    r = subprocess.run(["git", "-C", str(here), "status", "--porcelain", "-z", f"--untracked-files={untracked}",
+                        *(["--", *pathspecs] if pathspecs else [])], capture_output=True, text=True)
     if r.returncode != 0:
-        return "git status failed"
+        return None
     entries = [e for e in r.stdout.split("\0") if e]
     paths, i = [], 0
     while i < len(entries):
@@ -1492,6 +1510,40 @@ def handoff_commit_refusal(repo: Path, areas) -> str | None:
             i += 1
             paths.append(top / entries[i])
         i += 1
+    return paths
+
+
+def commit_takes(top: Path, here: Path, scope: commit_scope.CommitScope | None) -> list[Path] | None:
+    """The changed files a commit run at `here` takes: what is staged, what the command's `git add`
+    names, every tracked change with `-a`, and the paths named on the commit. With no scope (the
+    command does not tell) every change counts, untracked files too. None when git fails."""
+    import subprocess
+    if scope is None:
+        return status_paths(top, top, "all")
+    staged = subprocess.run(["git", "-C", str(top), "diff", "--cached", "--name-only", "-z", "--no-renames"],
+                            capture_output=True, text=True)
+    if staged.returncode != 0:
+        return None
+    found = [top / name for name in staged.stdout.split("\0") if name]
+    parts = [status_paths(top, here, "all", scope.added) if scope.added else [],
+             status_paths(top, top, "no") if scope.tracked else [],
+             status_paths(top, here, "no", scope.named) if scope.named else []]
+    if any(part is None for part in parts):
+        return None
+    return list(dict.fromkeys(found + [p for part in parts for p in part]))
+
+
+def handoff_commit_refusal(repo: Path, areas, scope: commit_scope.CommitScope | None = None) -> str | None:
+    """Why a commit in this repository is not a handoff (a change it takes outside every handoff
+    folder, or a changed text the scan refuses), or None. The changes it takes come from `scope`
+    (commit_takes); a change left in the working tree that the commit does not take is not read."""
+    import subprocess
+    top = repo_root(repo)
+    if top is None:
+        return "it is not a repository"
+    paths = commit_takes(top, repo, scope)
+    if paths is None:
+        return "git status failed"
     folders: dict[Path, list[Path]] = {}
     for path in paths:
         folder = handoff_of(real(path))
@@ -1752,7 +1804,7 @@ def ask(argv: list[str]) -> int:
                   f"there is scanned for copies of private documents of other areas", file=sys.stderr)
     for target in refused:
         print(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
-              f"write {target} (areas: {AREAS}). Do it in another session", file=sys.stderr)
+              f"write {target} (areas: {AREAS}). Do it in another session{handoff_unset_note()}", file=sys.stderr)
     return 1 if refused or kept_here else 0
 
 
@@ -1946,7 +1998,7 @@ def main() -> int:
         for target in write_targets(command, cwd) if marks else []:
             if not may_write(target, marks, areas):
                 deny(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
-                     f"write {target} (areas: {AREAS}). Do it in another session")
+                     f"write {target} (areas: {AREAS}). Do it in another session{handoff_unset_note()}")
                 return 0
         for target, dest_args in sends_of(command, cwd) if marks else []:
             if area_of(target, areas) == EXEMPT:
@@ -1957,7 +2009,8 @@ def main() -> int:
                 place, guess_why = target, None
                 refused = not may_write(target, marks, areas)
                 if refused and handoff_folders():
-                    why = handoff_commit_refusal(target, areas)
+                    why = handoff_commit_refusal(target, areas, commit_scope.scope_of(
+                        shell_words(command), outgoing_module().SHELL_BREAK))
                     if why is None:
                         refused = False
                     elif repo_root(target) in {repo_root(f) for f in handoff_folders()}:
@@ -1983,7 +2036,7 @@ def main() -> int:
             return 0
         if marks and not may_write(target, marks, areas):
             deny(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
-                 f"write {target} (areas: {AREAS}). Do it in another session")
+                 f"write {target} (areas: {AREAS}). Do it in another session{handoff_unset_note()}")
             return 0
 
     read, unchecked = service_areas(tool, args, cwd, tabs)

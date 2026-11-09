@@ -720,10 +720,17 @@ step earlier, before each tool call, from the same `areas.txt`:
   the folders where it still may: `~` and `$VAR` / `${VAR}` expand from the
   session's environment, so a line like `~/notes/$TEAM/journal` gives each
   session its own folder, and a session without the variable (or with a `..` in
-  it) gets none. An Edit / Write there passes when what it writes holds no copy
+  it) gets none; a write it is refused then names the variable it lacks, so a
+  launcher that renames the variable does not close the folder unseen. An Edit /
+  Write there passes when what it writes holds no copy
   of a private document of an area the folder is outside of (the scan a send
   into the folder's area gets), and a commit in its repository passes when
-  every change there lies in a handoff folder and passes the same scan. Every
+  every change it takes lies in a handoff folder and passes the same scan. What
+  a commit takes is read from the command: what is staged, the paths a `git add`
+  in the same command names, every tracked change with `-a`, and the paths named
+  on the commit; a change it leaves in the working tree is not read. A command
+  that does not say (an `add -A` with no path, an interactive add, a `cd` or
+  `git -C` between the add and the commit) counts every change. Every
   other file in the area stays refused, and a push is judged as before.
 - **A script asks before it writes where its arguments say.** The guard reads
   the command that starts a script, never the script, and a relative path
