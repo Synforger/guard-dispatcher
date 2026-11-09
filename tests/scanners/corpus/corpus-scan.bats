@@ -1056,6 +1056,10 @@ wait_for_walk() {
     PATH="${STUB}:${PATH}" scan_last
     [ "$status" -eq 1 ]
     [[ "$output" == *"goes on apart from this scan"* ]]
+    # the read before the scan answers names its size, its time and what took it (no document named)
+    [[ "$output" == *"reading 2 documents changed since the last look"* ]]
+    [[ "$output" == *"read 2 changed documents in "*"s; most of it on .md "* ]]
+    [[ "$output" != *"late.md"* ]]
     wait_for_walk "${before}"
     # the walk folded both into the area's table: still caught, nothing left due
     commit_line "the dye lot for the spring run arrives on the ninth"
