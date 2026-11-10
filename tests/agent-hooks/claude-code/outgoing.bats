@@ -843,6 +843,42 @@ slack() { ordered "${SLACK}" "$(message "$1" "$2")" "${3:-toolu_1}"; }
     passed
 }
 
+@test "order: a value in quotes keeps its spaces, so several keys may hold sentences" {
+    held
+    destinations '*calendar* company order'
+    local tool="mcp__claude_ai_Google_Calendar__create_event"
+    local input
+    input="$(jq -n '{summary: "A B のすり合わせ", startTime: "2026-11-12T10:00:00+09:00",
+                     attendees: ["a@example.com", "b@example.com"],
+                     description: "議題は二つ。\n一つ目は日程。", location: "Room 3 west"}')"
+    said "予定を作って"
+    replied "$(printf '```send\ntool: create_event\nsummary: "A B のすり合わせ"   the title\nstartTime: 2026-11-12T10:00:00+09:00\nattendees: ["a@example.com", "b@example.com"]\nlocation: "Room 3 west"\ndescription:\n議題は二つ。\n一つ目は日程。\n```\n')"
+    said "送信して"
+    ordered "${tool}" "$(jq '.summary = "A B"' <<< "${input}")"
+    denied
+    [[ "${output}" == *"not one the agent showed"* ]]
+    ordered "${tool}" "${input}"
+    passed
+}
+
+@test "order: a value in quotes may hold its line breaks as JSON does, ahead of another key" {
+    held
+    said "tell them"
+    replied "$(printf '```send\ntool: slack_send_message\nmessage: "Line one.\\nLine two."\nchannel_id: C0123ABCD\n```\n')"
+    said "送信して"
+    slack C0123ABCD "$(printf 'Line one.\nLine two.')"
+    passed
+}
+
+@test "order: a value that opens a quote it does not close is its first word, as before" {
+    held
+    said "tell them"
+    replied "$(printf '```send\ntool: slack_send_message\nchannel_id: C0123ABCD\nmessage: "half\n```\n')"
+    said "送信して"
+    slack C0123ABCD '"half'
+    passed
+}
+
 @test "order: a call that differs from the shown one is refused: one letter, the channel, one more key" {
     held
     said "tell them"
