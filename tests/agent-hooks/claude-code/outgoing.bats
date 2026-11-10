@@ -966,6 +966,15 @@ slack() { ordered "${SLACK}" "$(message "$1" "$2")" "${3:-toolu_1}"; }
     denied
 }
 
+@test "order: a read needs no order, but its search term is compared with the private documents" {
+    held
+    ordered mcp__claude_ai_Slack__slack_search_public "$(jq -n --arg q "weekly notes" '{query: $q}')"
+    passed
+    ordered mcp__claude_ai_Slack__slack_search_public "$(jq -n --arg q "${CLIENT_TEXT}" '{query: $q}')"
+    denied
+    [[ "${output}" == *"client"* ]]
+}
+
 @test "order: a read needs no order however its name is joined; the first verb of the name decides" {
     held
     destinations '*slack* company order' '*notion* company order' '*acme* company order'
@@ -1194,6 +1203,44 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
     [[ "${output}" == *"needs the operator's order"* ]]
     ordered Bash "$(jq -n '{command: "curl -s https://hooks.example.com/status"}')"
     passed
+}
+
+@test "order: a POST whose path reads passes a destination held to an order; one that writes does not" {
+    held
+    destinations 'host:api.example.com company order'
+    local reads writes
+    for reads in "curl -s -X POST https://api.example.com/v1/search -d '{\"query\": \"weekly notes\"}'" \
+                 "curl -s https://api.example.com/v1/databases/0f3c9a/query --json '{\"page_size\": 10}'" \
+                 "curl -s -X POST https://api.example.com/api/search.messages -d 'query=weekly'"; do
+        ordered Bash "$(jq -n --arg c "${reads}" '{command: $c}')"
+        passed || { echo "refused: ${reads}"; return 1; }
+    done
+    for writes in "curl -s -X POST https://api.example.com/v1/pages -d '{\"title\": \"notes\"}'" \
+                  "curl -s -X PATCH https://api.example.com/v1/blocks/0f3c9a/children -d '{}'" \
+                  "curl -s -X PUT https://api.example.com/v1/search -d '{}'" \
+                  "curl -s -X POST https://api.example.com/v1/search/update -d '{}'" \
+                  "curl -s -X DELETE https://api.example.com/v1/blocks/0f3c9a" \
+                  "curl -s -X POST https://api.example.com/graphql -d '{\"query\": \"{ viewer { login } }\"}'"; do
+        ordered Bash "$(jq -n --arg c "${writes}" '{command: $c}')"
+        denied || { echo "passed: ${writes}"; return 1; }
+        [[ "${output}" == *"needs the operator's order"* ]]
+    done
+}
+
+@test "order: a POST whose path reads still has its body and its URL scanned" {
+    held
+    destinations 'host:api.example.com company order'
+    ordered Bash "$(jq -n --arg c "curl -s -X POST https://api.example.com/v1/search -d 'q=${CLIENT_TEXT}'" '{command: $c}')"
+    denied
+    [[ "${output}" == *"client"* ]]
+    ordered Bash "$(jq -n --arg c "curl -s -X POST -d 'x' 'https://api.example.com/v1/search?q=${CLIENT_TEXT// /+}'" '{command: $c}')"
+    denied
+}
+
+@test "outgoing: a POST to an endpoint of this machine is an action there whatever its path says" {
+    destinations 'local:8766/pty/* block'
+    bash_call "curl -s -X POST http://localhost:8766/pty/ses_1/search -d 'ls'"
+    denied
 }
 
 @test "order: a destinations line that cannot hold an order sends nothing" {
