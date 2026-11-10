@@ -21,7 +21,9 @@ only when all of these hold, read from the transcript Claude Code keeps for the 
        ```
 
    A key whose line holds a value takes the first word as the value (the rest is a label for the
-   reader); a key with nothing after the colon takes every line after it, so it comes last. The
+   reader), or, when the value opens with `"`, `[` or `{`, the JSON string, list or object up to
+   its end (`summary: "A B on Friday"`, with `\\n` for a line break); a key with nothing after the
+   colon takes every line after it, so it comes last. The
    call's input must carry exactly the shown keys with the shown values (a false or empty value
    counts as absent; a Bash call's `description`, `timeout` and `run_in_background` are left out
    on both sides, see `NOTES`), and `tool` names the tool (its last part, or the whole name). A text that
@@ -306,6 +308,20 @@ def typed(row: dict) -> str | None:
     return None if text is None or relayed(text) else text
 
 
+def shown_value(rest: str) -> str:
+    """The value a key's line shows, spelled as `value()` spells an input. One that opens a JSON
+    string, list or object is read as JSON up to its end (`"A B on Friday"` holds its spaces, and
+    `\\n` its line breaks), and the rest is a label; any other value is the first word."""
+    if rest[:1] in ('"', "[", "{"):
+        try:
+            shown, _ = json.JSONDecoder().raw_decode(rest)
+        except ValueError:
+            shown = None
+        if shown is not None:
+            return shown if isinstance(shown, str) else value(shown) or ""
+    return rest.split()[0]
+
+
 def shown_calls(text: str, kind: str = SEND) -> list[dict[str, str]]:
     calls = []
     for _, body in BLOCKS[kind].findall(text):
@@ -317,7 +333,7 @@ def shown_calls(text: str, kind: str = SEND) -> list[dict[str, str]]:
                 continue
             key, rest = m.group(1), m.group(2).strip()
             if rest:
-                fields[key] = rest.split()[0]
+                fields[key] = shown_value(rest)
             else:
                 fields[key] = "\n".join(lines[i + 1:]).rstrip("\n")
                 break

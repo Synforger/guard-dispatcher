@@ -1031,8 +1031,10 @@ exchange (`agent-hooks/claude-code/order.py`):
    ````
 
    A key with a value on its line takes the first word (the rest is a label
-   for the reader); a key with nothing after the colon takes every line after
-   it, so it comes last. `tool` is the tool's name, in full or its last part.
+   for the reader). A value that opens with `"`, `[` or `{` is read as JSON up
+   to its end instead, so a value with spaces is written `summary: "A B on
+   Friday"`, and one with line breaks `"line one\nline two"`. A key with
+   nothing after the colon takes every line after it, so it comes last. `tool` is the tool's name, in full or its last part.
    A text holding a ``` line of its own goes in a longer fence.
 2. The operator's next message orders the send.
 3. The guard reads both from the transcript Claude Code keeps for the session
