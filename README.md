@@ -430,6 +430,8 @@ An area's documents are everything under it that holds its words:
 
 A run, a row or a line with no letter and no digit in it is never a hit: the separator row of a wide Markdown table, a horizontal rule, a banner of signs in a comment, an empty row of a CSV. It says nothing, and every document that has one holds the same one.
 
+A line of a stylesheet is never a hit either: a one-line rule (`th, td { border: 1px solid var(--line); padding: 6px 8px; }`) or a declaration alone on its line (`border-collapse: collapse;`). It sets how a page looks, and every page sets its tables and headings the same way, so the same line stands in areas that never saw each other. A line of style that holds a character outside ASCII (a Japanese `content:` text) is compared as before, and so is an object of a script (`{ ok: true, view: body }`), whose keys are separated by commas.
+
 Code is matched line by line because that is how it is copied, and because
 printing every run of every line of a code base would hold hundreds of
 millions of values. It takes two consecutive lines because a lone common line
