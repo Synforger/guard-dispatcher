@@ -850,6 +850,15 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   not uploaded and not read, and a service blocked for sending still takes
   reads, judged as outside every area. A fetch without a body is a reading
   call whose payload is its URL, decoded (a query string reaches the host).
+  A POST to a host whose path reads is a reading call too: a word of the path
+  is a verb that reads and none is one that writes, split as a tool's name is
+  (`/v1/search`, `/v1/databases/<id>/query`, `search.messages`), since an API
+  that searches with a body takes it by POST. Its payload is its body and its
+  URL. A path with no such verb (`/v1/pages`, `/graphql`), PUT, PATCH and
+  DELETE send, and so does any call to an endpoint of this machine. A reading
+  call to a destination held to an order needs no order, and since the
+  operator does not see it, its strings are compared with the private
+  documents as well as the word list.
   A local path among a call's arguments — a file to upload, a folder to save
   into — is not scanned as text: the service receives the file, not its name.
   An argument whose name says id (`id`, `file_id`, `fileId`, `ids`) names an

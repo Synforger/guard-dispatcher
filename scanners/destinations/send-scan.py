@@ -276,9 +276,10 @@ def judge(name: str, payload: Path, reading: bool = False, handles: Path | None 
             for line in word_hits(r.stdout, payload, handles):
                 print(f"    {line}", file=sys.stderr)
             return 1, f"not sent to {name} ({place}): it carries a flagged identifier (word list)"
-    if held or name.lower().startswith(FILE):
+    if (held and not reading) or name.lower().startswith(FILE):
         # 人に届く前に operator が中身を見る (= 指示の枠に出した呼び、 operator が送る下書き、 operator が
-        # 渡す file)。 資料の写しは operator の目が守り、 ここで照合しない (= 禁止語は上で照合済み)
+        # 渡す file)。 資料の写しは operator の目が守り、 ここで照合しない (= 禁止語は上で照合済み)。
+        # 読む呼びは指示を経ずに通り operator の目に触れないので、 指示の要る送り先でも照合する
         return 0, ""
     return documents(name, place, "OUTSIDE" if destination == OUTSIDE else destination, payload, env,
                      f"Replace the text, or declare where it sits in {DESTINATIONS}")

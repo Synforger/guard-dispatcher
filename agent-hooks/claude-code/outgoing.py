@@ -132,7 +132,7 @@ CURL_TAKES_VALUE = CURL_BODY | {"-X", "--request", "-H", "--header", "-o", "--ou
                                 "-A", "--user-agent", "-e", "--referer", "-b", "--cookie", "-c", "--cookie-jar",
                                 "--url", "-x", "--proxy", "-m", "--max-time", "-w", "--write-out"}
 WGET_BODY = {"--post-data", "--post-file", "--body-data", "--body-file"}
-SENDING_METHODS = {"POST", "PUT", "PATCH"}
+SENDING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # Words of a shell command that end one command and start the next.
 SHELL_BREAK = {"&&", "||", ";", "|", "&", "|&", ";;", "(", ")"}
 
@@ -152,6 +152,17 @@ def place_of(url: str) -> str:
     except ValueError:
         port = None
     return f"local:{port or (443 if parts.scheme in ('https', 'wss') else 80)}{parts.path or '/'}"
+
+
+def reads_by_path(url: str) -> bool:
+    """Whether a POST to `url` only reads, as its path says: a word of the path is a verb that
+    reads and none is a verb that writes, the words split as a tool's name is (`/v1/search`,
+    `/v1/databases/<id>/query`, `search.messages`). An API that searches or queries with a body
+    takes it by POST, so the method alone cannot tell. A path with no such verb sends
+    (`/v1/pages`, `/graphql`), and so does one with a verb of both kinds."""
+    path = urlsplit(url if "://" in url else f"http://{url}").path
+    words = [word.lower() for word in TOOL_WORD.findall(path)]
+    return any(word in READING for word in words) and not any(word in WRITING for word in words)
 
 
 def shell_words(command: str) -> list[str]:
@@ -487,6 +498,11 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
                 urls.append(w)
             j += 2 if takes else 1
         places = [p for p in map(place_of, urls) if p]
+        # A POST whose path reads (a search, a query) to a service out of this machine: its body
+        # and its URL still reach the service and are scanned, but it changes nothing there. An
+        # endpoint of this machine is an action here whatever its path says.
+        reads = (method in (None, "POST") and bool(places) and all(p.startswith("host:") for p in places)
+                 and all(reads_by_path(u) for u in urls))
         if not (body or unknown or method in SENDING_METHODS):
             # A fetch: its URL -- the path and the query -- still reaches the host.
             # Decoded as well: `+` and `%20` hide the words a query carries.
@@ -496,7 +512,8 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
         if unknown and not places:
             out.append(Send("host:?", "", unreadable, unknown))
         for place in places:
-            out.append(Send(place, "\n".join(body), unreadable, unknown))
+            carried = body + (urls + [unquote_plus(u) for u in urls] if reads else [])
+            out.append(Send(place, "\n".join(carried), unreadable, unknown, reading=reads))
     return out
 
 
