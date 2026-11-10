@@ -480,6 +480,43 @@ client_code() {
     [ "$status" -eq 1 ]
 }
 
+@test "corpus: the rules of a stylesheet that every page writes are not the area's" {
+    mk_repo_at "${CLIENT}/pages"
+    printf '<style>\ntable { border-collapse: collapse; width: 100%%; font-size: 14px; }\nth, td { border: 1px solid var(--line); padding: 6px 8px; vertical-align: top; text-align: left; }\n</style>\n' > index.html
+    git add index.html
+    commit_bypassing_hooks "a page"
+    mk_repo other
+    printf 'table { border-collapse: collapse; width: 100%%; font-size: 14px; }\nth, td { border: 1px solid var(--line); padding: 6px 8px; vertical-align: top; text-align: left; }\n' > style.css
+    git add style.css
+    commit_bypassing_hooks "the same rules"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a line of style that holds the area's Japanese is still the area's" {
+    export GUARD_CORPUS_CODE_LINES=1
+    mk_repo_at "${CLIENT}/pages"
+    printf '.note::before { content: "%s"; color: var(--muted); }\n' "${CLIENT_JA}" > index.css
+    git add index.css
+    commit_bypassing_hooks "a page"
+    mk_repo other
+    commit_line ".note::before { content: \"${CLIENT_JA}\"; color: var(--muted); }"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: an object of a script is code, not style" {
+    export GUARD_CORPUS_CODE_LINES=1
+    mk_repo_at "${CLIENT}/repos/app"
+    printf '  return { ok: false, status: response.status, reasons: reasonsOf(body) }\n' > api.js
+    git add api.js
+    commit_bypassing_hooks "api"
+    mk_repo other
+    commit_line "  return { ok: false, status: response.status, reasons: reasonsOf(body) }"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
 @test "corpus: a license wrapped differently from its public copy is not the area's" {
     export GUARD_CORPUS_CODE_LINES=1
     mk_repo_at "${CLIENT}/repos/pipeline"

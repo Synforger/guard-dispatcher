@@ -61,7 +61,9 @@ An area's documents are everything under its paths that holds its words:
 
 A run, a row or a line with no letter and no digit in it is no print: the separator
 row of a table, a horizontal rule, a banner of signs, an empty row of a CSV say
-nothing, and every document that has one holds the same one.
+nothing, and every document that has one holds the same one. A line of a
+stylesheet is no print either (style_lines): every page sets its tables and headings
+the same way.
 
 Inside a repository only what it tracks counts (untracked output and vendored
 third-party folders do not). A sent line is a hit when it holds a prose run or
@@ -144,6 +146,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "_internal"))
 import guard_places  # noqa: E402
 from path_forms import composed, resolved  # noqa: E402
 from own_paths import without_own_paths  # noqa: E402
+from style_lines import is_style_line  # noqa: E402
 
 
 class later:
@@ -934,9 +937,10 @@ def line_print(line: str, kind: str = "line") -> int | None:
     something on its own (the same bar as a run: 12 characters mostly Japanese, 40 otherwise).
     Code is copied line by line, and printing every run of every line would hold hundreds of
     millions of values. The kinds are kept apart: a row is one hit, code takes CODE_LINES.
-    A line with no letter and no digit in it (a banner of signs, an empty row) is no print."""
+    A line with no letter and no digit in it (a banner of signs, an empty row) is no print, nor a
+    line of a stylesheet (style_lines): every page sets its tables and headings the same way."""
     text = normalize(line)
-    if WORD.search(text) is None:
+    if WORD.search(text) is None or is_style_line(text):
         return None
     if len(text) >= LATIN_RUN or (len(text) >= RUN and mostly_japanese(text)):
         return digest(f"\0{kind}\0" + text)
