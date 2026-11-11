@@ -1565,6 +1565,28 @@ sys.exit(0 if want and want == have else 1)
     [ "$status" -eq 1 ]                                   # outside every area, the path is text
 }
 
+@test "corpus: a path to the destination's own place, written from a folder above the file, is no other area's text" {
+    local deck="the-fitting-room-schedule-for-the-winter-collection.txt"
+    local gone="the-sewing-room-schedule-for-the-summer-collection.txt"
+    mkdir -p "${CLIENT}/slides"
+    echo "a deck" > "${CLIENT}/slides/${deck}"
+    printf 'the decks are clients/acme/slides/%s and clients/acme/slides/%s\n' "${deck}" "${gone}" \
+        >> "${WORK}/meetings/plan.md"
+    mk_repo_at "${CLIENT}/records"
+    mkdir -p journal/day
+    printf '{"text": "looks good", "artifacts": ["clients/acme/slides/%s"]}\n' "${deck}" > journal/day/words.jsonl
+    git add journal
+    commit_bypassing_hooks "the operator's words"
+    scan_last
+    [ "$status" -eq 0 ]                                   # named from the company's folder, two levels up
+    printf '{"text": "looks good", "artifacts": ["clients/acme/slides/%s"]}\n' "${gone}" >> journal/day/words.jsonl
+    git add journal
+    commit_bypassing_hooks "a deck that is not there"
+    scan_last
+    [ "$status" -eq 1 ]                                   # no such place: compared as text
+    [[ "$output" == *"company text"* ]]
+}
+
 @test "corpus: a scan says how long it took, clean or not" {
     mk_repo other
     commit_line "nothing private"

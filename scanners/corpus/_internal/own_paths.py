@@ -25,7 +25,9 @@ LINK_TAIL = re.compile(r"[#?].*$")
 def without_own_paths(line: str, base: Path, roots: list[Path]) -> str:
     """The line with every path that names an existing place inside one of `roots` replaced by a
     space. A relative path is read from `base` (the folder of the file the line is in) and from
-    HOME (how paths are written in notes); a link's percent-escapes are decoded."""
+    each folder above it (a tier's records name its pages from the tier's folder or the agent's,
+    `pages/<tab>/index.html`), and from HOME (how paths are written in notes); a link's
+    percent-escapes are decoded."""
     if not roots or "/" not in line:
         return line
     real_roots = [root.resolve() for root in roots]
@@ -38,7 +40,8 @@ def _names_own_place(word: str, base: Path, roots: list[Path]) -> bool:
         if not spelling.strip("/."):
             continue
         expanded = Path(os.path.expandvars(os.path.expanduser(spelling)))
-        candidates = [expanded] if expanded.is_absolute() else [base / expanded, Path.home() / expanded]
+        candidates = [expanded] if expanded.is_absolute() \
+            else [folder / expanded for folder in (base, *base.parents)] + [Path.home() / expanded]
         for place in candidates:
             try:
                 if place.exists() and any(place.resolve().is_relative_to(root) for root in roots):
