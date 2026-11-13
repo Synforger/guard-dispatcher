@@ -120,31 +120,31 @@ def same_boundary(remote: str) -> tuple[str, ...]:
 
 
 def push_range(remote: str, local: str, remote_sha: str, scanned: list[str]) -> tuple[bool, str] | None:
-    """(rewritten, revspec) of what a pushed ref sends, or None when nothing goes out."""
-    if remote_sha == ZERO:
-        # A new branch: the commits no tracking ref of the remote reaches. Ranging from the default
-        # branch would scan published history forever under a squash-merge flow; commits an earlier
-        # ref of this push already scanned count as published.
-        held = [f"--remotes={name}" for name in [remote, *same_boundary(remote)]]
-        lines = git("rev-list", "--boundary", local, *scanned, "--not", *held).splitlines()
-        if not any(line and not line.startswith("-") for line in lines):
-            return None
-        bases = sorted({line[1:] for line in lines if line.startswith("-")})
-        if len(bases) == 1:
-            spec = f"{bases[0]}..{local}"
-        elif not bases:
-            spec = local                       # nothing reachable is published: the whole history
-        else:
-            spec = " ".join([local, *(f"^{b}" for b in bases)])
-    elif is_commit(remote_sha):
-        spec = f"{remote_sha}..{local}"
+    """(rewritten, revspec) of what a pushed ref sends, or None when nothing goes out.
+
+    What goes out is what the new tip reaches and neither the old tip nor any tracking ref of the
+    remote (or of a remote checked against the same areas) does: a branch brought up to date with
+    the default branch carries the default branch's commits, which the remote already holds.
+    Ranging a new branch from the default branch would scan published history forever under a
+    squash-merge flow; commits an earlier ref of this push already scanned count as published.
+    A push over a tip it does not descend from, or of a whole history, is a rewrite."""
+    held = [f"--remotes={name}" for name in [remote, *same_boundary(remote)]]
+    known_old = remote_sha != ZERO and is_commit(remote_sha)
+    old = [f"^{remote_sha}"] if known_old else []
+    lines = git("rev-list", "--boundary", local, *old, *scanned, "--not", *held).splitlines()
+    if not any(line and not line.startswith("-") for line in lines):
+        return None
+    bases = sorted({line[1:] for line in lines if line.startswith("-")})
+    if len(bases) == 1:
+        spec = f"{bases[0]}..{local}"
+    elif not bases:
+        spec = local                           # nothing reachable is published: the whole history
     else:
-        spec = local                           # the old tip is gone here: a rewrite, sent whole
-    rewritten = (".." not in spec and "^" not in spec) or (
-        remote_sha != ZERO and is_commit(remote_sha)
-        and subprocess.run(["git", "merge-base", "--is-ancestor", remote_sha, local],
-                           capture_output=True).returncode != 0)
-    return rewritten, spec
+        spec = " ".join([local, *(f"^{b}" for b in bases)])
+    # The old tip gone here, or one the new tip does not descend from: the history was rewritten.
+    replaced = remote_sha != ZERO and (not known_old or subprocess.run(
+        ["git", "merge-base", "--is-ancestor", remote_sha, local], capture_output=True).returncode != 0)
+    return not bases or replaced, spec
 
 
 def push_ranges(remote: str, ref_lines: list[str]) -> tuple[bool, str] | None:

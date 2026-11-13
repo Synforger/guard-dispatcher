@@ -317,6 +317,26 @@ push_new_to() {
     [ "$status" -eq 0 ]
 }
 
+@test "corpus: a branch brought up to date with develop does not carry develop's commits again" {
+    seed_visibility acme/sdk private
+    mk_clone_at "${WORK}/repos/sdk" acme/sdk
+    local old merged
+    old="$(git rev-parse HEAD)"
+    git update-ref refs/remotes/origin/feature/x "${old}"
+    git checkout -q -b develop
+    commit_line "${CLIENT_TEXT}"                        # on the remote's develop already
+    git update-ref refs/remotes/origin/develop HEAD
+    git checkout -q -b feature/x "${old}"
+    git -c core.hooksPath=/dev/null merge -q --no-ff --no-edit develop
+    merged="$(git rev-parse HEAD)"
+    run_pre_push_to "git@github.com:acme/sdk.git" "refs/heads/feature/x ${merged} refs/heads/feature/x ${old}"
+    [ "$status" -eq 0 ]
+    commit_line "again: ${CLIENT_TEXT}"
+    run_pre_push_to "git@github.com:acme/sdk.git" "refs/heads/feature/x $(git rev-parse HEAD) refs/heads/feature/x ${old}"
+    [ "$status" -ne 0 ]                                 # what the remote does not hold is scanned
+    [[ "$output" == *"client text"* ]]
+}
+
 @test "corpus: what only a remote checked against other areas holds is scanned on a new remote" {
     seed_visibility acme/sdk private
     seed_visibility acme/sdk-mirror public
