@@ -7,7 +7,10 @@ rewrite they stopped it one after another, for the same reason.
 
   which commits   the ones no remote of the destination holds yet, less the tips this push has
                   already scanned; a push over a tip it does not descend from, or of a whole
-                  history, is a rewrite
+                  history, is a rewrite. A new branch also leaves out what another remote holds
+                  when a push there is checked against the same areas (corpus-scan --checked):
+                  those commits have crossed every boundary this push crosses (a company's
+                  history pushed for the first time to another machine of the company)
   of a rewrite    what the destination already holds is left out, compared by content: a rewrite
                   gives every commit a new hash, colleagues' too, and the destination has carried
                   them all along
@@ -40,12 +43,16 @@ its remote-tracking refs say.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import subprocess
 import sys
 from pathlib import Path
 
 ZERO = "0" * 40
+CORPUS = Path(__file__).resolve().parents[1] / "corpus" / "corpus-scan.py"
+# How long a destination's areas may take to tell (a GitHub repository's visibility is asked once).
+CHECKED_TIMEOUT_S = 60
 OBJECTS = "objects.txt"
 MESSAGES = "messages.txt"
 ADDRESSES = "addresses.txt"
@@ -86,13 +93,41 @@ def held(folder: Path | None, name: str) -> set[str]:
         return set()
 
 
+def checked_by(url: str) -> str | None:
+    """The areas a push to `url` is checked against, as corpus-scan --checked prints them, or None
+    when that cannot be told (no areas, a time-out, an error)."""
+    try:
+        r = subprocess.run(["python3", str(CORPUS), "--checked", "--dest", url,
+                            "--repo", git("rev-parse", "--show-toplevel").strip()],
+                           capture_output=True, text=True, timeout=CHECKED_TIMEOUT_S)
+    except (subprocess.TimeoutExpired, OSError, subprocess.CalledProcessError):
+        return None
+    lines = r.stdout.splitlines()
+    return lines[-1] if r.returncode == 0 and lines else None
+
+
+@functools.lru_cache(maxsize=None)
+def same_boundary(remote: str) -> tuple[str, ...]:
+    """The other remotes a push to `remote` is checked against the same areas as. What they hold has
+    already crossed every boundary this push crosses, so it carries nothing new across one."""
+    names = git("remote").split()
+    if remote not in names:
+        return ()
+    url = {name: git("remote", "get-url", "--push", name).strip() for name in names}
+    this = checked_by(url[remote])
+    if this is None:
+        return ()
+    return tuple(name for name in names if name != remote and checked_by(url[name]) == this)
+
+
 def push_range(remote: str, local: str, remote_sha: str, scanned: list[str]) -> tuple[bool, str] | None:
     """(rewritten, revspec) of what a pushed ref sends, or None when nothing goes out."""
     if remote_sha == ZERO:
         # A new branch: the commits no tracking ref of the remote reaches. Ranging from the default
         # branch would scan published history forever under a squash-merge flow; commits an earlier
         # ref of this push already scanned count as published.
-        lines = git("rev-list", "--boundary", local, *scanned, "--not", f"--remotes={remote}").splitlines()
+        held = [f"--remotes={name}" for name in [remote, *same_boundary(remote)]]
+        lines = git("rev-list", "--boundary", local, *scanned, "--not", *held).splitlines()
         if not any(line and not line.startswith("-") for line in lines):
             return None
         bases = sorted({line[1:] for line in lines if line.startswith("-")})

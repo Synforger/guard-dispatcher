@@ -2346,6 +2346,9 @@ def main(argv: list[str] | None = None) -> int:
                         "joined by commas are a session that has read in all: a place inside each when "
                         "they nest into one, and the text of each when they do not")
     parser.add_argument("--where", action="store_true", help=f"print where the destination lives, or {OUTSIDE}")
+    parser.add_argument("--checked", action="store_true",
+                        help=f"print the areas a send to the destination is checked against, comma-joined "
+                             f"(empty: none; {EXEMPT}: never scanned)")
     parser.add_argument("--commit", action="store_true",
                         help="the text is what a commit adds to the repository at --repo: it stays on this "
                         f"machine, so the areas a `{CARRIES}` line lets that repository hold are not checked")
@@ -2440,8 +2443,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             say("fingerprints not built yet")
         return 0
-    if not (args.span or args.text or args.diff or args.where):
-        parser.error("give --range, --text, --diff, --where, --refresh, --refresh-public, --status or --summary")
+    if not (args.span or args.text or args.diff or args.where or args.checked):
+        parser.error("give --range, --text, --diff, --where, --checked, --refresh, --refresh-public, --status "
+                     "or --summary")
 
     sender = expand(str(args.repo or (sending_repo() if args.span else os.getcwd())))
     here: Path | None = sender
@@ -2472,6 +2476,8 @@ def main(argv: list[str] | None = None) -> int:
     for place in also:
         held |= holding(place, areas)
     if held == {EXEMPT}:
+        if args.checked:
+            print(EXEMPT)
         return 0
     # A place carries its own areas' text; an area holding one of them (the company around a
     # client) is still checked: what goes to a client does not take the company's own text.
@@ -2482,6 +2488,9 @@ def main(argv: list[str] | None = None) -> int:
         # of every area it has read (the company's too) is its own.
         own |= set(names)
     checked = [n for n in areas if n not in UNSCANNED and n not in own]
+    if args.checked:
+        print(",".join(sorted(checked)))
+        return 0
     # A commit stays on this machine. Where areas.txt lets a repository of this area hold other
     # areas' text, those are not checked -- while the repository has no remote to send it to.
     holds: list[str] = []

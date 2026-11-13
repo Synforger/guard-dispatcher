@@ -246,6 +246,46 @@ mk_clone_at() {
     git remote add origin "git@github.com:$2.git"
 }
 
+# push_new_to <remote> — pre-push of the current branch as a new branch on a configured remote.
+push_new_to() {
+    local url head
+    url="$(git remote get-url --push "$1")"
+    head="$(git rev-parse HEAD)"
+    run bash -c "printf '%s\n' \"\$1\" | bash '${GUARD_ROOT}/git-hooks/pre-push' \"\$2\" \"\$3\"" _ \
+        "refs/heads/develop ${head} refs/heads/develop ${ZERO_SHA}" "$1" "${url}"
+}
+
+@test "corpus: a new remote checked against the same areas as one that holds the history takes it unscanned" {
+    seed_visibility acme/sdk private
+    mk_clone_at "${WORK}/repos/sdk" acme/sdk
+    commit_line "${CLIENT_TEXT}"                        # an old commit the company's repository holds
+    git update-ref refs/remotes/origin/develop HEAD
+    git init -q --bare "${WORK}/machines/nas.git"
+    git remote add nas "${WORK}/machines/nas.git"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --checked --dest "${WORK}/machines/nas.git"
+    [ "$output" = "client" ]
+    push_new_to nas
+    [ "$status" -eq 0 ]                                 # it crosses no boundary it has not crossed
+    commit_line "again: ${CLIENT_TEXT}"
+    push_new_to nas
+    [ "$status" -ne 0 ]                                 # what no remote holds is scanned as before
+    [[ "$output" == *"client text"* ]]
+}
+
+@test "corpus: what only a remote checked against other areas holds is scanned on a new remote" {
+    seed_visibility acme/sdk private
+    seed_visibility acme/sdk-mirror public
+    mk_clone_at "${WORK}/repos/sdk" acme/sdk
+    git remote add mirror git@github.com:acme/sdk-mirror.git
+    commit_line "${CLIENT_TEXT}"
+    git update-ref refs/remotes/mirror/develop HEAD     # held by a public mirror, not by origin
+    git init -q --bare "${WORK}/machines/nas.git"
+    git remote add nas "${WORK}/machines/nas.git"
+    push_new_to nas
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"client text"* ]]
+}
+
 @test "corpus: a public destination is outside every area, wherever its clone lives" {
     seed_visibility acme/pipeline public
     mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline

@@ -1160,7 +1160,11 @@ contract:
   deep-scanned — all blobs (full diffs), the message, and the
   author/committer name+email — and the pushed branch or tag name is
   scanned as well (`pre-push`). A new-branch push scans exactly the
-  commits the remote does not already have. What a push sends is decided in
+  commits the remote does not already have, less those another remote holds
+  when a push there is checked against the same areas
+  (`corpus-scan.py --checked`): they have crossed every boundary this push
+  crosses, so a company's history pushed for the first time to another
+  machine of the company is not scanned whole again. What a push sends is decided in
   one place, `scanners/destinations/dest-known.py`: which commits go out, whether the push
   rewrites history, and of a rewrite what the destination already holds. No
   check reads the history on its own. A rewritten history (a force push, or
