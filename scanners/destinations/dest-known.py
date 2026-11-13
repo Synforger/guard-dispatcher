@@ -109,12 +109,11 @@ def checked_by(url: str) -> str | None:
 @functools.lru_cache(maxsize=None)
 def same_boundary(remote: str) -> tuple[str, ...]:
     """The other remotes a push to `remote` is checked against the same areas as. What they hold has
-    already crossed every boundary this push crosses, so it carries nothing new across one."""
+    already crossed every boundary this push crosses, so it carries nothing new across one.
+    `remote` is a remote's name, or the URL itself when the push names one (`git push host:/x.git`)."""
     names = git("remote").split()
-    if remote not in names:
-        return ()
     url = {name: git("remote", "get-url", "--push", name).strip() for name in names}
-    this = checked_by(url[remote])
+    this = checked_by(url.get(remote, remote))
     if this is None:
         return ()
     return tuple(name for name in names if name != remote and checked_by(url[name]) == this)

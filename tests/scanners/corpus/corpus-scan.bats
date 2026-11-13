@@ -305,6 +305,18 @@ push_new_to() {
     [[ "$output" == *"client text"* ]]
 }
 
+@test "corpus: a push to a URL with no remote's name leaves out what a remote checked the same way holds" {
+    seed_visibility acme/sdk private
+    mk_clone_at "${WORK}/repos/sdk" acme/sdk
+    commit_line "${CLIENT_TEXT}"
+    git update-ref refs/remotes/origin/develop HEAD
+    git init -q --bare "${WORK}/machines/nas.git"
+    head="$(git rev-parse HEAD)"
+    run bash -c "printf '%s\n' \"\$1\" | bash '${GUARD_ROOT}/git-hooks/pre-push' \"\$2\" \"\$2\"" _ \
+        "refs/heads/develop ${head} refs/heads/develop ${ZERO_SHA}" "${WORK}/machines/nas.git"
+    [ "$status" -eq 0 ]
+}
+
 @test "corpus: what only a remote checked against other areas holds is scanned on a new remote" {
     seed_visibility acme/sdk private
     seed_visibility acme/sdk-mirror public
