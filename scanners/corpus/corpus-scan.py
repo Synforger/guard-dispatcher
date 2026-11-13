@@ -98,6 +98,8 @@ a public repository leaves the client all the same:
     private, with a local clone      where that clone lives
     private, no clone on this machine, or visibility unknown
                                      outside every area (fail-closed)
+    another machine, in a root of areas.txt (`build1:/srv/acme/x.git`, `ssh://build1/srv/acme/x.git`)
+                                     the area of the innermost root holding the path
     not on GitHub (a local path, another host)
                                      where the sending repository lives
 
@@ -813,6 +815,28 @@ def load_remote_areas(source: Path | None = None) -> list[tuple[str, str, str]]:
                 raise ValueError(f"areas.txt: {parts[0]!r} has a folder on another machine and none here")
             out.append((parts[0], host.lower(), path.rstrip("/") or "/"))
     return sorted(out, key=lambda r: len(r[2]), reverse=True)
+
+
+# A push URL that names a path on another machine: `ssh://[user@]host[:port]/path`, or git's
+# scp-like `[user@]host:path` (no slash before the colon; a path without a leading `/` is under that
+# machine's home).
+SSH_URL = re.compile(r"^ssh://(?:[^@/]+@)?([^/:@]+)(?::\d+)?(/.*)$", re.I)
+SCP_URL = re.compile(r"^(?:[^@/:]+@)?([^/:@]+):(?!//)(.+)$")
+
+
+def push_place(url: str) -> tuple[str, str] | None:
+    """(host, path) of a push URL on another machine, the path written as a root is (`~/x` under
+    its home), or None for a local path or any other URL."""
+    url = url.strip()
+    if m := SSH_URL.match(url):
+        host, path = m.group(1), m.group(2)
+        path = "~/" + path[3:] if path.startswith("/~/") else path
+    elif (m := SCP_URL.match(url)) and "://" not in url:
+        host, path = m.group(1), m.group(2)
+        path = path if path.startswith(("/", "~/")) else "~/" + path
+    else:
+        return None
+    return host.lower(), path.rstrip("/") or "/"
 
 
 def remote_area(host: str, path: str, remote: list[tuple[str, str, str]]) -> str | None:
@@ -2457,6 +2481,15 @@ def main(argv: list[str] | None = None) -> int:
                            sender, areas)
     elif args.dest and (slug := github_repo(args.dest)):
         here = destination({slug}, sender, areas)
+    elif args.dest and (place := push_place(args.dest)):
+        try:
+            area = remote_area(*place, load_remote_areas())
+        except ValueError as error:
+            say(f"REFUSED — {error}")
+            return 2
+        if area is not None:
+            # A folder on another machine has no text here: the area stands in by its folder here.
+            here = areas[area][0]
     elif args.dest_area:
         # A service has no folder: the area it sits in is declared, and stands in by its first
         # root. Several areas (`a,b`) are a session that has read in all.

@@ -246,6 +246,39 @@ mk_clone_at() {
     git remote add origin "git@github.com:$2.git"
 }
 
+@test "corpus: a push URL into a root on another machine lands in that root's area, whatever its form" {
+    printf 'company %s host:nas1:/mnt/company\nclient  %s host:build1:~/acme\n' "${WORK}" "${CLIENT}" \
+        > "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo_at "${BATS_TEST_TMPDIR}/elsewhere/tool"
+    local url work client
+    work="$(cd -P "${WORK}" && pwd)" client="$(cd -P "${CLIENT}" && pwd)"
+    for url in nas1:/mnt/company/sdk.git me@nas1:/mnt/company/sdk.git ssh://me@nas1:2222/mnt/company/sdk.git; do
+        run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --where --dest "${url}"
+        [ "$output" = "${work}" ] || { echo "${url} -> ${output}"; return 1; }
+    done
+    for url in build1:acme/x.git ssh://build1/~/acme/x.git build1:~/acme/x.git; do
+        run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --where --dest "${url}"
+        [ "$output" = "${client}" ] || { echo "${url} -> ${output}"; return 1; }
+    done
+    for url in nas1:/srv/other.git build1:/srv/acme/x.git "${BATS_TEST_TMPDIR}/bare.git"; do
+        run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --where --dest "${url}"
+        [ "$output" = "$(pwd -P)" ] || { echo "${url} -> ${output}"; return 1; }   # in no root: the sender
+    done
+}
+
+@test "corpus: a client's history pushed to the company's machine is judged as sent into the company" {
+    printf 'company %s host:nas1:/mnt/company\nclient  %s\n' "${WORK}" "${CLIENT}" > "${GUARD_CONFIG_DIR}/areas.txt"
+    mk_repo_at "${CLIENT}/repos/pipeline"
+    base="$(git rev-parse HEAD)"
+    commit_line "${CLIENT_TEXT}"
+    head="$(git rev-parse HEAD)"
+    run_pre_push_to "nas1:/mnt/company/pipeline.git" "refs/heads/feature/x ${head} refs/heads/feature/x ${base}"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"client text"* ]]
+    run_pre_push_to "${BATS_TEST_TMPDIR}/bare.git" "refs/heads/feature/x ${head} refs/heads/feature/x ${base}"
+    [ "$status" -eq 0 ]                                  # a folder of no area: where the client's repo lives
+}
+
 # push_new_to <remote> — pre-push of the current branch as a new branch on a configured remote.
 push_new_to() {
     local url head
