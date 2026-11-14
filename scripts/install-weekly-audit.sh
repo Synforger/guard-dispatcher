@@ -3,8 +3,9 @@
 # install-weekly-audit — register the weekly audit as a launchd agent (macOS)
 # =============================================================================
 # Generates ~/Library/LaunchAgents/com.guard-dispatcher.weekly-audit.plist
-# pointing at this checkout's weekly-audit.sh, scheduled for Sunday 00:00
-# local time, then loads it. Idempotent: re-running replaces the agent and
+# pointing at this checkout's weekly-audit.sh --if-due, asked every hour and at
+# login, so the week's run (due from Sunday 00:00 local time) is made up for
+# whenever the machine was asleep, off or not logged in at that moment. Then loads it. Idempotent: re-running replaces the agent and
 # re-points it at the checkout you ran it from.
 #
 # Prerequisite: the weekly audit's config must exist
@@ -50,6 +51,7 @@ cat > "${PLIST}" <<PLIST
     <array>
         <string>/bin/bash</string>
         <string>${SCRIPT_DIR}/weekly-audit.sh</string>
+        <string>--if-due</string>
     </array>
     <key>WorkingDirectory</key>
     <string>${HOME}</string>
@@ -59,17 +61,10 @@ cat > "${PLIST}" <<PLIST
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         ${ROOT_ENTRY}
     </dict>
-    <key>StartCalendarInterval</key>
-    <dict>
-        <key>Weekday</key>
-        <integer>0</integer>
-        <key>Hour</key>
-        <integer>0</integer>
-        <key>Minute</key>
-        <integer>0</integer>
-    </dict>
+    <key>StartInterval</key>
+    <integer>3600</integer>
     <key>RunAtLoad</key>
-    <false/>
+    <true/>
     <key>KeepAlive</key>
     <false/>
     <key>StandardOutPath</key>
@@ -87,7 +82,7 @@ launchctl bootout "gui/$(id -u)/${LABEL}" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "${PLIST}"
 
 echo "[weekly-audit] registered: ${LABEL}"
-echo "  schedule : Sunday 00:00 local time (Saturday midnight)"
+echo "  schedule : due from Sunday 00:00 local time, asked every hour and at login"
 echo "  script   : ${SCRIPT_DIR}/weekly-audit.sh"
 echo "  logs     : ${STATE_DIR}/"
 echo "  verify   : launchctl print gui/\$(id -u)/${LABEL} | head -20"
