@@ -85,9 +85,17 @@ if [ "${1:-}" = "--accept" ]; then
     done
     exit "${status}"
 fi
-# The run itself takes no argument: one mistyped (a `--help`) would otherwise start a full audit.
+# weekly-audit.sh --if-due — the audit, only when no run that finished has started since the last
+# scheduled Sunday 00:00 (scripts/_internal/audit_due.py). The resident service asks every hour, so a
+# machine that was asleep, off or not logged in at the scheduled moment still gets its weekly run.
+if [ "${1:-}" = "--if-due" ] && [ $# -eq 1 ]; then
+    shift
+    python3 "${GUARD_ROOT}/scripts/_internal/audit_due.py" "${STATE_DIR}" || exit 0
+fi
+# The run itself takes no other argument: one mistyped (a `--help`) would otherwise start a full audit.
 if [ $# -gt 0 ]; then
-    echo "usage: weekly-audit.sh                                      (the scheduled audit)" >&2
+    echo "usage: weekly-audit.sh                                      (the audit, now)" >&2
+    echo "       weekly-audit.sh --if-due                             (the audit, when the week's run is due)" >&2
     echo "       weekly-audit.sh --accept [--as-of <UTC time>] <repo>...  (record known findings)" >&2
     exit 2
 fi

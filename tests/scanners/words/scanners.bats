@@ -721,6 +721,53 @@ leak_in_history() {
     [[ "${log}" != *"/archive/old ("* ]]
 }
 
+# old_run <log folder> <date> [done] — a run of the audit in its day's log, finished unless the
+# third argument is `stopped`.
+old_run() {
+    mkdir -p "$1"
+    printf '=== weekly anon audit: %s (00:00:05) ===\n' "$2" >> "$1/weekly-audit-$2.log"
+    [ "${3:-done}" = stopped ] || printf '=== done: 0 repo(s) with findings ===\n' >> "$1/weekly-audit-$2.log"
+}
+
+@test "weekly audit: --if-due runs when no finished run started since Sunday 00:00, and only once" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    local repo logs
+    repo="$(pwd)"
+    export HOME="${BATS_TEST_TMPDIR}/home"
+    logs="${HOME}/.local/state/guard-dispatcher"
+    mkdir -p "${HOME}/.config/guard-dispatcher"
+    printf 'REPOS_GLOB="%s"\n' "${repo}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
+    old_run "${logs}" "$(date -v-14d +%Y-%m-%d)"            # two weeks ago: a Sunday has passed since
+    export GUARD_AUDIT_NOW="$(date +%Y-%m-%dT%H:%M:%S)"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh" --if-due
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"due: the last run that finished started"* ]]
+    [ "$(cat "${logs}"/weekly-audit-*.log | grep -c '^=== weekly anon audit')" -eq 2 ]
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh" --if-due
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"not due"* ]]
+    [ "$(cat "${logs}"/weekly-audit-*.log | grep -c '^=== weekly anon audit')" -eq 2 ]
+}
+
+@test "weekly audit: the week's run is due from Sunday 00:00, and a run that stopped half way does not count" {
+    local due="${GUARD_ROOT}/scripts/_internal/audit_due.py" logs="${BATS_TEST_TMPDIR}/logs"
+    old_run "${logs}" 2026-11-14                              # a Saturday
+    GUARD_AUDIT_NOW=2026-11-14T23:59:00 run python3 "${due}" "${logs}"
+    [ "$status" -eq 1 ]                                       # the week's run is the Sunday before's
+    GUARD_AUDIT_NOW=2026-11-15T00:00:00 run python3 "${due}" "${logs}"
+    [ "$status" -eq 0 ]
+    old_run "${logs}" 2026-11-15 stopped
+    GUARD_AUDIT_NOW=2026-11-15T03:00:00 run python3 "${due}" "${logs}"
+    [ "$status" -eq 0 ]                                       # stopped half way: run again
+    old_run "${logs}" 2026-11-15
+    GUARD_AUDIT_NOW=2026-11-21T23:00:00 run python3 "${due}" "${logs}"
+    [ "$status" -eq 1 ]
+    GUARD_AUDIT_NOW=2026-11-14T10:00:00 run python3 "${due}" "${BATS_TEST_TMPDIR}/none"
+    [ "$status" -eq 0 ]                                       # nothing has ever finished
+}
+
 @test "weekly audit: an argument the run does not take stops it before anything is audited" {
     export HOME="${BATS_TEST_TMPDIR}/home"
     mkdir -p "${HOME}/.config/guard-dispatcher"
