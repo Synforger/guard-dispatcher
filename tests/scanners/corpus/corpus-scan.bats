@@ -58,7 +58,7 @@ mk_repo_at() {
 
 # --- an _exempt repository is compared with no area ---------------------------
 
-@test "corpus: what lands in an _exempt repository is compared with no area; one in no area is compared with all" {
+@test "corpus: a commit into an _exempt repository is compared with no area, a push to a declared remote is; one in no area is compared with all" {
     printf '%s\n' "${CLIENT_TEXT}" > "${BATS_TEST_TMPDIR}/carried.txt"
     mk_repo_at "${BATS_TEST_TMPDIR}/private/notes"
     git config guard.scope corpus
@@ -66,6 +66,13 @@ mk_repo_at() {
     [ "$output" = "_exempt" ]
     run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/carried.txt" --repo . --commit
     [ "$status" -eq 0 ]                                 # guard.scope corpus does not reach inside _exempt
+    git remote add origin git@github.com:someone/notes.git
+    seed_visibility someone/notes private
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --checked --text "${BATS_TEST_TMPDIR}/carried.txt" --dest "$(git remote get-url origin)"
+    [ "$output" = "_exempt" ]                           # an undeclared private remote lands where its clone lives
+    printf 'repo:someone/notes outside\n' >> "${GUARD_CONFIG_DIR}/destinations.txt"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --checked --text "${BATS_TEST_TMPDIR}/carried.txt" --dest "$(git remote get-url origin)"
+    [[ "$output" == *"client,company" ]]                # a declared remote is judged where it is
     mk_repo_at "${BATS_TEST_TMPDIR}/notes"
     git config guard.scope corpus
     run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --checked --text "${BATS_TEST_TMPDIR}/carried.txt" --repo . --commit
