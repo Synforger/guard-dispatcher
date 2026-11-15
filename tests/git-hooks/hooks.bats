@@ -61,6 +61,46 @@ setup() {
     [[ "$output" == *"identity mismatch"* ]]
 }
 
+# in_agent_folder <path below the agent> — a repository with no remote inside an agent's own
+# folder of a made-up platform, and cd into it; its committer is no one the guard allows.
+in_agent_folder() {
+    export AGENT_PLATFORM_ROOT="${BATS_TEST_TMPDIR}/platform"
+    local dir="${AGENT_PLATFORM_ROOT}/agents/agent-a/$1"
+    mkdir -p "${dir}"
+    git init -q "${dir}"
+    cd "${dir}" || return 1
+    git config user.email "someone@example.com"
+    git config user.name "Someone"
+}
+
+@test "pre-commit: a repository in an agent's own folder with no scope is corpus, so its first commit passes" {
+    in_agent_folder projects/tier-a
+    echo "${SENTINEL} in the agent's notes" > journal.md
+    git add journal.md
+    run_pre_commit
+    [ "$status" -eq 0 ]
+    printf 'journal: %s\n' "${SENTINEL}" > "${BATS_TEST_TMPDIR}/message"
+    run_commit_msg "${BATS_TEST_TMPDIR}/message"
+    [ "$status" -eq 0 ]
+}
+
+@test "pre-commit: a scope a repository in an agent's folder names wins, and outside it no-remote stays enforced" {
+    in_agent_folder projects/tier-b
+    git config guard.scope enforced
+    echo "harmless" > ok.txt
+    git add ok.txt
+    run_pre_commit
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"identity mismatch"* ]]
+    mk_repo no-remote
+    git config user.email "someone@example.com"
+    echo "harmless" > ok.txt
+    git add ok.txt
+    run_pre_commit
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"identity mismatch"* ]]
+}
+
 @test "pre-commit: failing repo-local hook fails the commit (AND)" {
     mk_repo synforger
     mkdir -p .githooks

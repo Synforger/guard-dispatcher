@@ -1622,6 +1622,40 @@ def config_writes_guard_key(command: str) -> bool:
     guard.exemptPrefix. Each invocation is judged on its own words, so a read beside a write
     does not excuse the write. Taking a repository's own core.hooksPath away is no such write
     (`returns_to_global_hooks`)."""
+    return bool(guard_key_writes(command))
+
+
+#: The one guard key write whose value the place already gives: `guard.scope corpus` in a
+#: repository inside an agent's own folder (the git hooks read such a repository as `corpus`).
+DERIVED_SCOPE = ["guard.scope", "corpus"]
+
+
+def writes_derived_scope(command: str, cwd: str) -> bool:
+    """True when every guard key the command writes is `guard.scope corpus` in the repository's own
+    config, of a repository inside an agent's own folder: it writes what the hooks already read
+    there, so it needs no yes. The repository is the one `git -C <folder>` names, or the working
+    folder; a command that moves (`cd`, `pushd`) is judged as any other write."""
+    writes = guard_key_writes(command)
+    agents = guard_places.agents_folder()
+    if not writes or agents is None or not agents.is_dir():
+        return False
+    if any(w in ("cd", "pushd", "popd") for w in shell_words(command)):
+        return False
+    agents = real(str(agents))
+    for before, flags, positional in writes:
+        if flags - {"--local"} or [positional[0].casefold(), *positional[1:]] != DERIVED_SCOPE:
+            return False
+        folder = before[before.index("-C") + 1] if "-C" in before[:-1] else cwd
+        top = repo_root(real(folder, cwd))
+        if top is None or agents not in top.parents:
+            return False
+    return True
+
+
+def guard_key_writes(command: str) -> list[tuple[list[str], set[str], list[str]]]:
+    """(the words of the command before `config`, the options, the other words) of every
+    `git config` in the command that writes a guard key (see config_writes_guard_key)."""
+    found = []
     words = shell_words(command)
     start = 0
     for i, w in enumerate(words):
@@ -1648,12 +1682,13 @@ def config_writes_guard_key(command: str) -> bool:
         if returns_to_global_hooks(flags, positional):
             continue
         if flags & CONFIG_WRITES or set(verb) & CONFIG_WRITES:
-            return True
+            found.append((words[start:i], flags, positional))
+            continue
         if flags & CONFIG_READS or set(verb) & CONFIG_READS:
             continue
         if len(positional) >= 2:
-            return True
-    return False
+            found.append((words[start:i], flags, positional))
+    return found
 
 
 def git_config(repo: Path, *args: str) -> str:
@@ -1738,7 +1773,7 @@ def bypass(command: str, cwd: str, areas) -> str | None:
         return "switches the entry guard off"
     if re.search(r"\b(rm|mv|unlink|ln)\b[^|;&]*\.git-hooks(/agent-hooks)?/?(\s|$|[;&|])", expanded):
         return "removes the guards' installed hooks"
-    if config_writes_guard_key(command):
+    if config_writes_guard_key(command) and not writes_derived_scope(command, cwd):
         return "a git config that switches the hooks off"
     sends, _, skipping = send_places(command, cwd)
     if not sends and not skipping:

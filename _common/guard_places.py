@@ -138,6 +138,14 @@ def corpus_folder() -> Path:
     return root / "cache/guard/corpus"
 
 
+def agents_folder() -> Path | None:
+    """The folder of the agents' own folders (`<root>/agents`), or None when the guard runs on its own.
+    A repository inside one holds that agent's notes: the git hooks hold it to the private-document
+    scan alone (`guard.scope corpus`) when it names no scope of its own."""
+    root = platform_root()
+    return root / "agents" if root is not None else None
+
+
 #: What a shell script may ask for, by name.
 PLACES = {
     **{name: (lambda name=name: setting(name)) for name in SETTINGS},
@@ -148,6 +156,7 @@ PLACES = {
     "marks": marks_folder,
     "audit-logs": audit_logs_folder,
     "corpus": corpus_folder,
+    "agents": agents_folder,
 }
 
 
@@ -155,7 +164,8 @@ def main(argv: list[str]) -> int:
     if len(argv) != 1 or argv[0] not in PLACES:
         print(f"usage: guard_places.py <{'|'.join(PLACES)}>", file=sys.stderr)
         return 2
-    print(PLACES[argv[0]]())
+    place = PLACES[argv[0]]()
+    print(place if place is not None else "")
     return 0
 
 

@@ -163,6 +163,12 @@ Every hook follows the same AND-composition:
    runs the private-document scan — on the lines a commit adds, against the
    areas the repository sits outside of (a client's text staged into the
    company's notes), and on what a push sends, against its destination.
+6. A repository inside an agent's own folder (`<platform root>/agents/<agent>/`,
+   with `AGENT_PLATFORM_ROOT` set) that names no `guard.scope` of its own is
+   `corpus`: it holds that agent's notes, whose words the word lists flag by
+   design. The place decides, so a repository the agent has just made (a tier
+   with a history of its own) commits from the start. A scope it names wins,
+   and a repository elsewhere, inside an area or not, keeps the word scan.
 
 ### Local scope opt-in (no repo changes)
 
@@ -651,6 +657,9 @@ step earlier, before each tool call, from the same `areas.txt`:
   `guard.exemptPrefix`, clearing the marks, creating the off switch, removing
   the installed hooks, or sending from a repository the git hooks do not reach. Each passes on
   the operator's yes (see *A change the operator approves* below), but clearing the marks.
+  Writing `guard.scope corpus` into the own config of a repository inside an agent's own folder
+  needs no yes: it is what the hooks read there anyway (`git config guard.scope corpus` in that
+  folder, or `git -C <folder> config ...`; a command that moves with `cd` is judged as any other).
   `--no-verify` is also matched shortened, as git accepts it (`--no-verif`). A commit's options
   are read as git reads them, wherever the commit stands (after `cd`, in a shell's `-c` string,
   in `eval`): `-qn` holds `-n`, while a message (`-m "… -PenableN …"`), an option's value

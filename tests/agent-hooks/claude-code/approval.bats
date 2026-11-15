@@ -25,7 +25,7 @@ setup() {
     export GUARD_CONFIG_DIR="${H}/.config/guard"
     export GUARD_CORPUS_CACHE="${H}/.cache/guard-corpus"
     export AREA_GUARD_STATE="${H}/state"
-    unset GIT_CONFIG_GLOBAL GUARD_WORK_FOLDER GUARD_TAB_BINDINGS
+    unset GIT_CONFIG_GLOBAL GUARD_WORK_FOLDER GUARD_TAB_BINDINGS AGENT_PLATFORM_ROOT
     mkdir -p "${GUARD_CONFIG_DIR}/areas/company"
     printf 'company ~/org\nclient  ~/org/clients/acme\n' > "${GUARD_CONFIG_DIR}/areas.txt"
     printf '%s\n' '送信して' '!も' '!いい' '!ない' '!る' '!た' ">${RELAYED}" > "${GUARD_CONFIG_DIR}/orders.txt"
@@ -146,6 +146,27 @@ HOOKS_OFF="git config core.hooksPath .husky"
     said "put it back"
     bash_in "${COMPANY_REPO}" "git config --unset core.hooksPath"
     passed
+}
+
+@test "approval: guard.scope corpus in a repository inside an agent's own folder needs no yes; another scope or place does" {
+    export AGENT_PLATFORM_ROOT="${H}/platform"
+    local tier="${AGENT_PLATFORM_ROOT}/agents/agent-a/projects/tier-a"
+    mkdir -p "${tier}"
+    git init -q "${tier}"
+    said "set the tier up"
+    bash_in "${tier}" "git config guard.scope corpus"
+    passed
+    bash_in "${H}" "git -C ${tier} config --local guard.scope corpus"
+    passed
+    for command in "git config guard.scope exempt" "git config --global guard.scope corpus" \
+                   "git config guard.scope corpus && ${HOOKS_OFF}"; do
+        bash_in "${tier}" "${command}"
+        denied || { echo "passed: ${command}"; return 1; }
+    done
+    bash_in "${H}" "cd ${tier} && git config guard.scope corpus"
+    denied
+    bash_in "${COMPANY_REPO}" "git config guard.scope corpus"
+    denied
 }
 
 @test "approval: a Bash call's description, timeout and running in the background are not compared, and pass once" {
