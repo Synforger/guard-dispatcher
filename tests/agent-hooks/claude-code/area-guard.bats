@@ -377,6 +377,9 @@ hub_repo() {
     local stored
     stored="$(python3 -c 'import sys, unicodedata; print(unicodedata.normalize("NFD", sys.argv[1]))' "${H}/org/clients/ガイド")"
     mkdir -p "${stored}/received"
+    # A file system that keeps the two spellings apart (Linux) holds no composed folder: there the
+    # stored spelling names another place than the line, and is kept as it is.
+    [ -d "${H}/org/clients/ガイド" ] || skip "this file system keeps the two spellings apart"
     printf 'guide value 7.25\n' > "${stored}/received/memo.md"
     printf 'guide ~/org/clients/ガイド\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
     # read by the stored spelling, as a listing gives it

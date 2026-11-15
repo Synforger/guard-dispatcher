@@ -739,7 +739,7 @@ old_run() {
     logs="${HOME}/.local/state/guard-dispatcher"
     mkdir -p "${HOME}/.config/guard-dispatcher"
     printf 'REPOS_GLOB="%s"\n' "${repo}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
-    old_run "${logs}" "$(date -v-14d +%Y-%m-%d)"            # two weeks ago: a Sunday has passed since
+    old_run "${logs}" "$(python3 -c 'import datetime; print(datetime.date.today() - datetime.timedelta(days=14))')"  # two weeks ago: a Sunday has passed since
     export GUARD_AUDIT_NOW="$(date +%Y-%m-%dT%H:%M:%S)"
     run bash "${GUARD_ROOT}/scripts/weekly-audit.sh" --if-due
     [ "$status" -eq 0 ]

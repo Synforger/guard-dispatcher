@@ -29,5 +29,12 @@ jobs:
           fetch-depth: 0   # the bats suite resolves references against history
       - name: Install bats, GNU parallel and pdftotext
         run: sudo apt-get update -q && sudo apt-get install -y -q bats parallel poppler-utils
+      # A developer's machine always has a name for git: the global config, or else the account's
+      # full name. The runner's account has neither, and tests that move HOME lose a global one, so
+      # the name is set for the whole system, where any repository's own config still wins.
+      - name: A name for git, as a developer's machine has
+        run: |
+          sudo git config --system user.name Fixture
+          sudo git config --system user.email synforger@users.noreply.github.com
       - name: Dispatcher bats suite
         run: bats -r --jobs "$(getconf _NPROCESSORS_ONLN)" tests/
