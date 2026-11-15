@@ -33,6 +33,15 @@ if [ "${kind}" = "exempt" ]; then
     exit "${local_status}"
 fi
 
+# A commit an agent's session makes takes no path another tab left in its own work folder
+# (staged_places.py): several tabs share one checkout, and `git add -A` picks up the others' files.
+if [ -n "${GUARD_WORK_FOLDER:-}" ]; then
+    if ! git -c core.quotepath=off diff --cached --name-only --no-renames -z \
+            | python3 "$(dispatcher::guard_root)/git-hooks/_internal/staged_places.py" "$(git rev-parse --show-toplevel)"; then
+        exit 1
+    fi
+fi
+
 # `corpus`: only the private-document scan, over the lines this commit adds,
 # against the areas the repository sits outside of (a client's text staged into
 # the company's notes). It is told this is a commit: a repository with no remote
