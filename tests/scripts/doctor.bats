@@ -5,6 +5,8 @@
 # A throwaway HOME holds a client area with three repositories and an exempt folder of notes whose
 # remote is a bare repository beside it, with no line in destinations.txt.
 
+load ../_internal/helpers
+
 setup() {
     H="$(cd -P "${BATS_TEST_TMPDIR}" && pwd)/home"
     mkdir -p "${H}/org/acme" "${H}/notes" "${H}/.git-hooks"
