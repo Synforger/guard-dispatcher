@@ -56,6 +56,24 @@ mk_repo_at() {
     commit_bypassing_hooks seed
 }
 
+# --- an _exempt repository is compared with no area ---------------------------
+
+@test "corpus: what lands in an _exempt repository is compared with no area; one in no area is compared with all" {
+    printf '%s\n' "${CLIENT_TEXT}" > "${BATS_TEST_TMPDIR}/carried.txt"
+    mk_repo_at "${BATS_TEST_TMPDIR}/private/notes"
+    git config guard.scope corpus
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --checked --text "${BATS_TEST_TMPDIR}/carried.txt" --repo . --commit
+    [ "$output" = "_exempt" ]
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/carried.txt" --repo . --commit
+    [ "$status" -eq 0 ]                                 # guard.scope corpus does not reach inside _exempt
+    mk_repo_at "${BATS_TEST_TMPDIR}/notes"
+    git config guard.scope corpus
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --checked --text "${BATS_TEST_TMPDIR}/carried.txt" --repo . --commit
+    [ "$output" = "client,company" ]
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --text "${BATS_TEST_TMPDIR}/carried.txt" --repo . --commit
+    [ "$status" -ne 0 ]
+}
+
 # --- a personal repo is outside every area -------------------------------------
 
 @test "corpus: a client sentence copied into a personal repo is caught" {
