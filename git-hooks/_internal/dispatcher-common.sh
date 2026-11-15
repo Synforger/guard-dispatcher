@@ -19,7 +19,10 @@
 #                lists' words by design (an agent's own notes) — no word or
 #                identity scan, but the private-document scan still runs:
 #                on what a commit adds, against the areas the repository sits
-#                outside of, and on what a push sends, against its destination
+#                outside of, and on what a push sends, against its destination.
+#                A repository inside an agent's own folder
+#                (`<platform root>/agents/<agent>/`) with no scope of its own
+#                is `corpus` too: the place says what it holds
 #   exempt     — opt-out via `guard.scope=exempt`, or the repo working tree
 #                sits under a prefix configured via `guard.exemptPrefix`
 #                (blanket opt-out for a private state tree whose contents
@@ -59,6 +62,23 @@ dispatcher::is_synforger_url() {
     printf '%s' "${1:-}" | grep -Eqi '(github[^/:]*[/:])synforger/'
 }
 
+# dispatcher::in_agent_folder — true when the repository's working tree lies inside an agent's
+# own folder (`<platform root>/agents/<agent>/`). Without a platform root there are no such folders.
+dispatcher::in_agent_folder() {
+    [ -n "${AGENT_PLATFORM_ROOT:-}" ] || return 1
+    local agents top
+    agents="$(python3 "$(dispatcher::guard_root)/_common/guard_places.py" agents 2>/dev/null || true)"
+    [ -n "${agents}" ] && [ -d "${agents}" ] || return 1
+    agents="$(cd -P "${agents}" && pwd)"
+    top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -n "${top}" ] || return 1
+    top="$(cd -P "${top}" && pwd)"
+    case "${top}/" in
+        "${agents}"/*/*) return 0 ;;
+    esac
+    return 1
+}
+
 dispatcher::detect_repo_kind() {
     local scope
     scope="$(git config --get guard.scope 2>/dev/null || true)"
@@ -90,6 +110,16 @@ dispatcher::detect_repo_kind() {
                 return 0
                 ;;
         esac
+    fi
+
+    # A repository inside an agent's own folder holds that agent's notes, the words the word lists
+    # flag among them by design: with no scope of its own it is `corpus`, as the agent itself is.
+    # The place decides, so a repository the agent has just made (a tier with its own history)
+    # needs nobody's yes before its first commit. A repository elsewhere inside an area (a work
+    # repository, a deliverable) keeps the word scan.
+    if dispatcher::in_agent_folder; then
+        echo "corpus"
+        return 0
     fi
 
     local url
