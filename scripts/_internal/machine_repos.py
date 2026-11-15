@@ -3,7 +3,7 @@ audits from it. The area is the innermost one holding the repository. A folder n
 `_archive` is printed as `ARCHIVE\t<folder>` and not walked: what is kept there is no longer
 worked in.
 
-    machine_repos.py <corpus-scan.py>
+    machine_repos.py <corpus-scan.py> [--with-exempt]   (the `_exempt` areas walked too)
 
 The corpus scan is loaded from its file, since its name (`corpus-scan.py`) is not one Python
 imports: it is the one place areas.txt is read.
@@ -20,7 +20,9 @@ SKIP = {"node_modules", ".build", "DerivedData", "Pods",
         "third_party", "third-party", "_deps", ".fetchcontent-cache"}
 # Repositories kept and no longer worked in: the folder is named in the log and not walked.
 ARCHIVES = {"archive", "_archive"}
-scanned = {name: roots for name, roots in areas.items() if name not in module.UNSCANNED}
+# `--with-exempt` walks the exempt areas too (doctor.sh --machine: what is exempt is what it looks for).
+unwalked = module.UNSCANNED - ({module.EXEMPT} if "--with-exempt" in sys.argv[2:] else set())
+scanned = {name: roots for name, roots in areas.items() if name not in unwalked}
 def innermost(path):
     holding = [(len(str(root)), name) for name, roots in scanned.items() for root in roots
                if path == str(root) or path.startswith(str(root).rstrip(os.sep) + os.sep)]

@@ -217,6 +217,9 @@ summary=""
     echo "=== done: ${findings} repo(s) with findings ==="
 } >> "${log}" 2>&1
 
+# The same walk names the repositories the guard does not check, for the startup screens.
+bash "${GUARD_ROOT}/scripts/doctor.sh" --machine --save >/dev/null 2>&1 || true
+
 if [ "${findings}" -eq 0 ]; then
     exit 0
 fi

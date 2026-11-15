@@ -1226,6 +1226,18 @@ directions.
 
 ### Guaranteed
 
+`doctor.sh --machine` lists the repositories those exceptions leave out:
+it walks the areas (the `_exempt` ones too), the weekly audit's
+`REPOS_GLOB` and the platform's `agents/` and `tools/`, and names each
+repository that runs hooks of its own (`core.hooksPath`), opts out
+(`guard.scope exempt`, `guard.exemptPrefix`), or lies in an `_exempt` area
+with a remote a push to which is compared with no area. A session that
+works in a folder sees the lines of the areas it reads and a count of the
+rest. The walk takes about a minute on large areas, so `--save` keeps the
+list (`unchecked-repos.txt` beside the weekly audit's logs, one
+`outside<TAB><area><TAB><repo><TAB><why>` line each), and the weekly audit
+refreshes it.
+
 On a machine where `doctor.sh` reports no gaps, for every repository
 except an explicit `exempt`. Each behavioural guarantee names the test
 file that pins it — the bats suite is the executable form of this
