@@ -632,12 +632,14 @@ step earlier, before each tool call, from the same `areas.txt`:
   is not read, so what it writes is not judged. Destinations are judged
   exactly as the push-time scan judges them (`corpus-scan.py --where`). Files
   outside any repository and `_exempt` areas stay writable, and an `_exempt`
-  repository commits and pushes wherever it sends. What it carries is not
-  compared with the private documents: what lands in an `_exempt` area is
-  checked against no area, its push included, `guard.scope corpus` or not
-  (`corpus-scan.py --checked` prints `_exempt`). To have a repository's
-  commits and pushes compared, keep it out of `_exempt` and give it
-  `guard.scope corpus`.
+  repository commits and pushes wherever it sends. A commit there is
+  compared with no area, `guard.scope corpus` or not (`corpus-scan.py
+  --checked` prints `_exempt`), and so is a push to a private remote whose
+  clone is that repository and no line of `destinations.txt` places: it lands
+  where the clone lives (see `corpus-scan.py`'s table of destinations). A push to a
+  remote a line places (`repo:<owner>/<name> outside`) is compared at that
+  remote once `guard.scope corpus` lets the hook run. To have every commit
+  compared as well, keep the repository out of `_exempt`.
 - On every machine, areas or not, a `Bash` command that switches the guards off
   or around is refused: `--no-verify`, `git commit -n`, the skip variables,
   `git -c core.hooksPath=…`, setting `core.hooksPath` / `guard.scope` /
