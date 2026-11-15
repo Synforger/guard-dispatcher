@@ -509,8 +509,12 @@ edited, deleted or created document is caught at once without walking
 everything. A full walk still comes at least every six hours, and when more than
 200 documents changed since the last one. The changed documents are read before the
 scan answers, however many there are (a new checkout of a large repository brings
-thousands); past 200 the scan says how many it reads, then how long they took and
-which kinds of file took most of it. A scan that finds a full walk due starts it as a
+thousands). Past 200, or when the reads so far say it will take more than 30
+seconds, the scan says how many it reads and about how long that will take, then
+how long they took and which kinds of file took most of it. The time each kind of
+file (its extension) took per document is kept beside the tables
+(`read-rates.json`, the last few hundred of each kind weighing most); with none
+kept yet, only the count is said. A scan that finds a full walk due starts it as a
 process of its own and waits for it up to a minute, then goes on with the tables it
 has just brought up to date while the walk finishes — so a send is judged within its
 time limit however long a walk takes. When no tables on disk fit the areas (a fresh

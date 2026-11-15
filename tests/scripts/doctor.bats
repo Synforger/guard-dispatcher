@@ -60,4 +60,12 @@ setup() {
     grep -q "^outside	client	${H}/org/acme/opted-out	guard.scope exempt$" "${kept}"
     grep -q "^outside	_exempt	${H}/notes	a push to backup is compared with no area$" "${kept}"
     [ "$(grep -c '^outside' "${kept}")" -eq 3 ]
+    # once every repository is checked again, the kept list says so too
+    git -C "${H}/org/acme/own-hooks" config --unset core.hooksPath
+    git -C "${H}/org/acme/opted-out" config --unset guard.scope
+    git -C "${H}/notes" remote remove backup
+    run bash "${DOCTOR}" --machine --save
+    [ "$status" -eq 0 ]
+    [ "$(grep -c '^outside' "${kept}")" -eq 0 ]
+    [ ! -e "${kept}.new" ]
 }

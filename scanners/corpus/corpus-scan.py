@@ -149,6 +149,7 @@ import guard_places  # noqa: E402
 from path_forms import composed, resolved  # noqa: E402
 from own_paths import without_own_paths  # noqa: E402
 from link_heads import link_heads  # noqa: E402
+from read_estimate import LOUD_SECONDS, estimate, updated  # noqa: E402
 from style_lines import is_style_line  # noqa: E402
 
 
@@ -246,6 +247,9 @@ VENDORED = {"vendor", "vendors", "external", "extern", "third_party", "thirdpart
 PRINT_FORMAT = 5
 DOCS = CACHE / "docs"
 INDEX = DOCS / "index.json"
+# How long each kind of document took to read, per document (read_estimate): kept apart from the
+# summary, which a walk writes anew.
+READ_RATES = CACHE / "read-rates.json"
 # Every folder the last full walk went through, with its modification time: a file created, removed
 # or renamed in a folder changes that folder's time, so the stat fallback of catch_up() finds new
 # documents by listing only the folders whose time moved.
@@ -1816,10 +1820,17 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
             changed += [p for root in roots if not any(k.startswith(f"{root}{os.sep}") for k in index)
                         for p in unvouched_changes(root, index)]
         started = time.time()
-        # Many documents read before the scan answers: say so, then how long they took and on what.
-        loud = len(changed) > MAX_DELTA
+        # Many documents, or a long read, before the scan answers: say so with the time the reads so
+        # far give it, then how long they took and on what.
+        try:
+            rates = json.loads(READ_RATES.read_text())
+        except (OSError, ValueError):
+            rates = {}
+        expected = estimate(Counter(p.suffix.lower() or "(no extension)" for p in changed), rates)
+        loud = len(changed) > MAX_DELTA or (expected is not None and expected > LOUD_SECONDS)
         if loud:
-            say(f"reading {len(changed)} documents changed since the last look before this scan...")
+            about = f", about {expected:.0f}s by the reads so far" if expected is not None else ""
+            say(f"reading {len(changed)} documents changed since the last look before this scan{about}...")
         spent: Counter = Counter()
         counted: Counter = Counter()
         ignored = ignored_folders(areas)
@@ -1864,6 +1875,8 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
                 touched.add(area)
             if in_table and (not path.exists() or index[str(path)][0] != before[0]):
                 replaced.add(area)
+        if counted:
+            atomic_write(READ_RATES, json.dumps(updated(rates, spent, counted)))
         if loud:
             slowest = ", ".join(f"{kind} {seconds:.0f}s ({counted[kind]})" for kind, seconds in spent.most_common(3))
             say(f"read {len(changed)} changed documents in {time.time() - started:.0f}s; most of it on {slowest}")
