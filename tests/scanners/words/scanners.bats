@@ -706,9 +706,6 @@ leak_in_history() {
     for archived in "$(dirname "${repo}")/archive/old" "${BATS_TEST_TMPDIR}/kept/_archive/listed"; do
         mkdir -p "${archived}"
         git -C "${archived}" init -q
-        git -C "${archived}" config user.email "${ALLOWED_EMAIL}"
-        git -C "${archived}" config user.name "Fixture"
-        git -C "${archived}" config commit.gpgsign false
         (cd "${archived}" && leak_in_history kept)
     done
     export HOME="${BATS_TEST_TMPDIR}/home"
