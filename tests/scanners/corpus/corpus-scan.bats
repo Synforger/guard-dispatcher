@@ -1259,6 +1259,30 @@ wait_for_walk() {
     [[ "$output" != *"walking the private documents"* ]]
 }
 
+@test "corpus: a read the reads so far say will be long is announced with its time, and its time is kept" {
+    export GUARD_CORPUS_MAX_AGE=3600
+    spotlight_stub ""
+    printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    # the reads so far: a document of this kind took 40 seconds
+    printf '{".md": [40.0, 1]}' > "${GUARD_CORPUS_CACHE}/read-rates.json"
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
+    commit_line "the dye lot for the spring run arrives on the ninth"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"reading 1 documents changed since the last look before this scan, about 40s by the reads so far"* ]]
+    # what this read took is added to the kind's rate
+    [ "$(jq -r '.[".md"][1]' "${GUARD_CORPUS_CACHE}/read-rates.json")" -eq 2 ]
+    # a short read the rates expect stays quiet
+    printf '{".md": [0.01, 1]}' > "${GUARD_CORPUS_CACHE}/read-rates.json"
+    printf 'the loom in bay four is retuned every second tuesday\n' > "${CLIENT}/received/later.md"
+    PATH="${STUB}:${PATH}" scan_last
+    [[ "$output" != *"reading 1 documents"* ]]
+}
+
 # --- no tables that fit are built apart from the scan ------------------------------------
 #
 # A fresh cache, or areas.txt naming other areas: the build runs as a process of its own, which a
