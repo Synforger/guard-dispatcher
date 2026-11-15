@@ -432,6 +432,8 @@ A run, a row or a line with no letter and no digit in it is never a hit: the sep
 
 A line of a stylesheet is never a hit either: a one-line rule (`th, td { border: 1px solid var(--line); padding: 6px 8px; }`) or a declaration alone on its line (`border-collapse: collapse;`). It sets how a page looks, and every page sets its tables and headings the same way, so the same line stands in areas that never saw each other. A line of style that holds a character outside ASCII (a Japanese `content:` text) is compared as before, and so is an object of a script (`{ ok: true, view: body }`), whose keys are separated by commas.
 
+The head of a link is never part of a hit either: its scheme, its host and the folders of its path written as names, words and short numbers joined by `-`, `_`, `.`, `~` or `+` (`https://developer.example.com/documentation/technotes/tn3127-inside-code-signing-requirements`). Whoever links to the same page writes the same characters, so a link in an area's document says where a page is, not what the area holds. The head ends before the first folder that holds a token, a piece of eight characters or more with a digit in it or of twenty-four or more (the id of a shared document, a commit hash, the key of a shared link), and where the path stops being names (a `%`, a character outside ASCII, a `?` or a `#`): those name one thing of whoever holds it, and a run over them is compared as before.
+
 Code is matched line by line because that is how it is copied, and because
 printing every run of every line of a code base would hold hundreds of
 millions of values. It takes two consecutive lines because a lone common line
