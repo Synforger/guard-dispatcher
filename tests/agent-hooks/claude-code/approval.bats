@@ -25,7 +25,7 @@ setup() {
     export GUARD_CONFIG_DIR="${H}/.config/guard"
     export GUARD_CORPUS_CACHE="${H}/.cache/guard-corpus"
     export AREA_GUARD_STATE="${H}/state"
-    unset GIT_CONFIG_GLOBAL GUARD_WORK_FOLDER
+    unset GIT_CONFIG_GLOBAL GUARD_WORK_FOLDER GUARD_TAB_BINDINGS
     mkdir -p "${GUARD_CONFIG_DIR}/areas/company"
     printf 'company ~/org\nclient  ~/org/clients/acme\n' > "${GUARD_CONFIG_DIR}/areas.txt"
     printf '%s\n' '送信して' '!も' '!いい' '!ない' '!る' '!た' ">${RELAYED}" > "${GUARD_CONFIG_DIR}/orders.txt"
@@ -174,5 +174,101 @@ assert order.same(shown, "mcp__github__create_issue", {"title": "x"})
 assert not order.same(shown, "mcp__github__create_issue", {"title": "x", "description": "more text"})
 assert order.same({"tool": "Bash", "command": "ls"}, "Bash", {"command": "ls", "description": "List"})
 ' "${GUARD_ROOT}/agent-hooks/claude-code"
+    [ "$status" -eq 0 ]
+}
+
+# The operator answers in another tab (the sender, `ses_sender`), whose conversation is `s2.jsonl`;
+# that tab relays the answer here with the operator's words at the head, as the client does.
+SENDER="ses_sender"
+sender_tab() {
+    S="${H}/.claude/projects/org/s2.jsonl"
+    : > "${S}"
+    export GUARD_TAB_BINDINGS="${H}/bindings.json"
+    jq -n --arg p "${S}" --arg t "${SENDER}" '{($t): {jsonl_path: $p, confirmed: true}}' > "${GUARD_TAB_BINDINGS}"
+}
+# in_sender <helper> <args> — write a row of the sender's conversation instead of this one's.
+in_sender() { local here="${T}"; T="${S}"; "$@"; T="${here}"; }
+# relayed_with <operator's words> [session] — a message relayed into this tab with the operator's words.
+relayed_with() {
+    said "$(printf '%s (the operator did not type this):\n<agent-message from="AP" session="%s">\n<operator-said>\n%s\n</operator-said>\nThe guard needs the yes you gave.\n</agent-message>' \
+        "${RELAYED}" "${2:-${SENDER}}" "$1")"
+}
+
+@test "approval: the operator's yes in the sending tab to the very call it showed passes here, once for both tabs" {
+    sender_tab
+    in_sender said "the other tab is stuck"
+    in_sender shown "${HOOKS_OFF}"
+    in_sender said "はい"
+    relayed_with "はい"
+    bash_in "${COMPANY_REPO}" "${HOOKS_OFF}"
+    passed
+    [ -d "${AREA_GUARD_STATE}/s2.orders" ]
+    bash_in "${COMPANY_REPO}" "${HOOKS_OFF}" toolu_2
+    denied
+    [[ "${output}" == *"already been spent"* ]]
+}
+
+@test "approval: a relayed yes passes only for the call the sending tab showed, on the operator's last words there" {
+    sender_tab
+    in_sender said "the other tab is stuck"
+    in_sender shown "git config core.hooksPath .githooks"
+    in_sender said "はい"
+    relayed_with "はい"
+    bash_in "${COMPANY_REPO}" "${HOOKS_OFF}"
+    denied
+    [[ "${output}" == *"did not show this call"* ]]
+    # the operator typed again in the sending tab: the yes is no longer their last word there
+    in_sender shown "${HOOKS_OFF}"
+    in_sender said "はい"
+    in_sender said "and one more thing"
+    relayed_with "はい"
+    bash_in "${COMPANY_REPO}" "${HOOKS_OFF}"
+    denied
+    [[ "${output}" == *"not the last the operator typed"* ]]
+    in_sender shown "${HOOKS_OFF}"
+    in_sender said "どうしよう"
+    relayed_with "どうしよう"
+    bash_in "${COMPANY_REPO}" "${HOOKS_OFF}"
+    denied
+    [[ "${output}" == *"do not say yes"* ]]
+}
+
+@test "approval: a relayed message without the operator's words, from an unknown tab or another machine is no yes" {
+    sender_tab
+    in_sender shown "${HOOKS_OFF}"
+    in_sender said "はい"
+    said "$(printf '%s (the operator did not type this):\n<agent-message from="AP" session="%s">\nはい\n</agent-message>' "${RELAYED}" "${SENDER}")"
+    bash_in "${COMPANY_REPO}" "${HOOKS_OFF}"
+    denied
+    [[ "${output}" == *"have the operator answer the same block in the tab that sent"* ]]
+    relayed_with "はい" "home:${SENDER}"
+    bash_in "${COMPANY_REPO}" "${HOOKS_OFF}"
+    denied
+    relayed_with "はい" "ses_unknown"
+    bash_in "${COMPANY_REPO}" "${HOOKS_OFF}"
+    denied
+    [[ "${output}" == *"no confirmed conversation"* ]]
+    jq --arg t "${SENDER}" '.[$t].confirmed = false' "${GUARD_TAB_BINDINGS}" > "${H}/b" && mv "${H}/b" "${GUARD_TAB_BINDINGS}"
+    relayed_with "はい"
+    bash_in "${COMPANY_REPO}" "${HOOKS_OFF}"
+    denied
+}
+
+@test "approval: an order for a send given in the sending tab passes the same way" {
+    sender_tab
+    in_sender said "tell them"
+    in_sender replied "$(printf '```send\ntool: slack_send_message\nchannel_id: C1\nmessage:\nhello\n```\n')"
+    in_sender said "送信して"
+    relayed_with "送信して"
+    run python3 -c '
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import order
+event = {"transcript_path": sys.argv[2], "prompt_id": sys.argv[3], "session_id": "s1"}
+why, found = order.ordered("mcp__slack__slack_send_message", {"channel_id": "C1", "message": "hello"}, event)
+assert why is None and found.session == "s2", why
+why, _ = order.ordered("mcp__slack__slack_send_message", {"channel_id": "C1", "message": "other"}, event)
+assert why and "did not show" in why, why
+' "${GUARD_ROOT}/agent-hooks/claude-code" "${T}" "p${PROMPT}"
     [ "$status" -eq 0 ]
 }

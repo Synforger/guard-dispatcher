@@ -691,7 +691,8 @@ step earlier, before each tool call, from the same `areas.txt`:
   an area, or a setting of `areas/<area>/`, only from a session that reads inside
   that area. It is judged as an order for a send is (one block, one call; a call
   that differs by one letter does not pass; a turn a relayed message opened takes
-  no yes), and a block shown for a send is no block for a change. With no
+  no yes but one the operator gave in the sending tab, see *A message relayed with
+  the operator's answer*), and a block shown for a send is no block for a change. With no
   `orders.txt`, nothing is approved.
 - **The operator may hand the upkeep of some settings to the agent**, when the
   settings grow with every area and every false alarm: `agent-writes.txt` names
@@ -1096,6 +1097,39 @@ include ~/tools/client/contracts/openings.txt
 
 `order.py --openings` prints every opening, one per line with its `>` or `>>`,
 for whatever else has to tell a relayed message apart.
+
+#### A message relayed with the operator's answer
+
+The operator may answer in another tab than the one that asks: a tab that is
+stuck waiting for a yes is often not the one the operator is looking at. A
+client may then relay the operator's last message in the sending tab at the
+head of what it carries, a block only the client writes:
+
+```
+Message from another session, relayed by the client (the operator did not type this):
+<agent-message from="<sending tab>" session="<sending tab's id>">
+<operator-said>
+はい
+</operator-said>
+...
+</agent-message>
+```
+
+A turn that such a message opened takes that answer as the operator's, for a
+send and for a change alike, when all of these hold in the sending tab's
+conversation, found through the client's table of which conversation each tab
+runs (`<root>/state/claude-pwa-client/data/jsonl_bindings.json`, an entry the
+client confirmed; `GUARD_TAB_BINDINGS` names another file):
+
+- the words are the last message the operator typed there,
+- they order the send or approve the change, as above,
+- the agent there showed this very call in a `send` or `guard` block just
+  before them.
+
+The operator has still seen the call they answer, in the tab where they
+answered it, and the block is spent once, there or here. A message without
+the block, from a tab with no confirmed conversation, or from another machine
+takes no order and no yes.
 
 #### A message from another machine
 

@@ -72,6 +72,16 @@ sits at that other machine can have such a message written, so until the operato
 of their own here, the session runs only what reads. The agent tells the operator what the message
 asks and waits; the operator's next message, whatever it says, is what the session then goes by.
 A message relayed from a session on this machine does not lift the hold: only typing does.
+
+A turn a relayed message opened takes an order or a yes in one case: the operator answered in the
+tab that sent it. A client may put the operator's last message in the sender's tab at the head of
+what it relays (`<operator-said>`, written by the client, never by the sender), and keeps which
+conversation each tab runs (`tab_bindings`). The call then passes when, in the sender's
+conversation, that message is the last one the operator typed, it orders the send or approves the
+change, and the sender's agent showed this very call in a block just before it, as above. So the
+operator still saw the call they answered, only in another tab; one shown block lets the call
+through once, in the sender's tab or in this one. A message from another machine never carries the
+operator's words.
 """
 
 from __future__ import annotations
@@ -87,6 +97,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 import guard_places  # noqa: E402
 
 ORDERS = guard_places.setting("orders.txt")
+#: Which conversation each tab of the client runs, kept by the client: tab id -> {jsonl_path, confirmed}.
+TAB_BINDINGS = "state/claude-pwa-client/data/jsonl_bindings.json"
 OPENINGS = guard_places.setting("openings.txt")
 INCLUDE = "include "
 # A fence of three or more backticks, closed by one of the same length.
@@ -109,6 +121,10 @@ SHOW = {SEND: "Show the call in a ```send block and wait for the operator's orde
 NOTES = {"Bash": frozenset({"description", "timeout", "run_in_background"})}
 # What an operator answers when asked whether a change may be made, when orders.txt names none.
 APPROVALS = ("はい", "お願い", "どうぞ", "いいよ", "いいです", "やって", "変えて", "外して", "OK", "ok", "yes", "Yes")
+# The head of a message a client relayed with the operator's words in the sender's tab: the client's
+# opening line, the envelope naming the sender's tab, and the operator's words as the first thing in it.
+ANSWERED_ELSEWHERE = re.compile(r"^[^\n]*\n<agent-message from=\"[^\n]*?\" session=\"([\w-]+)\">\n"
+                                r"<operator-said>\n(.*?)\n</operator-said>\n", re.S)
 # How much of a transcript is read at a time when it is read from its end.
 TAIL_PIECE = 256 * 1024
 
@@ -376,6 +392,70 @@ class Ordered(NamedTuple):
     call: str          # the call, as a digest of its tool and input
     shown: int         # how many blocks showed this very call
     failed: set[str]   # calls since the order that the transcript shows refused or failed
+    session: str | None = None   # the session whose blocks these are, when not the caller's
+
+
+def tab_bindings() -> Path | None:
+    """The client's table of which conversation each tab runs, or None without a platform root."""
+    named = os.environ.get("GUARD_TAB_BINDINGS")
+    root = guard_places.platform_root()
+    return Path(named) if named else (root / TAB_BINDINGS if root else None)
+
+
+def tab_transcript(tab: str) -> str | None:
+    """The transcript of the conversation a tab of this machine runs, when the client confirmed it."""
+    table = tab_bindings()
+    try:
+        entry = json.loads(table.read_text(encoding="utf-8")).get(tab) if table else None
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not isinstance(entry, dict) or entry.get("confirmed") is not True:
+        return None
+    path = entry.get("jsonl_path")
+    return path if isinstance(path, str) and Path(path).is_file() else None
+
+
+def digest_of(tool: str, args: dict) -> str:
+    import hashlib   # loaded where it is used: most calls are not sends, and never get here
+    return hashlib.sha256(json.dumps([tool.rsplit("__", 1)[-1], compared(tool, args)], ensure_ascii=False,
+                                     sort_keys=True).encode()).hexdigest()[:16]
+
+
+def answered_elsewhere(opened: str, tool: str, args: dict, kind: str, after: list[dict]) -> tuple[str | None, Ordered | None]:
+    """(why not, None) or (None, the order) for a call in a turn that `opened`, a relayed message,
+    started: it passes only on the operator's answer in the sender's tab (see the module's notes).
+    `after` is this session's rows since that message, for the calls that failed since."""
+    show = SHOW[kind]
+    what = "orders a send" if kind == SEND else "approves a change"
+    plain = ("this turn was opened by a message relayed from another session, not by the operator, "
+             f"and only the operator {what}. {show}, or have the operator answer the same block in the "
+             "tab that sent the message, which then relays it with the operator's words")
+    text = PASTED_OPENING.sub("", opened, count=1).lstrip()
+    found = ANSWERED_ELSEWHERE.match(text)
+    if found is None or from_another_machine(opened):
+        return plain, None
+    tab, words = found.groups()
+    transcript = tab_transcript(tab)
+    if transcript is None:
+        return f"the client keeps no confirmed conversation for the sending tab {tab}. {show}", None
+    history = rows(transcript)
+    said = [(i, t) for i, r in enumerate(history) if (t := typed(r)) is not None]
+    if not said or said[-1][1].strip() != words.strip():
+        return ("the operator's words this message carries are not the last the operator typed in the "
+                f"sending tab {tab}. {show}"), None
+    last, message = said[-1]
+    if not (orders_a_send(message) if kind == SEND else approves_a_change(message)):
+        return f"the operator's words this message carries do not say yes ({ORDERS}). {show}", None
+    before = said[-2][0] if len(said) > 1 else -1
+    matching = sum(1 for r in history[before + 1:last] if r.get("type") == "assistant"
+                   for c in shown_calls(text_of(content(r)), kind) if same(c, tool, args))
+    if not matching:
+        return (f"the sending tab {tab} did not show this call just before the operator's answer (a ```{kind} "
+                f"block with the same tool and the same input). {show}"), None
+    failed = {b.get("tool_use_id") for r in after if r.get("type") == "user"
+              for b in content(r) if b.get("type") == "tool_result" and b.get("is_error")}
+    return None, Ordered(str(history[last].get("uuid") or last), digest_of(tool, args), matching,
+                         failed - {None}, Path(transcript).stem)
 
 
 def ordered(tool: str, args: dict, event: dict | None, kind: str = SEND) -> tuple[str | None, Ordered | None]:
@@ -387,19 +467,18 @@ def ordered(tool: str, args: dict, event: dict | None, kind: str = SEND) -> tupl
     history = rows(event.get("transcript_path"))
     if not history:
         return "the session's transcript cannot be read, so the operator's order cannot be seen", None
+    # The transcript is written behind the conversation: a message it does not hold yet would
+    # leave an older one standing as the last.
+    prompt = event.get("prompt_id")
+    opening = next(((i, t) for i, r in enumerate(history) if r.get("type") == "user"
+                    and r.get("promptId") == prompt and (t := entered(r)) is not None), None)
+    if opening is not None and relayed(opening[1]):
+        return answered_elsewhere(opening[1], tool, args, kind, history[opening[0] + 1:])
     said = [(i, text) for i, r in enumerate(history) if (text := typed(r)) is not None]
     if not said:
         return "the operator has not written anything in this session yet", None
     last, message = said[-1]
     before = said[-2][0] if len(said) > 1 else -1
-    # The transcript is written behind the conversation: a message it does not hold yet would
-    # leave an older one standing as the last.
-    prompt = event.get("prompt_id")
-    opened = next((t for r in history if r.get("type") == "user" and r.get("promptId") == prompt
-                   and (t := entered(r)) is not None), None)
-    if opened is not None and relayed(opened):
-        return ("this turn was opened by a message relayed from another session, not by the operator, "
-                f"and only the operator {what}. {show}"), None
     holds = history[last].get("promptId") == prompt if history[last].get("type") == "user" \
         else any(r.get("type") == "user" and r.get("promptId") == prompt for r in history)
     if not prompt or not holds:
@@ -415,20 +494,17 @@ def ordered(tool: str, args: dict, event: dict | None, kind: str = SEND) -> tupl
                 f"block with the same tool and the same input). {show}"), None
     failed = {b.get("tool_use_id") for r in history[last + 1:] if r.get("type") == "user"
               for b in content(r) if b.get("type") == "tool_result" and b.get("is_error")}
-    given = compared(tool, args)
-    import hashlib   # loaded where it is used: most calls are not sends, and never get here
-    call = hashlib.sha256(json.dumps([tool.rsplit("__", 1)[-1], given], ensure_ascii=False,
-                                     sort_keys=True).encode()).hexdigest()[:16]
-    return None, Ordered(str(history[last].get("uuid") or last), call, matching, failed - {None})
+    return None, Ordered(str(history[last].get("uuid") or last), digest_of(tool, args), matching, failed - {None})
 
 
 def spend(found: Ordered, event: dict | None, state: Path) -> str | None:
     """Take one of the order's blocks for this call: None when it got one, else why not. Each
     call leaves a file named after it; the calls still standing (not shown as failed) may not
     outnumber the blocks. A call made after another always sees the other's file, so two calls
-    racing for one block never both pass."""
+    racing for one block never both pass. An order the operator gave in another tab is kept with
+    that tab's session, so the block is spent once in either."""
     event = event or {}
-    folder = state / f"{event.get('session_id') or 'unknown'}.orders"
+    folder = state / f"{found.session or event.get('session_id') or 'unknown'}.orders"
     import uuid
     mine = str(event.get("tool_use_id") or f"unnamed-{uuid.uuid4().hex}")
     prefix = f"{found.order}.{found.call}."
