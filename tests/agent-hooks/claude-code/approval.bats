@@ -167,6 +167,28 @@ HOOKS_OFF="git config core.hooksPath .husky"
     denied
     bash_in "${COMPANY_REPO}" "git config guard.scope corpus"
     denied
+    # the repository written is the one judged: another repository's config named another way is not
+    for command in "git --git-dir=${COMPANY_REPO}/.git config guard.scope corpus" \
+                   "git --work-tree=${COMPANY_REPO} config guard.scope corpus" \
+                   "GIT_DIR=${COMPANY_REPO}/.git git config guard.scope corpus" \
+                   "env GIT_DIR=${COMPANY_REPO}/.git git config guard.scope corpus"; do
+        bash_in "${tier}" "${command}"
+        denied || { echo "passed: ${command}"; return 1; }
+    done
+}
+
+@test "approval: guard.scope corpus without a yes only lowers no stricter scope a repository in an agent's folder holds" {
+    export AGENT_PLATFORM_ROOT="${H}/platform"
+    local tier="${AGENT_PLATFORM_ROOT}/agents/agent-a/projects/tier-a"
+    mkdir -p "${tier}"
+    git init -q "${tier}"
+    said "set the tier up"
+    git -C "${tier}" config guard.scope exempt
+    bash_in "${tier}" "git config guard.scope corpus"
+    passed
+    git -C "${tier}" config guard.scope enforced
+    bash_in "${tier}" "git config guard.scope corpus"
+    denied
 }
 
 @test "approval: a Bash call's description, timeout and running in the background are not compared, and pass once" {

@@ -1630,24 +1630,42 @@ def config_writes_guard_key(command: str) -> bool:
 DERIVED_SCOPE = ["guard.scope", "corpus"]
 
 
+#: The scopes a repository may hold before `guard.scope corpus` is written without a yes: none (what
+#: the hooks already read in an agent's folder), `exempt` (corpus checks more) and corpus itself.
+#: A stricter one (`enforced`, named here or by an include) is lowered only on the operator's yes.
+SCOPES_BELOW_CORPUS = {"", "exempt", "corpus"}
+#: Words that change which repository a command reaches or which config it writes: the move into
+#: another folder, and the setting of the environment git reads (`GIT_DIR=...`, `env`, `export`).
+REDIRECTS = re.compile(r"^(?:cd|pushd|popd|env|export|[A-Za-z_][A-Za-z0-9_]*=.*)$")
+
+
 def writes_derived_scope(command: str, cwd: str) -> bool:
     """True when every guard key the command writes is `guard.scope corpus` in the repository's own
-    config, of a repository inside an agent's own folder: it writes what the hooks already read
-    there, so it needs no yes. The repository is the one `git -C <folder>` names, or the working
-    folder; a command that moves (`cd`, `pushd`) is judged as any other write."""
+    config, of a repository inside an agent's own folder that holds no stricter scope: it writes
+    what the hooks already read there, so it needs no yes. Only `git config ...` and
+    `git -C <folder> config ...` as they stand are read, with nothing that moves to another folder
+    or sets what git reads (`cd`, `GIT_DIR=...`, `--git-dir`, `--work-tree`): the repository judged
+    is then the one written. The environment of the session names no repository either."""
     writes = guard_key_writes(command)
     agents = guard_places.agents_folder()
     if not writes or agents is None or not agents.is_dir():
         return False
-    if any(w in ("cd", "pushd", "popd") for w in shell_words(command)):
+    if any(REDIRECTS.match(w) for w in shell_words(command)) or corpus_module().REPOSITORY_GIT_VARS & set(os.environ):
         return False
     agents = real(str(agents))
     for before, flags, positional in writes:
         if flags - {"--local"} or [positional[0].casefold(), *positional[1:]] != DERIVED_SCOPE:
             return False
-        folder = before[before.index("-C") + 1] if "-C" in before[:-1] else cwd
+        if before == ["git"]:
+            folder = cwd
+        elif len(before) == 3 and before[:2] == ["git", "-C"]:
+            folder = before[2]
+        else:
+            return False
         top = repo_root(real(folder, cwd))
         if top is None or agents not in top.parents:
+            return False
+        if git_config(top, "--get", "guard.scope") not in SCOPES_BELOW_CORPUS:
             return False
     return True
 
