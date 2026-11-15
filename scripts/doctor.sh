@@ -304,7 +304,7 @@ if [ "${1:-}" = "--machine" ]; then
         kept="$(python3 "${places}" audit-logs)/unchecked-repos.txt"
         mkdir -p "$(dirname "${kept}")"
         { echo "# written $(date -u +%Y-%m-%dT%H:%M:%SZ) by doctor.sh --machine"
-          [ -n "${outside}" ] && printf '%s\n' "${outside}"; } > "${kept}.new" && mv "${kept}.new" "${kept}"
+          if [ -n "${outside}" ]; then printf '%s\n' "${outside}"; fi; } > "${kept}.new" && mv "${kept}.new" "${kept}"
     fi
     echo "doctor: ${count} repository(ies) outside the guard's checks (walked in $((SECONDS - started))s)"
     exit 0
