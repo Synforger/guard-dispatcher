@@ -13,6 +13,9 @@
 #   scripts/doctor.sh                       # scan ~/.git-hooks + CWD
 #   scripts/doctor.sh <repo>... [<repo>...] # scan the given repos
 #   scripts/doctor.sh --glob '<projects-root>/*'     # shell glob
+#   scripts/doctor.sh --machine [--save]   # every repository of this machine: which ones
+#                                          # the guard does not check (--save keeps the list
+#                                          # as unchecked-repos.txt beside the audit's logs)
 #
 # Exit code:
 #   0 — nothing wrong (dispatcher installed globally + every scanned repo is
@@ -262,6 +265,50 @@ resolve_targets() {
         done
     done
 }
+
+# --machine: walk the areas (the exempt ones too), the weekly audit's REPOS_GLOB and the platform's
+# agents and tools, and name each repository the guard does not check, with why. It takes about a
+# minute on a machine with large areas, so the startup screens read the list --save keeps.
+if [ "${1:-}" = "--machine" ]; then
+    started="${SECONDS}"
+    places="${GUARD_ROOT}/_common/guard_places.py"
+    corpus="${GUARD_ROOT}/scanners/corpus/corpus-scan.py"
+    conf="$(python3 "${places}" weekly-audit.conf)"
+    REPOS_GLOB=""
+    # shellcheck source=/dev/null
+    [ -f "${conf}" ] && . "${conf}"
+    outside="$({
+        python3 "${GUARD_ROOT}/scripts/_internal/machine_repos.py" "${corpus}" --with-exempt
+        # shellcheck disable=SC2086 — the glob is the point
+        for repo in ${REPOS_GLOB:-}; do printf -- '-\t%s\n' "${repo}"; done
+        if [ -n "${AGENT_PLATFORM_ROOT:-}" ]; then
+            for repo in "${AGENT_PLATFORM_ROOT}"/agents/* "${AGENT_PLATFORM_ROOT}"/tools/*; do
+                [ -e "${repo}/.git" ] && printf -- '-\t%s\n' "${repo}"
+            done
+        fi
+    } | python3 "${GUARD_ROOT}/scripts/_internal/unchecked_repos.py" "${corpus}" "${EXPECTED_HOOKS_DIR}")"
+    count="$(printf '%s' "${outside}" | grep -c '^outside' || true)"
+    # A session that works in a folder sees the lines of the areas it reads (and of no area); the
+    # rest are counted. With no work folder (the operator's terminal) every line is shown.
+    shown="${outside}"
+    if [ -n "${GUARD_WORK_FOLDER:-}" ]; then
+        reads="$(python3 "${GUARD_ROOT}/agent-hooks/claude-code/area-guard.py" reach | tr '\n' ' ')"
+        shown="$(printf '%s\n' "${outside}" | awk -F'\t' -v reads=" ${reads}" \
+            'NF && ($2 == "-" || $2 == "_exempt" || index(reads, " " $2 " ")) { print }')"
+    fi
+    hidden=$((count - $(printf '%s' "${shown}" | grep -c '^outside' || true)))
+    echo "=== repositories the guard does not check ==="
+    [ -n "${shown}" ] && printf '%s\n' "${shown}" | cut -f3- | tr '\t' ' '
+    [ "${hidden}" -gt 0 ] && echo "(${hidden} more in areas this session does not read)"
+    if [ "${2:-}" = "--save" ]; then
+        kept="$(python3 "${places}" audit-logs)/unchecked-repos.txt"
+        mkdir -p "$(dirname "${kept}")"
+        { echo "# written $(date -u +%Y-%m-%dT%H:%M:%SZ) by doctor.sh --machine"
+          [ -n "${outside}" ] && printf '%s\n' "${outside}"; } > "${kept}.new" && mv "${kept}.new" "${kept}"
+    fi
+    echo "doctor: ${count} repository(ies) outside the guard's checks (walked in $((SECONDS - started))s)"
+    exit 0
+fi
 
 echo "=== global hooks dispatcher status ==="
 check_global
