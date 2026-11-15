@@ -1240,7 +1240,12 @@ works in a folder sees the lines of the areas it reads and a count of the
 rest. The walk takes about a minute on large areas, so `--save` keeps the
 list (`unchecked-repos.txt` beside the weekly audit's logs, one
 `outside<TAB><area><TAB><repo><TAB><why>` line each), and the weekly audit
-refreshes it.
+refreshes it. A repository its owner keeps outside on purpose (a private
+record that should hold no scan at all) is named in `unchecked-kept.txt`
+beside the weekly audit's settings, one `<path>  # <reason>` per line: it is
+then said as kept, with its reason, on a `kept<TAB>...` line, and not counted,
+so the list on every screen names only what nobody has decided. A line
+without a reason keeps nothing.
 
 On a machine where `doctor.sh` reports no gaps, for every repository
 except an explicit `exempt`. Each behavioural guarantee names the test

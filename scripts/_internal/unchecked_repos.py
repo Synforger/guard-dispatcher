@@ -6,9 +6,16 @@ A repository is outside the guard's checks when its own git hooks do not run the
 `guard.exemptPrefix`), or when it lies in an `_exempt` area and a push to one of its remotes is
 compared with no area (a private remote with a clone here and no line in destinations.txt).
 
-    unchecked_repos.py <corpus-scan.py> <the guard's hooks folder>
+    unchecked_repos.py <corpus-scan.py> <the guard's hooks folder> <unchecked-kept.txt>
         stdin: `<area>\\t<repo>` lines (`-` for a repository found outside every area)
-        stdout: `outside\\t<area>\\t<repo>\\t<why>` for each repository outside, sorted
+        stdout: `outside\\t<area>\\t<repo>\\t<why>` for each repository outside, sorted, and
+                `kept\\t<area>\\t<repo>\\t<why>; kept: <reason>` for one its owner keeps outside
+
+A repository its owner keeps outside on purpose (a private record that should hold no scan at all)
+is named in `unchecked-kept.txt` among the weekly audit's settings, one `<path>  # <reason>` per
+line. It is then said as kept, with the reason, and not counted: a list that names the same
+decided repository on every screen hides the one that is new. A line without a reason keeps
+nothing.
 
 The area travels with each line because a repository's path names its area's folders: a screen
 shows a session only the lines of the areas it may read (`area-guard.py reach`), as the weekly
@@ -58,19 +65,39 @@ def why_outside(repo: Path, area: str, corpus_scan: str, hooks: Path) -> list[st
     return reasons
 
 
+def load_kept(path: Path) -> dict[Path, str]:
+    """The repositories kept outside on purpose, each with its reason; a line without one keeps nothing."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    kept = {}
+    for line in lines:
+        where, _, reason = line.partition("#")
+        if where.strip() and reason.strip():
+            kept[Path(os.path.expanduser(where.strip())).resolve()] = reason.strip()
+    return kept
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print("usage: unchecked_repos.py <corpus-scan.py> <hooks folder>  (`<area>\\t<repo>` lines on stdin)",
-              file=sys.stderr)
+    if len(argv) != 3:
+        print("usage: unchecked_repos.py <corpus-scan.py> <hooks folder> <unchecked-kept.txt>"
+              "  (`<area>\\t<repo>` lines on stdin)", file=sys.stderr)
         return 2
     corpus_scan, hooks = argv[0], Path(os.path.expanduser(argv[1]))
+    kept = load_kept(Path(argv[2]))
     seen: dict[Path, str] = {}
     for line in sys.stdin:
         area, _, repo = line.rstrip("\n").partition("\t")
         if repo and area != "ARCHIVE":
             seen.setdefault(Path(repo).resolve(), area)
-    out = [f"outside\t{area}\t{repo}\t{reason}" for repo, area in seen.items()
-           for reason in why_outside(repo, area, corpus_scan, hooks)]
+    out = []
+    for repo, area in seen.items():
+        reasons = why_outside(repo, area, corpus_scan, hooks)
+        if reasons and repo in kept:
+            out.append(f"kept\t{area}\t{repo}\t{'; '.join(reasons)}; kept: {kept[repo]}")
+        else:
+            out += [f"outside\t{area}\t{repo}\t{reason}" for reason in reasons]
     print("\n".join(sorted(out)), end="\n" if out else "")
     return 0
 

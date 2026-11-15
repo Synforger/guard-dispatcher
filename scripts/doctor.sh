@@ -286,8 +286,10 @@ if [ "${1:-}" = "--machine" ]; then
                 [ -e "${repo}/.git" ] && printf -- '-\t%s\n' "${repo}"
             done
         fi
-    } | python3 "${GUARD_ROOT}/scripts/_internal/unchecked_repos.py" "${corpus}" "${EXPECTED_HOOKS_DIR}")"
+    } | python3 "${GUARD_ROOT}/scripts/_internal/unchecked_repos.py" "${corpus}" "${EXPECTED_HOOKS_DIR}" \
+        "$(python3 "${places}" unchecked-kept.txt)")"
     count="$(printf '%s' "${outside}" | grep -c '^outside' || true)"
+    on_purpose="$(printf '%s' "${outside}" | grep -c '^kept' || true)"
     # A session that works in a folder sees the lines of the areas it reads (and of no area); the
     # rest are counted. With no work folder (the operator's terminal) every line is shown.
     shown="${outside}"
@@ -298,7 +300,10 @@ if [ "${1:-}" = "--machine" ]; then
     fi
     hidden=$((count - $(printf '%s' "${shown}" | grep -c '^outside' || true)))
     echo "=== repositories the guard does not check ==="
-    [ -n "${shown}" ] && printf '%s\n' "${shown}" | cut -f3- | tr '\t' ' '
+    if [ -n "${shown}" ]; then
+        printf '%s\n' "${shown}" | grep '^outside' | cut -f3- | tr '\t' ' '
+        printf '%s\n' "${shown}" | grep '^kept' | cut -f3- | tr '\t' ' ' | sed 's/^/kept on purpose: /'
+    fi
     [ "${hidden}" -gt 0 ] && echo "(${hidden} more in areas this session does not read)"
     if [ "${2:-}" = "--save" ]; then
         kept="$(python3 "${places}" audit-logs)/unchecked-repos.txt"
@@ -306,7 +311,7 @@ if [ "${1:-}" = "--machine" ]; then
         { echo "# written $(date -u +%Y-%m-%dT%H:%M:%SZ) by doctor.sh --machine"
           if [ -n "${outside}" ]; then printf '%s\n' "${outside}"; fi; } > "${kept}.new" && mv "${kept}.new" "${kept}"
     fi
-    echo "doctor: ${count} repository(ies) outside the guard's checks (walked in $((SECONDS - started))s)"
+    echo "doctor: ${count} repository(ies) outside the guard's checks, ${on_purpose} kept outside on purpose (walked in $((SECONDS - started))s)"
     exit 0
 fi
 

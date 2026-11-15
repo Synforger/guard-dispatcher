@@ -35,7 +35,7 @@ setup() {
     [[ "$output" == *"${H}/org/acme/opted-out guard.scope exempt"* ]]
     [[ "$output" == *"${H}/notes a push to backup is compared with no area"* ]]
     [[ "$output" != *"acme/checked"* ]]
-    [[ "$output" == *"doctor: 3 repository(ies) outside the guard's checks"* ]]
+    [[ "$output" == *"doctor: 3 repository(ies) outside the guard's checks, 0 kept outside on purpose"* ]]
 }
 
 @test "doctor --machine: a session sees the lines of the areas it reads, and only a count of the rest" {
@@ -50,6 +50,21 @@ setup() {
     run bash "${DOCTOR}" --machine
     [[ "$output" == *"acme/opted-out guard.scope exempt"* ]]
     [[ "$output" != *"more in areas"* ]]
+}
+
+@test "doctor --machine: a repository its owner keeps outside with a reason is said as kept, and not counted" {
+    mkdir -p "${H}/.config/guard-dispatcher"
+    printf '%s\n' "${H}/org/acme/opted-out  # a private record that holds no scan at all" \
+        "${H}/org/acme/own-hooks" > "${H}/.config/guard-dispatcher/unchecked-kept.txt"
+    run bash "${DOCTOR}" --machine --save
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"kept on purpose: ${H}/org/acme/opted-out guard.scope exempt; kept: a private record that holds no scan at all"* ]]
+    # a line without a reason keeps nothing
+    [[ "$output" == *"${H}/org/acme/own-hooks core.hooksPath .husky runs its own hooks"* ]]
+    [[ "$output" == *"doctor: 2 repository(ies) outside the guard's checks, 1 kept outside on purpose"* ]]
+    kept="${H}/.local/state/guard-dispatcher/unchecked-repos.txt"
+    [ "$(grep -c '^outside' "${kept}")" -eq 2 ]
+    [ "$(grep -c '^kept' "${kept}")" -eq 1 ]
 }
 
 @test "doctor --machine --save: keeps the list, with each repository's area, for the startup screens" {
