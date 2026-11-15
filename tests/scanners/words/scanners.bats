@@ -706,6 +706,9 @@ leak_in_history() {
     for archived in "$(dirname "${repo}")/archive/old" "${BATS_TEST_TMPDIR}/kept/_archive/listed"; do
         mkdir -p "${archived}"
         git -C "${archived}" init -q
+        git -C "${archived}" config user.email "${ALLOWED_EMAIL}"
+        git -C "${archived}" config user.name "Fixture"
+        git -C "${archived}" config commit.gpgsign false
         (cd "${archived}" && leak_in_history kept)
     done
     export HOME="${BATS_TEST_TMPDIR}/home"
@@ -739,7 +742,7 @@ old_run() {
     logs="${HOME}/.local/state/guard-dispatcher"
     mkdir -p "${HOME}/.config/guard-dispatcher"
     printf 'REPOS_GLOB="%s"\n' "${repo}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"
-    old_run "${logs}" "$(date -v-14d +%Y-%m-%d)"            # two weeks ago: a Sunday has passed since
+    old_run "${logs}" "$(python3 -c 'import datetime; print(datetime.date.today() - datetime.timedelta(days=14))')"  # two weeks ago: a Sunday has passed since
     export GUARD_AUDIT_NOW="$(date +%Y-%m-%dT%H:%M:%S)"
     run bash "${GUARD_ROOT}/scripts/weekly-audit.sh" --if-due
     [ "$status" -eq 0 ]

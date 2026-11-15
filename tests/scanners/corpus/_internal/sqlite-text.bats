@@ -102,7 +102,7 @@ connection.execute("INSERT INTO ZATTACHMENT VALUES (?)", (bytes(6_000_000),))
 connection.commit()
 connection.close()
 PY
-    [ "$(stat -f %z "${AREA}/Line.sqlite" 2>/dev/null || stat -c %s "${AREA}/Line.sqlite")" -gt 5000000 ]
+    [ "$(($(wc -c < "${AREA}/Line.sqlite")))" -gt 5000000 ]
     scan_payload "${CHAT_JA}"
     [ "$status" -eq 1 ]
 }
