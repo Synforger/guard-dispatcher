@@ -39,6 +39,7 @@ SETTINGS = {
     "agent-writes.txt": "entry/agent-writes.txt",
     "agent-off": "entry/agent-off",
     "handoff.txt": "entry/handoff.txt",
+    "work-folders.txt": "entry/work-folders.txt",
     "allow.txt": "exit/allow.txt",
     "destinations.txt": "exit/destinations.txt",
     "orders.txt": "exit/orders.txt",

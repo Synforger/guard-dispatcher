@@ -116,7 +116,7 @@ for a place: `python3 _common/guard_places.py marks`).
 |---|---|
 | `~/.config/guard/areas.txt`, `areas/`, `ignore.txt`, `patterns/` | `config/guard/boundaries/` (same names) |
 | `~/.config/guard/background.txt` | `config/guard/boundaries/public.txt` |
-| `~/.config/guard/agent-writes.txt`, `agent-off`, `handoff.txt` | `config/guard/entry/` |
+| `~/.config/guard/agent-writes.txt`, `agent-off`, `handoff.txt`, `work-folders.txt` | `config/guard/entry/` |
 | `~/.config/guard/allow.txt`, `destinations.txt`, `orders.txt` | `config/guard/exit/` |
 | `~/.config/anon-words/` (the word lists) | `config/guard/exit/words/` |
 | `~/.config/guard-dispatcher/weekly-audit.conf`, `known/` | `config/guard/audit/` |
@@ -203,6 +203,23 @@ address belongs to GitHub rather than to a person or an organisation. This
 exemption is push-only: `pre-commit` still requires `user.email` to be on the
 allowed list, because the operator is never a bot.
 
+A commit an agent's session makes (its launcher names the session's folder in
+`GUARD_WORK_FOLDER`) takes no path another tab left in its own work folder.
+Several tabs work in one checkout, each in a folder of it, and `git add -A` or
+a staged folder picks up what another tab has not committed yet. A staged path
+(an added, changed or removed file) stops the commit when the innermost folder
+of `work-folders.txt` holding it is neither the session's folder, nor one
+around it (a tier above), nor one inside it (a tier below); the refusal names
+each path and the command that unstages it. Paths outside every work folder,
+the files every tab shares, are not judged, and with no file or no work folder
+named nothing is.
+
+```
+# work-folders.txt
+~/agent-platform/agents/*/projects/*
+~/agent-platform/agents/*/projects/*/**/subprojects/*
+```
+
 Scanners always come from this checkout's `scanners/` — individual
 repositories need no toolkit of their own, and a copy a repository carries
 (`.tooling/local-ci/anon-scan.sh`) does not replace them. A repository's own
@@ -234,6 +251,9 @@ documents themselves. Everything it reads is configured on this machine only:
                                         for your own repositories as their remote has them
 ~/.config/guard/handoff.txt             <path> per line, `~` and `$VAR` expanded from the session:
                                         where a marked session may still leave notes (see below)
+~/.config/guard/work-folders.txt        <path pattern> per line (`~`, `*` for one name, `**` for
+                                        any number of folders): the folders agents' tabs work in,
+                                        inside a checkout they share (see below)
 ~/.config/guard/agent-writes.txt        <name> [<area> ...] per line (a file, a folder, a glob;
                                         `*` for all): the settings an agent that has read inside
                                         no area, or only inside the areas named, may keep up to
