@@ -691,6 +691,30 @@ client_code() {
     [ "$status" -eq 0 ]
 }
 
+@test "corpus: a link to a page named in words and short numbers is where it points, not the area's" {
+    printf 'Signing is explained in https://developer.example.com/documentation/technotes/tn3127-inside-code-signing-requirements-and-entitlements\n' > "${CLIENT}/received/notes.md"
+    mk_repo other
+    commit_line "根拠: https://developer.example.com/documentation/technotes/tn3127-inside-code-signing-requirements-and-entitlements"
+    scan_last
+    [ "$status" -eq 0 ]
+}
+
+@test "corpus: a link copied with the id in its folder is still caught" {
+    printf 'The draft is at https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd/edit\n' > "${CLIENT}/received/notes.md"
+    mk_repo other
+    commit_line "see https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd/edit"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
+@test "corpus: a link copied with a name encoded in its folder is still caught" {
+    printf 'Plan: https://wiki.example.com/pages/%%E8%%A9%%A6%%E9%%A8%%93%%E3%%81%%AE%%E8%%A8%%88%%E7%%94%%BB\n' > "${CLIENT}/received/notes.md"
+    mk_repo other
+    commit_line "see https://wiki.example.com/pages/%E8%A9%A6%E9%A8%93%E3%81%AE%E8%A8%88%E7%94%BB"
+    scan_last
+    [ "$status" -eq 1 ]
+}
+
 @test "corpus: a long line of base64 data with no link in it is judged in seconds" {
     printf 'The weights sit in https://drive.google.com/drive/folders/1Qz9XkLmNoPqRsTuVwXyZaBcDeFgHiJk for every run.\n' > "${CLIENT}/received/notes.md"
     mk_repo other
