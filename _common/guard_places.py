@@ -49,6 +49,7 @@ SETTINGS = {
 AUDIT_SETTINGS = {
     "weekly-audit.conf": "audit/weekly-audit.conf",
     "known": "audit/known",
+    "unchecked-kept.txt": "audit/unchecked-kept.txt",
 }
 
 
