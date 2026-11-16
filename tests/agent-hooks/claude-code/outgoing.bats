@@ -879,6 +879,100 @@ slack() { ordered "${SLACK}" "$(message "$1" "$2")" "${3:-toolu_1}"; }
     passed
 }
 
+# reason — the refusal's text; shown_block — the block it hands the agent, fence lines included.
+reason() { jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${output}"; }
+shown_block() { reason | awk '/^```+(send|guard)$/ { on = 1 } on'; }
+
+@test "order: a refusal names the words that count as an order and the block that shows the call" {
+    held
+    said "tell them the build is green"
+    slack C0123ABCD "The build is green."
+    denied
+    [[ "$(reason)" == *"Only these words of the operator count as the order: 送信して, 送信お願い (orders.txt); other words do not"* ]]
+    [ "$(shown_block)" = "$(printf '```send\ntool: slack_send_message\nchannel_id: C0123ABCD\nmessage:\nThe build is green.\n```')" ]
+}
+
+@test "order: the block a refusal hands over passes once shown and ordered, whatever its values hold" {
+    held
+    destinations '*calendar* company order'
+    local tool="mcp__claude_ai_Google_Calendar__create_event"
+    local input
+    input="$(jq -n '{summary: "A B のすり合わせ", startTime: "2026-11-12T10:00:00+09:00",
+                     attendees: ["a@example.com", "b@example.com"], notify: true, count: 2,
+                     location: " Room 3 west", note: "[draft]", quote: "\"as is\"",
+                     description: "議題は二つ。\n一つ目は日程。", other: "a\nb",
+                     agenda: "日程\n```\nmake test\n```\n場所"}')"
+    said "予定を作って"
+    ordered "${tool}" "${input}"
+    denied
+    local block
+    block="$(shown_block)"
+    [[ "${block}" == '````send'* ]]                                  # the last value over several lines goes last
+    [[ "${block}" == *$'\nattendees: ["a@example.com","b@example.com"]\n'* ]]
+    [[ "${block}" == *$'\nother: "a\\nb"\n'* ]]
+    replied "$(printf 'This is the call.\n\n%s\n' "${block}")"
+    said "送信して"
+    ordered "${tool}" "${input}"
+    passed
+}
+
+@test "order: the operator's other words are no order, and the refusal says which words are" {
+    held
+    said "tell them"
+    show C0123ABCD "The build is green."
+    said "送って"
+    slack C0123ABCD "The build is green."
+    denied
+    [[ "$(reason)" == *"orders no send"* ]]
+    [[ "$(reason)" == *"送信して, 送信お願い"* ]]
+}
+
+@test "order: a block the agent wrote its own way is refused with the block that matches the call" {
+    held
+    said "tell them"
+    replied "$(printf '```send\nSlack, #team: The build is green.\n```\n')"
+    said "送信して"
+    slack C0123ABCD "The build is green."
+    denied
+    [[ "$(reason)" == *"not one the agent showed"* ]]
+    replied "$(printf 'Again:\n\n%s\n' "$(shown_block)")"
+    said "送信して"
+    slack C0123ABCD "The build is green."
+    passed
+}
+
+@test "order: a block a refusal hands over reads back as the call when a value breaks lines another way" {
+    run python3 - "${GUARD_ROOT}/agent-hooks/claude-code" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import order
+calls = [
+    {"to": "C1", "body": "line1\r\nline2"},
+    {"to": "C1", "body": "line1\rline2"},
+    {"to": "C1", "body": "page1\x0cpage2"},
+    {"to": "C1", "body": "one two"},
+    {"to": "x y", "body": "a\nb"},
+    {"to": "x\x85y", "body": "a\nb"},
+    {"to": ["p q"], "body": "a b"},
+]
+for args in calls:
+    block = order.block_for("mcp__mail__send_message", args)
+    shown = order.shown_calls(block)
+    if len(shown) != 1 or not order.same(shown[0], "mcp__mail__send_message", args):
+        print("not read back:", repr(args), repr(block))
+PY
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "order: a refusal says a phrase in a question or before a cancelling tail does not count" {
+    held
+    said "tell them"
+    slack C0123ABCD "The build is green."
+    denied
+    [[ "$(reason)" == *"nor one in a sentence that asks (\`?\`) or goes on with もいい, いい, ない, る, た"* ]]
+}
+
 @test "order: a call that differs from the shown one is refused: one letter, the channel, one more key" {
     held
     said "tell them"

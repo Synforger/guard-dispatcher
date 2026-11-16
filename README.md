@@ -1102,6 +1102,12 @@ exchange (`agent-hooks/claude-code/order.py`):
    shown block is one send: a second call on the same block is refused, and a
    call that was refused or failed gives the block back.
 
+A refusal tells the agent how to ask: it lists the phrases that count as an
+order (and that no other words do), and it holds the block that shows this
+very call, written so that the guard reads it back as the call. The agent can
+show that block as it is. A change the operator approves (below) is refused
+the same way, with the phrases that count as a yes.
+
 What orders is the operator's own list, `$GUARD_CONFIG_DIR/orders.txt`: one
 phrase per line, and a line starting with `!` is a cancelling tail, the words
 right after a phrase that turn it into something else (asking leave, a
