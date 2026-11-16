@@ -107,6 +107,11 @@ WRITING = frozenset({"create", "update", "delete", "remove", "add", "send", "pos
                      "disable", "apply", "import", "save", "label", "unlabel", "star", "unstar", "trash",
                      "untrash", "respond", "forward", "accept", "decline", "sync", "push", "commit", "pin",
                      "unpin", "subscribe", "unsubscribe", "transfer", "approve", "reject", "comment"})
+# Verbs that read when nothing after them in the name writes: `suggest_time` returns free slots,
+# while `suggest_edits` puts a suggestion into a document.
+READING_UNLESS_WRITTEN = frozenset({"suggest"})
+# Words after such a verb that name a change to what the service holds.
+CHANGE_OBJECTS = frozenset({"edit", "edits", "change", "changes", "revision", "revisions"})
 # Tools of the host (not MCP) that send to a service. WebFetch and WebSearch fetch, but the URL,
 # the prompt and the query they carry reach the search or fetch service, so they are sends.
 HOST_SENDERS = {"Artifact", "ArtifactData", "ArtifactComments", "WebFetch", "WebSearch"}
@@ -194,10 +199,13 @@ def reads_only(tool: str, args: dict) -> bool:
         return args.get("action") in ARTIFACT_DATA_READING
     if tool == "ArtifactComments":
         return args.get("action") in {"read", "list", "watch", "unwatch"}
-    for word in TOOL_WORD.findall(tool.rsplit("__", 1)[-1]):
-        if word.lower() in READING:
+    words = [word.lower() for word in TOOL_WORD.findall(tool.rsplit("__", 1)[-1])]
+    for at, word in enumerate(words):
+        if word in READING:
             return True
-        if word.lower() in WRITING:
+        if word in READING_UNLESS_WRITTEN:
+            return not any(w in WRITING or w in CHANGE_OBJECTS for w in words[at + 1:])
+        if word in WRITING:
             return False
     return False
 
