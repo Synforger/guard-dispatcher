@@ -1125,6 +1125,32 @@ PY
     denied                                                # no verb it knows: a send
 }
 
+@test "order: suggest reads only with an object that reads after it, and its values are still compared" {
+    held
+    destinations '*calendar* company order' '*docs* company order' '*github* company order'
+    said "find a slot"
+    ordered mcp__claude_ai_Google_Calendar__suggest_time '{"attendeeEmails": ["a@example.com"], "durationMinutes": 30}'
+    passed
+    ordered mcp__claude_ai_Google_Docs__suggest_edits '{"document_id": "d1", "text": "a new line"}'
+    denied                                                # puts a suggestion into a document
+    [[ "${output}" == *"orders no send"* ]]
+    ordered mcp__claude_ai_Google_Docs__suggestChanges '{"document_id": "d1"}'
+    denied
+    ordered mcp__claude_ai_Google_Calendar__suggest_and_create_event '{"summary": "sync"}'
+    denied
+    ordered mcp__claude_ai_Google_Docs__suggest_insertion '{"document_id": "d1", "text": "a line"}'
+    denied                                                # an object it does not list: a send
+    ordered mcp__github__suggest_fix '{"pull_number": 3, "body": "use x"}'
+    denied
+    ordered mcp__claude_ai_Google_Docs__suggest '{"document_id": "d1"}'
+    denied                                                # no object: a send
+    ordered mcp__claude_ai_Google_Calendar__suggestTimeSlots '{"durationMinutes": 30}'
+    passed
+    ordered mcp__claude_ai_Google_Calendar__suggest_time "$(jq -n --arg q "${CLIENT_TEXT}" '{note: $q}')"
+    denied
+    [[ "${output}" == *"client"* ]]
+}
+
 @test "order: a send the operator reads first takes the word list, not the private-document scan" {
     words_for_areas
     held
