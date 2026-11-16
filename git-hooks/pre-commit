@@ -23,6 +23,16 @@ set -eu
 local_status=0
 dispatcher::run_local_hook "pre-commit" "$@" || local_status=$?
 
+# A commit an agent's session makes takes no path another tab left in its own work folder
+# (staged_places.py): several tabs share one checkout, and `git add -A` picks up the others' files.
+# It runs before the `exempt` exit: an exempt repository skips the scans, not the tabs' folders.
+if [ -n "${GUARD_WORK_FOLDER:-}" ]; then
+    if ! git -c core.quotepath=off diff --cached --name-only --no-renames -z \
+            | python3 "$(dispatcher::guard_root)/git-hooks/_internal/staged_places.py" "$(git rev-parse --show-toplevel)"; then
+        exit 1
+    fi
+fi
+
 kind="$(dispatcher::detect_repo_kind)"
 
 # `exempt` is the only hard skip (= explicit opt-out, e.g. a private state
@@ -31,15 +41,6 @@ kind="$(dispatcher::detect_repo_kind)"
 # regardless of where the repo points. Opt-out is explicit, never implicit.
 if [ "${kind}" = "exempt" ]; then
     exit "${local_status}"
-fi
-
-# A commit an agent's session makes takes no path another tab left in its own work folder
-# (staged_places.py): several tabs share one checkout, and `git add -A` picks up the others' files.
-if [ -n "${GUARD_WORK_FOLDER:-}" ]; then
-    if ! git -c core.quotepath=off diff --cached --name-only --no-renames -z \
-            | python3 "$(dispatcher::guard_root)/git-hooks/_internal/staged_places.py" "$(git rev-parse --show-toplevel)"; then
-        exit 1
-    fi
 fi
 
 # `corpus`: only the private-document scan, over the lines this commit adds,

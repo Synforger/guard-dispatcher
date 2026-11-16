@@ -3,10 +3,17 @@ every commit an agent's session makes (one whose environment names its work fold
 
 Several tabs work in one checkout, each in its own folder of it (an agent's tier). A commit made
 with `git add -A`, or one that stages a folder, takes what another tab left uncommitted beside its
-own: a picture that tab was still working on went out in another tab's commit. A staged path is
-another tab's when the innermost work folder holding it is neither this session's folder, nor a
-folder around it (a tier above, whose files the session may update), nor one inside it (a tier
-below). Paths outside every work folder (the files every tab shares) are not judged.
+own: a picture that tab was still working on went out in another tab's commit. The index does not
+say which tab staged a change, so a path is judged by the innermost work folder holding it:
+
+- the session's own folder: the session's to commit;
+- a folder around it (a tier above) or inside it (a tier below): the session may update those
+  tiers' files, and so may the tabs that work there. The commit takes such a path only when its
+  command names the file itself (`git commit -- <file>`); a change another tab staged there, or one
+  a folder, `-A` or `-a` swept in, stops the commit;
+- any other work folder (a tier beside it): another tab's, named or not.
+
+Paths outside every work folder (the files every tab shares) are not judged.
 
 The work folders are the lines of `work-folders.txt` among the guard's settings: one path pattern
 per line, `~` for home, `*` for one folder's name and `**` for any number of folders, `#` starts a
@@ -22,10 +29,15 @@ import fnmatch
 import os
 import sys
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "agent-hooks" / "claude-code"))
 import guard_places  # noqa: E402
+from commit_scope import commit_scope  # noqa: E402
 from path_forms import composed, resolved  # noqa: E402
+
+from commit_command import CommitCommand, running_commit  # noqa: E402
 
 #: The environment variable that names the folder the session works in (set by the agent's launcher).
 WORK_FOLDER = "GUARD_WORK_FOLDER"
@@ -64,16 +76,35 @@ def owner(path: Path, patterns: list[list[str]]) -> Path | None:
     return None
 
 
-def foreign(paths: list[Path], home: Path, patterns: list[list[str]]) -> list[tuple[Path, Path]]:
-    """(path, the other tab's work folder) for every path whose innermost work folder is neither
-    `home`, nor around it, nor inside it."""
+def foreign(paths: list[Path], home: Path, patterns: list[list[str]],
+            named: Callable[[], set[Path]]) -> list[tuple[Path, Path, bool]]:
+    """(path, the other tier's work folder, whether that tier lies around or inside `home`) for every
+    path the commit may not take: one beside `home`, and one around or inside it that the commit
+    does not name (`named` is asked only when such a path is staged)."""
     found = []
+    names: set[Path] | None = None
     for path in paths:
         folder = owner(path, patterns)
-        if folder is None or folder == home or folder in home.parents or home in folder.parents:
+        if folder is None or folder == home:
             continue
-        found.append((path, folder))
+        related = folder in home.parents or home in folder.parents
+        if related:
+            if names is None:
+                names = named()
+            if path in names:
+                continue
+        found.append((path, folder, related))
     return found
+
+
+def named_paths(command: CommitCommand | None) -> set[Path]:
+    """The files a commit names after `commit` (as git reads its words), each as a full path."""
+    if command is None:
+        return set()
+    scope = commit_scope(command.arguments)
+    if scope is None:
+        return set()
+    return {composed(resolved(command.folder / pathspec)) for pathspec in scope[1]}
 
 
 def main(argv: list[str]) -> int:
@@ -86,12 +117,19 @@ def main(argv: list[str]) -> int:
         return 0
     top = resolved(argv[0])
     staged = [composed(top / name) for name in sys.stdin.read().split("\0") if name]
-    found = foreign(staged, resolved(work), patterns)
-    for path, folder in found:
-        print(f"[pre-commit] {path.relative_to(top)} lies in another tab's work folder {folder} "
-              f"(this session works in {work}): unstage it with "
-              f"`git restore --staged -- {path.relative_to(top)}`, and commit the paths you wrote by name",
-              file=sys.stderr)
+    found = foreign(staged, resolved(work), patterns, lambda: named_paths(running_commit()))
+    for path, folder, related in found:
+        name = path.relative_to(top)
+        if related:
+            print(f"[pre-commit] {name} lies in the work folder {folder}, a tier above or below this "
+                  f"session's ({work}), and the commit does not name it: a tab working there may have "
+                  f"staged it. Name the file after `--` if this session changed it, or unstage it with "
+                  f"`git restore --staged -- {name}`", file=sys.stderr)
+        else:
+            print(f"[pre-commit] {name} lies in another tab's work folder {folder} "
+                  f"(this session works in {work}): unstage it with "
+                  f"`git restore --staged -- {name}`, and commit the paths you wrote by name",
+                  file=sys.stderr)
     return 1 if found else 0
 
 
