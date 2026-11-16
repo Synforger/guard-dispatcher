@@ -126,6 +126,32 @@ stage() {
     [[ "$output" == *"projects/beta/picture.md lies in another tab's work folder"* ]]
 }
 
+@test "staged places: in another worktree of the repository, the session's folder is the same place there" {
+    local base
+    base="$(cd -P "${BATS_TEST_TMPDIR}" && pwd)/agent"
+    mkdir -p "${base}/projects/alpha/subprojects/one" "${base}/projects/alpha/subprojects/two"
+    printf '%s\n' "${base}/projects/*" "${base}/projects/*/**/subprojects/*" > "${GUARD_CONFIG_DIR}/work-folders.txt"
+    export GUARD_WORK_FOLDER="${base}/projects/alpha/subprojects/one"
+    cd "${base}/projects/alpha"
+    git init -q
+    git config user.email "${ALLOWED_EMAIL}"
+    git config user.name "Fixture"
+    git config commit.gpgsign false
+    echo "seed" > subprojects/one/seed.md
+    git add subprojects/one/seed.md
+    commit_unguarded
+    git worktree add -q ../alpha-wt-x -b child/x
+    cd ../alpha-wt-x
+    stage subprojects/one/notes.md
+    commit -- subprojects/one/notes.md
+    [ "$status" -eq 0 ]
+    mkdir -p subprojects/two
+    stage subprojects/two/memo.md
+    commit -- subprojects/two/memo.md
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"subprojects/two/memo.md lies in another tab's work folder ${base}/projects/alpha-wt-x/subprojects/two"* ]]
+}
+
 @test "staged places: an exempt repository is judged too" {
     set_scope exempt
     stage projects/beta/picture.md
