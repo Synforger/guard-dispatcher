@@ -1125,9 +1125,9 @@ PY
     denied                                                # no verb it knows: a send
 }
 
-@test "order: suggest reads when nothing after it in the name writes, and its values are still compared" {
+@test "order: suggest reads only with an object that reads after it, and its values are still compared" {
     held
-    destinations '*calendar* company order' '*docs* company order'
+    destinations '*calendar* company order' '*docs* company order' '*github* company order'
     said "find a slot"
     ordered mcp__claude_ai_Google_Calendar__suggest_time '{"attendeeEmails": ["a@example.com"], "durationMinutes": 30}'
     passed
@@ -1138,6 +1138,14 @@ PY
     denied
     ordered mcp__claude_ai_Google_Calendar__suggest_and_create_event '{"summary": "sync"}'
     denied
+    ordered mcp__claude_ai_Google_Docs__suggest_insertion '{"document_id": "d1", "text": "a line"}'
+    denied                                                # an object it does not list: a send
+    ordered mcp__github__suggest_fix '{"pull_number": 3, "body": "use x"}'
+    denied
+    ordered mcp__claude_ai_Google_Docs__suggest '{"document_id": "d1"}'
+    denied                                                # no object: a send
+    ordered mcp__claude_ai_Google_Calendar__suggestTimeSlots '{"durationMinutes": 30}'
+    passed
     ordered mcp__claude_ai_Google_Calendar__suggest_time "$(jq -n --arg q "${CLIENT_TEXT}" '{note: $q}')"
     denied
     [[ "${output}" == *"client"* ]]
