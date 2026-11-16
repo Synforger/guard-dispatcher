@@ -941,6 +941,38 @@ shown_block() { reason | awk '/^```+(send|guard)$/ { on = 1 } on'; }
     passed
 }
 
+@test "order: a block a refusal hands over reads back as the call when a value breaks lines another way" {
+    run python3 - "${GUARD_ROOT}/agent-hooks/claude-code" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import order
+calls = [
+    {"to": "C1", "body": "line1\r\nline2"},
+    {"to": "C1", "body": "line1\rline2"},
+    {"to": "C1", "body": "page1\x0cpage2"},
+    {"to": "C1", "body": "one two"},
+    {"to": "x y", "body": "a\nb"},
+    {"to": "x\x85y", "body": "a\nb"},
+    {"to": ["p q"], "body": "a b"},
+]
+for args in calls:
+    block = order.block_for("mcp__mail__send_message", args)
+    shown = order.shown_calls(block)
+    if len(shown) != 1 or not order.same(shown[0], "mcp__mail__send_message", args):
+        print("not read back:", repr(args), repr(block))
+PY
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
+@test "order: a refusal says a phrase in a question or before a cancelling tail does not count" {
+    held
+    said "tell them"
+    slack C0123ABCD "The build is green."
+    denied
+    [[ "$(reason)" == *"nor one in a sentence that asks (\`?\`) or goes on with もいい, いい, ない, る, た"* ]]
+}
+
 @test "order: a call that differs from the shown one is refused: one letter, the channel, one more key" {
     held
     said "tell them"

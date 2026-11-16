@@ -110,6 +110,8 @@ QUOTED = re.compile(r"「[^」]*」|『[^』]*』|<pasted_content[^>]*>.*?</past
 # How pasted text opens: Claude Code records a multi-line paste wrapped in this tag.
 PASTED_OPENING = re.compile(r"^\s*<pasted_content[^>\n]*>\s*")
 SENTENCE_END = re.compile(r"[。．！!\n]")
+# Line breaks `str.splitlines()` splits at that JSON writes as they are, and their escapes.
+LINE_BREAKS_IN_JSON = str.maketrans({c: f"\\u{ord(c):04x}" for c in "\x85\u2028\u2029"})
 # A tool whose last part says it drafts keeps the text in the operator's own account.
 DRAFT = re.compile(r"(^|_)drafts?(_|$)", re.I)
 SHOW = {SEND: "Show the call in a ```send block and wait for the operator's order",
@@ -381,25 +383,26 @@ def compared(tool: str, fields: dict) -> dict[str, str]:
 def block_for(tool: str, args: dict, kind: str = SEND) -> str | None:
     """The block that shows this very call, as `shown_calls()` reads it back: `tool:` and every
     compared key. One value goes last, on the lines after its key: the last that runs over several
-    lines, or else the last that holds a space (a command, a message). A list or an object is
-    written as its JSON; any other value with a space, a quote or a bracket at its head, or a line
-    break, as a JSON string. The
-    fence is longer than any run of backticks a value opens a line with. None when a key cannot be
-    written as a key line."""
+    lines, or else the last that holds a space (a command, a message), when its only line breaks
+    are `\\n` (the block is split into lines as `str.splitlines()` splits, then joined with `\\n`).
+    A list or an object is written as its JSON; any other value with a space, a quote or a bracket
+    at its head, or a line break, as a JSON string. The fence is longer than any run of backticks
+    a value opens a line with. None when a key cannot be written as a key line."""
     fields = compared(tool, args)
     if "tool" in fields or any(not KEY.match(f"{key}:") for key in fields):
         return None
-    lasting = next((k for k in reversed(fields) if "\n" in fields[k]), None) or \
-        next((k for k in reversed(fields) if any(c.isspace() for c in fields[k])), None)
+    lastable = [k for k in fields if fields[k].splitlines() == fields[k].split("\n")]
+    lasting = next((k for k in reversed(lastable) if "\n" in fields[k]), None) or \
+        next((k for k in reversed(lastable) if any(c.isspace() for c in fields[k])), None)
     lines = [f"tool: {tool.rsplit('__', 1)[-1]}"]
     for key, text in fields.items():
         if key == lasting:
             continue
         plain = text and not any(c.isspace() for c in text) and text[0] not in '"[{'
         if isinstance(args.get(key), (list, dict)):
-            lines.append(f"{key}: {text}")     # JSON already, read back as the same list or object
+            lines.append(f"{key}: {one_line(text)}")    # JSON already, read back as the same list or object
         else:
-            lines.append(f"{key}: {text if plain else json.dumps(text, ensure_ascii=False)}")
+            lines.append(f"{key}: {text if plain else one_line(json.dumps(text, ensure_ascii=False))}")
     if lasting is not None:
         lines += [f"{lasting}:", fields[lasting]]
     body = "\n".join(lines)
@@ -408,15 +411,25 @@ def block_for(tool: str, args: dict, kind: str = SEND) -> str | None:
     return f"{fence}{kind}\n{body}\n{fence}"
 
 
+def one_line(text: str) -> str:
+    """JSON text kept on one line: the characters `str.splitlines()` breaks at and JSON leaves as
+    they are (it escapes the control characters below a space itself) written as escapes."""
+    return text.translate(LINE_BREAKS_IN_JSON)
+
+
 def how_to_show(tool: str, args: dict, kind: str) -> str:
     """What a refusal tells the agent to do: the words that count as the operator's order or yes,
     and the block that shows this call, for the agent to show before asking."""
     found = settings()
-    words = found[0] if kind == SEND else found[4]
+    words, tails = (found[0] if kind == SEND else found[4]), found[1]
     asked = "order" if kind == SEND else "yes"
-    counted = (f"Only these words of the operator count as the {asked}: {', '.join(words)} "
-               f"(orders.txt); other words do not" if words else
-               f"orders.txt names no words, so nothing counts as the operator's {asked}")
+    if words:
+        counted = (f"Only these words of the operator count as the {asked}: {', '.join(words)} "
+                   f"(orders.txt); other words do not, nor one in a sentence that asks (`?`)")
+        if tails:
+            counted += f" or goes on with {', '.join(tails)}"
+    else:
+        counted = f"orders.txt names no words, so nothing counts as the operator's {asked}"
     block = block_for(tool, args, kind)
     if block is None:
         return f"{SHOW[kind]}. {counted}"
