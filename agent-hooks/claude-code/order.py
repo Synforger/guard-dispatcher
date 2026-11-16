@@ -378,6 +378,51 @@ def compared(tool: str, fields: dict) -> dict[str, str]:
     return {k: s for k, v in fields.items() if k not in notes and (s := value(v)) is not None}
 
 
+def block_for(tool: str, args: dict, kind: str = SEND) -> str | None:
+    """The block that shows this very call, as `shown_calls()` reads it back: `tool:` and every
+    compared key. One value goes last, on the lines after its key: the last that runs over several
+    lines, or else the last that holds a space (a command, a message). A list or an object is
+    written as its JSON; any other value with a space, a quote or a bracket at its head, or a line
+    break, as a JSON string. The
+    fence is longer than any run of backticks a value opens a line with. None when a key cannot be
+    written as a key line."""
+    fields = compared(tool, args)
+    if "tool" in fields or any(not KEY.match(f"{key}:") for key in fields):
+        return None
+    lasting = next((k for k in reversed(fields) if "\n" in fields[k]), None) or \
+        next((k for k in reversed(fields) if any(c.isspace() for c in fields[k])), None)
+    lines = [f"tool: {tool.rsplit('__', 1)[-1]}"]
+    for key, text in fields.items():
+        if key == lasting:
+            continue
+        plain = text and not any(c.isspace() for c in text) and text[0] not in '"[{'
+        if isinstance(args.get(key), (list, dict)):
+            lines.append(f"{key}: {text}")     # JSON already, read back as the same list or object
+        else:
+            lines.append(f"{key}: {text if plain else json.dumps(text, ensure_ascii=False)}")
+    if lasting is not None:
+        lines += [f"{lasting}:", fields[lasting]]
+    body = "\n".join(lines)
+    runs = [len(m.group(0)) for m in re.finditer(r"^`+", body, re.M)]
+    fence = "`" * max(3, max(runs, default=0) + 1)
+    return f"{fence}{kind}\n{body}\n{fence}"
+
+
+def how_to_show(tool: str, args: dict, kind: str) -> str:
+    """What a refusal tells the agent to do: the words that count as the operator's order or yes,
+    and the block that shows this call, for the agent to show before asking."""
+    found = settings()
+    words = found[0] if kind == SEND else found[4]
+    asked = "order" if kind == SEND else "yes"
+    counted = (f"Only these words of the operator count as the {asked}: {', '.join(words)} "
+               f"(orders.txt); other words do not" if words else
+               f"orders.txt names no words, so nothing counts as the operator's {asked}")
+    block = block_for(tool, args, kind)
+    if block is None:
+        return f"{SHOW[kind]}. {counted}"
+    return f"{SHOW[kind]}. {counted}. One block per call, holding this call as it is:\n{block}"
+
+
 def same(shown: dict[str, str], tool: str, args: dict) -> bool:
     shown = dict(shown)
     name = shown.pop("tool", None)
@@ -425,7 +470,7 @@ def answered_elsewhere(opened: str, tool: str, args: dict, kind: str, after: lis
     """(why not, None) or (None, the order) for a call in a turn that `opened`, a relayed message,
     started: it passes only on the operator's answer in the sender's tab (see the module's notes).
     `after` is this session's rows since that message, for the calls that failed since."""
-    show = SHOW[kind]
+    show = how_to_show(tool, args, kind)
     what = "orders a send" if kind == SEND else "approves a change"
     plain = ("this turn was opened by a message relayed from another session, not by the operator, "
              f"and only the operator {what}. {show}, or have the operator answer the same block in the "
@@ -445,7 +490,7 @@ def answered_elsewhere(opened: str, tool: str, args: dict, kind: str, after: lis
                 f"sending tab {tab}. {show}"), None
     last, message = said[-1]
     if not (orders_a_send(message) if kind == SEND else approves_a_change(message)):
-        return f"the operator's words this message carries do not say yes ({ORDERS}). {show}", None
+        return f"the operator's words this message carries do not say yes. {show}", None
     before = said[-2][0] if len(said) > 1 else -1
     matching = sum(1 for r in history[before + 1:last] if r.get("type") == "assistant"
                    for c in shown_calls(text_of(content(r)), kind) if same(c, tool, args))
@@ -461,7 +506,7 @@ def answered_elsewhere(opened: str, tool: str, args: dict, kind: str, after: lis
 def ordered(tool: str, args: dict, event: dict | None, kind: str = SEND) -> tuple[str | None, Ordered | None]:
     """(why this call has no order from the operator, None), or (None, the order it has). `kind` is
     SEND for a send the operator orders, CHANGE for a change of the guard the operator approves."""
-    show = SHOW[kind]
+    show = how_to_show(tool, args, kind)
     what, none = ("orders a send", "orders no send") if kind == SEND else ("approves a change", "approves no change")
     event = event or {}
     history = rows(event.get("transcript_path"))
@@ -485,7 +530,7 @@ def ordered(tool: str, args: dict, event: dict | None, kind: str = SEND) -> tupl
         return ("the session's transcript does not hold the operator's latest message yet, so the "
                 "order cannot be seen. Try the call again"), None
     if not (orders_a_send(message) if kind == SEND else approves_a_change(message)):
-        return f"the operator's last message {none} ({ORDERS}). {show}", None
+        return f"the operator's last message {none}. {show}", None
     shown = [c for r in history[before + 1:last] if r.get("type") == "assistant"
              for c in shown_calls(text_of(content(r)), kind)]
     matching = sum(1 for c in shown if same(c, tool, args))

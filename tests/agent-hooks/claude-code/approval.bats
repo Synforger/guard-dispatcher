@@ -69,6 +69,22 @@ HOOKS_OFF="git config core.hooksPath .husky"
     [[ "${output}" == *"already been spent"* ]]
 }
 
+@test "approval: a refusal names the words that count as a yes and the block that shows the call" {
+    said "the template's hooks should run"
+    call Bash "$(jq -n --arg c "${HOOKS_OFF}" '{command: $c, description: "Point the hooks at husky"}')" "${COMPANY_REPO}"
+    denied
+    local reason
+    reason="$(jq -r '.hookSpecificOutput.permissionDecisionReason' <<< "${output}")"
+    [[ "${reason}" == *"Only these words of the operator count as the yes: はい, お願い,"* ]]
+    local block
+    block="$(sed -n '/^```guard$/,$p' <<< "${reason}")"
+    [ "${block}" = "$(printf '```guard\ntool: Bash\ncommand:\n%s\n```' "${HOOKS_OFF}")" ]
+    replied "$(printf 'May I run this?\n\n%s\n' "${block}")"
+    said "はい"
+    call Bash "$(jq -n --arg c "${HOOKS_OFF}" '{command: $c, description: "Point the hooks at husky"}')" "${COMPANY_REPO}"
+    passed
+}
+
 @test "approval: a call that differs from the shown one, or a block shown for a send, does not pass" {
     said "fix it"
     shown "${HOOKS_OFF}"
