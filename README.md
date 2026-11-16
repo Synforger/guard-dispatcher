@@ -221,7 +221,9 @@ removed file) is judged by the innermost folder of `work-folders.txt` holding it
 The refusal names each path and the command that unstages it. Paths outside
 every work folder, the files every tab shares, are not judged, and with no file
 or no work folder named nothing is. The check runs in an `exempt` repository
-too: exempt skips the scans, not the tabs' folders.
+too: exempt skips the scans, not the tabs' folders. A commit made in another
+worktree of the repository (a child's, beside the main checkout) takes the
+session's folder at the same place in that worktree.
 
 ```
 # work-folders.txt

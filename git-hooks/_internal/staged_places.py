@@ -13,7 +13,9 @@ say which tab staged a change, so a path is judged by the innermost work folder 
   a folder, `-A` or `-a` swept in, stops the commit;
 - any other work folder (a tier beside it): another tab's, named or not.
 
-Paths outside every work folder (the files every tab shares) are not judged.
+Paths outside every work folder (the files every tab shares) are not judged. A commit made in
+another worktree of the repository (a child's, beside the main checkout) judges by the session's
+folder moved to the same place in that worktree (worktree_places.py).
 
 The work folders are the lines of `work-folders.txt` among the guard's settings: one path pattern
 per line, `~` for home, `*` for one folder's name and `**` for any number of folders, `#` starts a
@@ -38,6 +40,7 @@ from commit_scope import commit_scope  # noqa: E402
 from path_forms import composed, resolved  # noqa: E402
 
 from commit_command import CommitCommand, running_commit  # noqa: E402
+from worktree_places import same_place, worktree_tops  # noqa: E402
 
 #: The environment variable that names the folder the session works in (set by the agent's launcher).
 WORK_FOLDER = "GUARD_WORK_FOLDER"
@@ -117,7 +120,10 @@ def main(argv: list[str]) -> int:
         return 0
     top = resolved(argv[0])
     staged = [composed(top / name) for name in sys.stdin.read().split("\0") if name]
-    found = foreign(staged, resolved(work), patterns, lambda: named_paths(running_commit()))
+    home = resolved(work)
+    if home != top and top not in home.parents:
+        home = same_place(home, top, worktree_tops(top))
+    found = foreign(staged, home, patterns, lambda: named_paths(running_commit()))
     for path, folder, related in found:
         name = path.relative_to(top)
         if related:
