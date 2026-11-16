@@ -206,13 +206,22 @@ allowed list, because the operator is never a bot.
 A commit an agent's session makes (its launcher names the session's folder in
 `GUARD_WORK_FOLDER`) takes no path another tab left in its own work folder.
 Several tabs work in one checkout, each in a folder of it, and `git add -A` or
-a staged folder picks up what another tab has not committed yet. A staged path
-(an added, changed or removed file) stops the commit when the innermost folder
-of `work-folders.txt` holding it is neither the session's folder, nor one
-around it (a tier above), nor one inside it (a tier below); the refusal names
-each path and the command that unstages it. Paths outside every work folder,
-the files every tab shares, are not judged, and with no file or no work folder
-named nothing is.
+a staged folder picks up what another tab has not committed yet. The index does
+not say which tab staged a change, so a staged path (an added, changed or
+removed file) is judged by the innermost folder of `work-folders.txt` holding it:
+
+- the session's own folder: the session's to commit;
+- a folder around it (a tier above) or inside it (a tier below): the commit
+  takes it only when the `git commit` names the file itself
+  (`git commit -- <file>`, read from the running command and the folder it was
+  typed in). A change a tab working there staged, or one a folder, `-A` or `-a`
+  swept in, stops the commit;
+- any other work folder (a tier beside it): another tab's, named or not.
+
+The refusal names each path and the command that unstages it. Paths outside
+every work folder, the files every tab shares, are not judged, and with no file
+or no work folder named nothing is. The check runs in an `exempt` repository
+too: exempt skips the scans, not the tabs' folders.
 
 ```
 # work-folders.txt
