@@ -500,7 +500,10 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
         takes_value = CURL_TAKES_VALUE if tool == "curl" else WGET_BODY
         j, body, unreadable, urls, method, unknown = 1, [], [], [], None, None
         if tool == "curl":
+            config = curl_options.default_config(words)
             words, unknown = curl_options.curl_words(words)
+            if config is not None:
+                unknown = f"options curl reads from {config}"
         while j < len(words):
             w = words[j]
             flag, eq, inline = w.partition("=") if w.startswith("--") else (w, "", "")

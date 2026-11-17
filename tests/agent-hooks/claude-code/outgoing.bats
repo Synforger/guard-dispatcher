@@ -1495,6 +1495,30 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
     passed
 }
 
+@test "outgoing: a curl that reads a .curlrc by itself is refused, and one that turns it off with -q is read as it stands" {
+    held
+    destinations 'host:api.example.com company'
+    printf '%s\n' "${CLIENT_TEXT}" > "${H}/body.txt"
+    printf 'data = "@%s"\n' "${H}/body.txt" > "${H}/.curlrc"
+    bash_call "curl -s https://api.example.com/v1/pages"
+    denied
+    [[ "${output}" == *"options curl reads from ${H}/.curlrc"* ]]
+    bash_call "curl -q -s https://api.example.com/v1/status"
+    passed
+    bash_call "curl -qs https://api.example.com/v1/status"
+    passed
+    bash_call "curl -s -q https://api.example.com/v1/status"
+    denied                                                # -q only counts as the first option
+    rm "${H}/.curlrc"
+    mkdir -p "${H}/xdg"
+    printf 'data = "@%s"\n' "${H}/body.txt" > "${H}/xdg/.curlrc"
+    XDG_CONFIG_HOME="${H}/xdg" bash_call "curl -s https://api.example.com/v1/pages"
+    denied
+    rm -r "${H}/xdg"
+    bash_call "curl -s https://api.example.com/v1/status"
+    passed
+}
+
 @test "order: a body joined to a short option or bundled with others is never ordered past from a file" {
     held
     destinations 'host:api.example.com company order'

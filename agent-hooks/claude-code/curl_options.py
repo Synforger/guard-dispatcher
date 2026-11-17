@@ -13,6 +13,9 @@ The tables are from `curl --help all` (curl 8.7.1): an option whose help names a
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 #: Short options that take a value: the rest of the word, or the next word.
 SHORT_VALUED = frozenset("EKCbcdDFPHhmoxUQreXYytzTuAw")
 #: Short options that take none.
@@ -98,3 +101,15 @@ def curl_words(words: list[str]) -> tuple[list[str], str | None]:
                 odd = odd or f"a curl option it does not know ({word})"
                 break
     return out, odd
+
+
+def default_config(words: list[str]) -> Path | None:
+    """The config curl reads by itself before the command's own options, or None: with no `-q`
+    (`--disable`) as the first option, curl reads `.curlrc` from $CURL_HOME, $XDG_CONFIG_HOME or
+    the home folder, and it sends what that file says (`data = "@file"`) though no word of the
+    command shows it."""
+    first = words[1] if len(words) > 1 else ""
+    if first == "--disable" or (first.startswith("-q") and not first.startswith("--")):
+        return None
+    folders = [os.environ.get("CURL_HOME"), os.environ.get("XDG_CONFIG_HOME"), os.path.expanduser("~")]
+    return next((Path(f) / ".curlrc" for f in folders if f and (Path(f) / ".curlrc").is_file()), None)
