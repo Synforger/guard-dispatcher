@@ -147,8 +147,11 @@ def place_of(url: str) -> str:
     reaches a `local:` name unless it names one (see send-scan.py): the operator declares the
     local endpoints an agent must not reach, such as one that types into a terminal as the
     operator would."""
-    parts = urlsplit(url if "://" in url else f"http://{url}")
-    host = parts.hostname or ""
+    try:
+        parts = urlsplit(url if "://" in url else f"http://{url}")
+        host = parts.hostname or ""
+    except ValueError:   # a word that is no URL (`[` of a JSON body): no destination
+        return ""
     if host not in LOOPBACK:
         return f"host:{host}" if host else ""
     try:
@@ -1050,6 +1053,13 @@ def to_session(to: str, payload: str, event: dict | None) -> str | None:
     return f"outgoing: {why}" if status else None
 
 
+def written_in(payload: str, command: str) -> bool:
+    """Whether every line a command sends is written in the command as it is, so the operator who
+    reads the shown command reads what goes: a body read from a file or made as the command runs
+    is not."""
+    return all(line.strip() in command for line in payload.splitlines() if line.strip())
+
+
 def check(tool: str, args: dict, cwd: str, send_scan: Path,
           marks: frozenset[str] = frozenset(), area_of=lambda path: None, tabs: dict | None = None,
           event: dict | None = None, state: Path | None = None) -> str | None:
@@ -1077,15 +1087,18 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
             continue
         ordered = None
         if needs_order and not reading and not order_module().is_draft(tool):
-            if tool == "Bash":
-                return (f"outgoing: not sent to {name}: a send there needs the operator's order, and a "
-                        f"command cannot be matched against a shown call. Send it through the service's tool")
+            if tool == "Bash" and not written_in(payload, args.get("command") or ""):
+                return (f"outgoing: not sent to {name}: a send there needs the operator's order, and a command "
+                        f"is matched against a shown call only when what it sends is written in the command "
+                        f"itself: put the body in the command (`-d '...'` or a here-document), not in a file")
             why, ordered = order_module().ordered(tool, args, event)
             if why:
                 return f"outgoing: not sent to {name}: {why}"
         if unknown:
+            instead = ("Write the body in the command (`-d '...'`), where the shown call holds it" if ordered
+                       else "Write the body to a file and send that file instead")
             return (f"outgoing: not sent to {name}: its body is only known when the command runs ({unknown}), "
-                    f"so it cannot be scanned. Write the body to a file and send that file instead")
+                    f"so it cannot be scanned. {instead}")
         for path, why in unreadable:
             area = area_of(path)
             if marks or area:

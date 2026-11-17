@@ -1348,17 +1348,66 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
     [[ "${output}" == *"not one the agent showed"* ]]
 }
 
-@test "order: a command never sends to a destination held to an order; fetching from it passes" {
+@test "order: a command whose body is written in it passes once shown and ordered; fetching passes without" {
     held
     destinations 'host:hooks.example.com company order'
     said "post it"
     replied "$(printf '```send\ntool: Bash\ncommand:\ncurl -s -d ping https://hooks.example.com/x\n```')"
     said "送信して"
-    ordered Bash "$(jq -n '{command: "curl -s -d ping https://hooks.example.com/x"}')"
-    denied
-    [[ "${output}" == *"needs the operator's order"* ]]
+    ordered Bash "$(jq -n '{command: "curl -s -d ping https://hooks.example.com/x", description: "Post ping"}')"
+    passed
+    ordered Bash "$(jq -n '{command: "curl -s -d ping https://hooks.example.com/x"}')" toolu_2
+    denied                                                # one shown block, one send
+    [[ "${output}" == *"already been spent"* ]]
     ordered Bash "$(jq -n '{command: "curl -s https://hooks.example.com/status"}')"
     passed
+}
+
+@test "order: a command is refused when its body is not in it, or it is not the shown one" {
+    held
+    destinations 'host:hooks.example.com company order'
+    printf 'a body kept in a file\n' > "${H}/body.txt"
+    said "post it"
+    replied "$(printf '```send\ntool: Bash\ncommand:\ncurl -s -d @%s https://hooks.example.com/x\n```' "${H}/body.txt")"
+    said "送信して"
+    ordered Bash "$(jq -n --arg c "curl -s -d @${H}/body.txt https://hooks.example.com/x" '{command: $c}')"
+    denied
+    [[ "${output}" == *"only when what it sends is written in the command itself"* ]]
+    said "post another"
+    replied "$(printf '```send\ntool: Bash\ncommand:\ncurl -s -d ping https://hooks.example.com/x\n```')"
+    said "送信して"
+    ordered Bash "$(jq -n '{command: "curl -s -d pong https://hooks.example.com/x"}')"
+    denied
+    [[ "${output}" == *"not one the agent showed"* ]]
+    [[ "${output}" == *'```send'* ]]
+}
+
+@test "order: a write to an API whose key comes from a file passes once shown and ordered, its body in -d" {
+    held
+    destinations 'host:api.example.com company order'
+    local command
+    command="$(printf 'curl -s -X PATCH https://api.example.com/v1/blocks/0f3c9a/children -H "Authorization: Bearer $(cat %s/key)" -H "Content-Type: application/json" -d %s{"children": [{"type": "bulleted_list_item", "bulleted_list_item": {"rich_text": [{"text": {"content": "会議の決め"}}]}}]}%s' "${H}" "'" "'")"
+    said "add the line"
+    ordered Bash "$(jq -n --arg c "${command}" '{command: $c}')"
+    denied
+    [[ "$(reason)" == *'```send'* ]]
+    replied "$(printf 'The call:\n\n%s\n' "$(shown_block)")"
+    said "送信して"
+    ordered Bash "$(jq -n --arg c "${command}" '{command: $c}')"
+    passed
+}
+
+@test "order: a body in a here-document is refused with the way that can be ordered, and never breaks the check" {
+    held
+    destinations 'host:api.example.com company order'
+    local command
+    command="$(printf 'curl -s -X PATCH https://api.example.com/v1/blocks/0f3c9a/children --data-binary @- <<%sEOF%s\n{"children": [{"paragraph": {"text": "x"}}]}\nEOF' "'" "'")"
+    said "add the line"
+    replied "$(printf '```send\ntool: Bash\ncommand:\n%s\n```' "${command}")"
+    said "送信して"
+    ordered Bash "$(jq -n --arg c "${command}" '{command: $c}')"
+    denied
+    [[ "$(reason)" == *"Write the body in the command"* ]]
 }
 
 @test "order: a POST whose path reads passes a destination held to an order; one that writes does not" {
