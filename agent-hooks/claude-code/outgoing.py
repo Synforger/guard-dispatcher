@@ -89,7 +89,7 @@ import apple_events  # noqa: E402
 import curl_options  # noqa: E402
 from service_reads import rclone_reads  # noqa: E402
 from path_forms import resolved  # noqa: E402
-from shell_commands import expands, simple_commands  # noqa: E402
+from shell_commands import expands, globs, simple_commands  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
 
 # The words of a tool's own name (`mcp__server__slack_read_channel` -> slack, read, channel), however
@@ -437,6 +437,11 @@ def form_file(ref: str) -> str:
 
 # Body values that send the command's standard input.
 STDIN_REFS = {"@-", "-", "<-"}
+# Options whose value is a file the command sends, and why a file named by a pattern is not known.
+FILE_BODY = {"-T", "--upload-file", "--post-file", "--body-file"}
+EXPANDED_NAME = "a file name the shell expands"
+# Bash's own sockets: a redirection to /dev/tcp/<host>/<port> (or udp) writes to that host.
+DEV_SOCKET = re.compile(r"""[<>]&?\s*["']?/dev/(?:tcp|udp)/([^/\s"']+)/\d+""")
 
 
 def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
@@ -471,6 +476,8 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
                 ref = value.split("=", 1)[1] if flag in ("-F", "--form") and "=" in value else value
                 if expands(value):
                     unknown = "a substitution or a variable"
+                elif globs(value) and (flag in FILE_BODY or ref[:1] in ("@", "<")):
+                    unknown = EXPANDED_NAME
                 elif ref in STDIN_REFS or (tool == "wget" and value == "-"):
                     kind, source = stdin or ("text", "")
                     if kind == "unknown":
@@ -496,7 +503,9 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
                     urls.append(value)
                 from_file = (flag in ("-H", "--header") and value.startswith("@")) or \
                     (flag in ("-b", "--cookie") and "=" not in value)
-                if from_file and value.lstrip("@") not in STDIN_REFS:
+                if from_file and globs(value):
+                    unknown = EXPANDED_NAME
+                elif from_file and value.lstrip("@") not in STDIN_REFS:
                     text, files = body_text(tool, "-d", "@" + value.lstrip("@"), cwd, send_scan)
                     body.append(text)
                     unreadable += files
@@ -680,14 +689,15 @@ def copy_sends(tool: str, words: list[str], cwd: str, send_scan: Path) -> list[S
     if len(paths) < 2 or (host := remote_host(paths[-1])) is None:
         return []
     texts, unreadable = [], []
-    for source in paths[:-1]:
-        if remote_host(source) is None:
-            text, files = local_payload(source, cwd, send_scan)
-            texts.append(text)
-            unreadable += files
+    local = [source for source in paths[:-1] if remote_host(source) is None]
+    for source in local:
+        text, files = local_payload(source, cwd, send_scan)
+        texts.append(text)
+        unreadable += files
+    unknown = EXPANDED_NAME if any(globs(source) for source in local) else None
     # The path it lands at decides where it sits when a root on that machine holds it (send-scan)
     landing = remote_path(paths[-1])
-    return [Send(f"host:{host}:{landing}" if landing else f"host:{host}", "\n".join(texts), unreadable)]
+    return [Send(f"host:{host}:{landing}" if landing else f"host:{host}", "\n".join(texts), unreadable, unknown)]
 
 
 def shell_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
@@ -774,6 +784,7 @@ def http_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]
             texts.append(item)
     text, files, unknown = stdin_payload(stdin, cwd, send_scan)
     unknown = unknown or ("a substitution or a variable" if any(expands(i) for i in items) else None)
+    unknown = unknown or (EXPANDED_NAME if any(globs(i) and "@" in i for i in items) else None)
     if not (items or stdin or method in SENDING_METHODS) or not place:
         return []
     return [Send(place, "\n".join([*texts, text]), unreadable + files, unknown)]
@@ -808,12 +819,13 @@ def bucket_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) 
         text, unreadable, unknown = stdin_payload(stdin, cwd, send_scan)
         return [Send(dest, text, unreadable, unknown)]
     texts, unreadable = [], []
-    for source in paths[:-1]:
-        if not re.match(r"^(s3|gs)://", source) and not (tool == "rclone" and remote_host(source)):
-            t, files = local_payload(source, cwd, send_scan)
-            texts.append(t)
-            unreadable += files
-    return [Send(dest, "\n".join(texts), unreadable)]
+    local = [source for source in paths[:-1]
+             if not re.match(r"^(s3|gs)://", source) and not (tool == "rclone" and remote_host(source))]
+    for source in local:
+        t, files = local_payload(source, cwd, send_scan)
+        texts.append(t)
+        unreadable += files
+    return [Send(dest, "\n".join(texts), unreadable, EXPANDED_NAME if any(globs(p) for p in local) else None)]
 
 
 def rclone_read_sends(words: list[str]) -> list[Send]:
@@ -922,6 +934,21 @@ URL = re.compile(r"(?i)\b(?:https?|wss?|ftp)://[A-Za-z0-9.-]+(?::\d+)?(?:/[^\s'\
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n(.*?)\n\s*\2\s*(?:\n|$)", re.S)
 
 
+# ssh options whose value is a command line ssh runs on this machine (`-o ProxyCommand=...`).
+LOCAL_COMMAND = re.compile(r"(?is)^\s*(?:ProxyCommand|LocalCommand|KnownHostsCommand)\s*[=\s]\s*(.+)$")
+
+
+def local_commands(tool: str, args: list[str]) -> list[str]:
+    """The command lines ssh, scp, sftp or rsync runs on this machine: an ssh option that runs one
+    (`-o ProxyCommand=...`), and rsync's remote shell (`-e`, `--rsh`), itself a command line."""
+    if tool == "rsync":
+        options, _ = split_options(args, VALUED["rsync"], RSYNC_VALUED)
+        return [v for o, v in options if v and o in ("-e", "--rsh")] + \
+            [o.split("=", 1)[1] for o, _ in options if o.startswith("--rsh=")]
+    options, _ = split_options(args, VALUED["scp" if tool in ("scp", "sftp") else "ssh"])
+    return [m.group(1) for o, v in options if o == "-o" and v and (m := LOCAL_COMMAND.match(v))]
+
+
 def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[Send]:
     """Code written into the command line: a shell's `-c` string is a command line of its own; an
     interpreter's `-c` / `-e` code, or a heredoc fed to one, sends to each host a URL in it names."""
@@ -936,6 +963,10 @@ def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[
         codes = [words[i + 1] for i, w in enumerate(words[:-1]) if w in CODE_FLAGS]
         if tool in SHELLS and depth < 3:
             for code in codes:
+                out += sends("Bash", {"command": code}, cwd, send_scan, depth=depth + 1)
+            continue
+        if tool in ("ssh", "scp", "sftp", "rsync") and depth < 3:
+            for code in local_commands(tool, words[1:]):
                 out += sends("Bash", {"command": code}, cwd, send_scan, depth=depth + 1)
             continue
         if tool not in INTERPRETERS and not tool.startswith("python"):
@@ -984,6 +1015,8 @@ def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
             out += [Send(f"host:{h}", "", [], "sftp takes its commands as it runs") for h in hosts[:1]]
         elif tool == "osascript":
             out += osascript_sends(args, stdin, command, cwd, send_scan)
+    out += [Send(f"host:{host}", "", [], "what the shell writes to its socket")
+            for host in dict.fromkeys(DEV_SOCKET.findall(command))]
     # `host:<host>` or `host:<host>:<path>`: the host is what is checked
     return [s for s in out
             if (s.dest.split(":", 2)[1] if s.dest.startswith("host:") else s.dest.split(":", 1)[-1]) not in LOOPBACK]

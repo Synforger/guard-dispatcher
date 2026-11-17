@@ -865,16 +865,21 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   including what they read from standard input (`@-`, `-T -`) when it comes
   from `< file`, a here-string or a heredoc. A body only known when the command runs —
   a `$(…)` or backtick substitution, a variable this machine's shell fills in, standard
-  input from a pipe, a heredoc whose delimiter is not quoted and that holds a `$`, or a
-  file the command line writes or that is not there yet — cannot be scanned and is
+  input from a pipe, a heredoc whose delimiter is not quoted and that holds a `$`, a
+  backtick or a backslash the shell takes out, a file named by a pattern the shell expands
+  (`*`, `?`, `[ab]`, `{a,b}`), a file the command line writes or that is not there yet, the
+  files `find -exec` is handed, or what the shell writes to `/dev/tcp/<host>/<port>` —
+  cannot be scanned and is
   refused when it goes to a declared destination; write it to a file and send the file
   instead. A `$` inside single quotes is sent as written (the remote shell fills it in),
   and a variable the command line set to a literal before (`S=/a; ssh h < $S/x`) is
   written out. The command line is read as Bash runs it (`_common/shell_commands.py`):
-  a send inside a loop, a condition, a `{ … }` group, a `$(…)` or backtick
-  substitution (inside double quotes too), a process substitution, after an
-  assignment, behind a program that runs the next words (`sudo`, `env`, `timeout`,
-  `nohup`, `nice`, `xargs`, …) or in `eval` is read like one standing alone.
+  a send inside a loop, a condition, a `{ … }` group, a function, a `coproc`, a `$(…)` or
+  backtick substitution (inside double quotes, `$((…))` and `${…}` too), a process
+  substitution, after an assignment, behind a program that runs the next words (`sudo`,
+  `env`, `timeout`, `nohup`, `nice`, `xargs`, …), in `eval` or `trap`, after `find -exec`,
+  or in a command ssh runs on this machine (`-o ProxyCommand=…`, `LocalCommand`, rsync's
+  `-e`) is read like one standing alone.
   Other network commands are read the same way: `scp` / `rsync` (the local
   files copied to a remote host; a folder counts as a file that cannot be
   scanned), `ssh` / `nc` (the remote command and standard input), `mail` /

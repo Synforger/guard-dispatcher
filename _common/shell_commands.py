@@ -11,9 +11,14 @@ does not see is a send the guard does not judge, so this reads the line the way 
   quotes too; the word that holds one is only known when the command runs
 - what stands before the program: shell keywords (`do`, `then`, `!`, `{`), assignments (`A=1`) and
   the programs that run the words after them (`sudo`, `env`, `timeout 10`, `nohup`, `xargs`, ...);
-  `eval` reads its words as a command line; the header of `for`, `case` and `select` runs nothing
+  `eval` and `trap` read their words as a command line, and `find -exec` the words up to its `;`;
+  `function f` and `coproc` stand before what they run; the header of `for`, `case` and `select`
+  runs nothing
+- a name the shell expands into file names (`*`, `?`, `[a]`, `{a,b}`, `{1..3}` outside quotes) is
+  marked (`Word.globs`): which files it names is only known when the command runs
 - a heredoc's body is the standard input of its command: text, when its delimiter is quoted or it
-  holds nothing the shell fills in
+  holds nothing the shell fills in or changes (a `$`, a backtick, or a backslash before one of
+  them, before itself or before a line break)
 - control operators glued to a word (`);`), line breaks that end a command, and comments
 
 A file the line feeds a command (`< f`) is named as the line sets its variables to a literal before
@@ -30,7 +35,7 @@ from typing import NamedTuple
 # Shell keywords that stand before the program they lead into, and the words that begin or end a
 # compound command and run nothing themselves.
 LEADS = frozenset({"if", "then", "else", "elif", "do", "while", "until", "!", "{"})
-HEADERS = frozenset({"for", "select", "case", "function"})
+HEADERS = frozenset({"for", "select", "case"})
 ENDS = frozenset({"fi", "done", "esac", "}"})
 # Programs that run the words after their own options: (options that take a value, how many
 # words after the options are theirs before the program).
@@ -62,6 +67,8 @@ RUNS_NEXT: dict[str, tuple[frozenset[str], int]] = {
 ENV_SPLIT = frozenset({"-S", "--split-string"})
 # xargs's options that name the string it replaces with what it reads.
 XARGS_REPLACE = frozenset({"-I", "--replace", "-J"})
+# find's actions that run the words after them up to a `;` (or `+`), with `{}` the file found.
+FIND_RUNS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=.*", re.S)
 # Control operators and redirections, longest first.
 CONTROLS = (";;", "&&", "||", "|&", ";", "|", "&", "(", ")")
@@ -77,17 +84,25 @@ NESTED = 4
 # variable as a word spells it (`$S`, `${S}`).
 RUNTIME = re.compile(r"[`$]")
 VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+# A pattern the shell expands into file names, in a word's unquoted characters (a quoted or
+# filled-in character is a NUL there); the same, for a word whose quoting is not known.
+GLOB = re.compile(r"[*?]|\[[^\]\0]+\]|\{[^{}\0]*(?:,|\.\.)[^{}\0]*\}")
+# Backslashes the shell takes out of an unquoted heredoc body (before `$`, a backtick, itself or a line break).
+BODY_ESCAPE = frozenset("$`\\\n")
 
 
 class Word(str):
     """A word of a command as the program gets it, with whether this machine's shell fills part of
-    it in as the command runs (a variable or a substitution outside single quotes)."""
+    it in as the command runs (a variable or a substitution outside single quotes), and whether it
+    is a pattern the shell expands into the names of the files that match it."""
 
     expands: bool
+    globs: bool
 
-    def __new__(cls, text: str, *, expands: bool = False) -> Word:
+    def __new__(cls, text: str, *, expands: bool = False, globs: bool = False) -> Word:
         word = super().__new__(cls, text)
         word.expands = expands
+        word.globs = globs
         return word
 
 
@@ -100,6 +115,12 @@ def expands(word: str) -> bool:
     """Whether a word is only known when the command runs. A word cut out of a Word (an option's
     value after `=`) has lost its quoting, and is judged by its characters."""
     return word.expands if isinstance(word, Word) else bool(RUNTIME.search(word))
+
+
+def globs(word: str) -> bool:
+    """Whether a word names files by a pattern the shell expands. A word cut out of a Word is judged
+    by its characters."""
+    return word.globs if isinstance(word, Word) else bool(GLOB.search(word))
 
 
 def simple_commands(line: str, depth: int = 0, values: dict[str, str] | None = None) -> list[Command]:
@@ -129,11 +150,20 @@ def simple_commands(line: str, depth: int = 0, values: dict[str, str] | None = N
             stdin = ("unknown", "a file named as the command runs") if RUNTIME.search(path) else ("file", path)
         if stdin and stdin[0] == "file" and stdin[1] in written:
             stdin = ("unknown", "a file the command line writes")
-        program, more = _program(words)
-        for code in more:
-            out += simple_commands(code, depth + 1, values)
-        if program:
-            out.append(Command(program, stdin))
+        out += _run(words, stdin, depth, values)
+    return out
+
+
+def _run(words: list[Word], stdin: tuple[str, str] | None, depth: int, values: dict[str, str]) -> list[Command]:
+    """The command these words run, after the command lines and the commands its leading words hand on."""
+    program, lines, nested = _program(words)
+    out: list[Command] = []
+    for code in lines:
+        out += simple_commands(code, depth + 1, values)
+    for inner_words in nested if depth < NESTED else []:
+        out += _run(inner_words, None, depth + 1, values)
+    if program:
+        out.append(Command(program, stdin))
     return out
 
 
@@ -195,6 +225,7 @@ def _tokens(line: str) -> list[tuple]:
 def _word(line: str, at: int, inner: list[str]) -> tuple[Word, int]:
     """The word that starts at `at`, and where it ends."""
     text: list[str] = []
+    bare: list[str] = []   # the unquoted characters, each other one a NUL (GLOB)
     runtime = False
     size = len(line)
     while at < size and line[at] not in WORD_END:
@@ -203,28 +234,28 @@ def _word(line: str, at: int, inner: list[str]) -> tuple[Word, int]:
             end = line.find("'", at + 1)
             if end < 0:
                 raise ValueError("No closing quotation")
-            text.append(line[at + 1:end])
+            part = line[at + 1:end]
             at = end + 1
         elif char == '"':
             part, filled, at = _double(line, at + 1, inner)
-            text.append(part)
             runtime |= filled
         elif char == "\\":
-            if line[at + 1:at + 2] != "\n":
-                text.append(line[at + 1:at + 2])
+            part = line[at + 1:at + 2] if line[at + 1:at + 2] != "\n" else ""
             at += 2
         elif char == "$":
             part, filled, at = _dollar(line, at, inner, quoted=False)
-            text.append(part)
             runtime |= filled
         elif char == "`":
             part, at = _backticks(line, at, inner)
-            text.append(part)
             runtime = True
         else:
             text.append(char)
+            bare.append(char)
             at += 1
-    return Word("".join(text), expands=runtime), at
+            continue
+        text.append(part)
+        bare.append("\0" * len(part))
+    return Word("".join(text), expands=runtime, globs=bool(GLOB.search("".join(bare)))), at
 
 
 def _double(line: str, at: int, inner: list[str]) -> tuple[str, bool, int]:
@@ -263,6 +294,7 @@ def _dollar(line: str, at: int, inner: list[str], quoted: bool) -> tuple[str, bo
     follows = line[at + 1:at + 2]
     if line.startswith("$((", at):
         end = _closing(line, at + 2)
+        _fills_in(line[at + 3:end - 1], inner)   # a substitution inside the arithmetic runs
         return line[at:end + 1], True, end + 1
     if follows == "(":
         end = _closing(line, at + 2)
@@ -270,6 +302,7 @@ def _dollar(line: str, at: int, inner: list[str], quoted: bool) -> tuple[str, bo
         return line[at:end + 1], True, end + 1
     if follows == "{":
         end = _closing(line, at + 2, opening="{", closing="}")
+        _fills_in(line[at + 2:end], inner)   # `${x:-$(cmd)}`: the substitution in a default runs
         return line[at:end + 1], True, end + 1
     if follows == "'" and not quoted:
         end = at + 2
@@ -352,11 +385,13 @@ def _bodies(line: str, at: int, pending: list[tuple[bool, str, bool, list]], inn
 
 
 def _fills_in(text: str, inner: list[str]) -> bool:
-    """Whether the shell fills part of an unquoted heredoc body in; its substitutions are read in turn."""
+    """Whether the shell fills part of a text in, or changes it, as it reads an unquoted heredoc
+    body (or the inside of `$((...))` and `${...}`); its substitutions are read in turn."""
     runtime, at = False, 0
     while at < len(text):
         char = text[at]
         if char == "\\":
+            runtime |= text[at + 1:at + 2] in BODY_ESCAPE and at + 1 < len(text)
             at += 2
         elif char == "$":
             _, filled, at = _dollar(text, at, inner, quoted=True)
@@ -415,15 +450,18 @@ def _input(operator: str, target: tuple) -> tuple[str, str] | None:
     if operator == "<<<":
         return ("unknown", "a here-string the shell fills in") if word.expands else ("text", str(word))
     if operator in ("<", "<>"):
+        if word.globs:
+            return ("unknown", "a file name the shell expands")
         return ("named", str(word)) if word.expands else ("file", str(word))
     return None
 
 
-def _program(words: list[Word]) -> tuple[list[Word], list[str]]:
-    """(the words from the program on, the command lines its leading words hand on to run):
-    past keywords, assignments and the programs that run the next words. A compound command's
-    header or end runs nothing, and `eval` hands its words on."""
-    more: list[str] = []
+def _program(words: list[Word]) -> tuple[list[Word], list[str], list[list[Word]]]:
+    """(the words from the program on, the command lines its words hand on to run, the commands
+    they hand on as words): past keywords, assignments and the programs that run the next words.
+    A compound command's header or end runs nothing; `eval`, `trap` and `env -S` hand on a command
+    line, and `find -exec` the words up to its `;`."""
+    lines: list[str] = []
     replace: str | None = None
     fed = False
     at = 0
@@ -432,6 +470,10 @@ def _program(words: list[Word]) -> tuple[list[Word], list[str]]:
         name = os.path.basename(word)
         if word in LEADS or ASSIGNMENT.fullmatch(word):
             at += 1
+        elif word == "function":
+            at += 2   # `function f { ...; }`: the name, then what the function runs
+        elif word == "coproc":
+            at += 2 if at + 2 < len(words) and words[at + 2] == "{" else 1   # `coproc NAME { ...; }`
         elif name in RUNS_NEXT:
             valued, positional = RUNS_NEXT[name]
             at += 1
@@ -450,7 +492,7 @@ def _program(words: list[Word]) -> tuple[list[Word], list[str]]:
                     value = words[at]
                     at += 1
                 if name == "env" and flag in ENV_SPLIT and value is not None:
-                    more.append(value)
+                    lines.append(value)
                 if name == "xargs":
                     replace = value if flag in XARGS_REPLACE else "{}" if flag == "-i" else replace
             at += positional
@@ -459,16 +501,33 @@ def _program(words: list[Word]) -> tuple[list[Word], list[str]]:
             break
     rest = words[at:]
     if not rest or rest[0] in HEADERS or rest[0] in ENDS:
-        return [], more
-    if os.path.basename(rest[0]) == "eval":
-        if any(expands(w) for w in rest[1:]):
-            return rest, more
-        return [], [*more, " ".join(rest[1:])]
+        return [], lines, []
+    name = os.path.basename(rest[0])
+    if name in ("eval", "trap"):
+        code = rest[1:] if name == "eval" else rest[1:2] if len(rest) > 1 and not rest[1].startswith("-") else []
+        if code and not any(expands(w) for w in code):
+            return ([] if name == "eval" else rest), [*lines, " ".join(code)], []
+        return rest, lines, []
     if fed:
         # xargs adds what it reads to the words, or writes it where its replace string stands.
         rest = [Word(w, expands=True) if replace and replace in w else w for w in rest]
         rest += [] if replace else [Word("", expands=True)]
-    return rest, more
+    return rest, lines, _found_runs(rest) if name == "find" else []
+
+
+def _found_runs(words: list[Word]) -> list[list[Word]]:
+    """The commands `find` runs on what it finds (`-exec ... ;`), each `{}` only known when it runs."""
+    out: list[list[Word]] = []
+    at = 1
+    while at < len(words):
+        if words[at] in FIND_RUNS:
+            end = at + 1
+            while end < len(words) and words[end] not in (";", "+"):
+                end += 1
+            out.append([Word(w, expands=True) if "{}" in w else w for w in words[at + 1:end]])
+            at = end
+        at += 1
+    return out
 
 
 if __name__ == "__main__":
@@ -476,4 +535,4 @@ if __name__ == "__main__":
     import json
     for command in simple_commands(sys.argv[1]):
         print(json.dumps({"words": list(command.words), "expands": [w.expands for w in command.words],
-                          "stdin": command.stdin}, ensure_ascii=False))
+                          "globs": [w.globs for w in command.words], "stdin": command.stdin}, ensure_ascii=False))

