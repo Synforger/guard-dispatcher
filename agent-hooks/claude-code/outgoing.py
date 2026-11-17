@@ -89,6 +89,7 @@ import apple_events  # noqa: E402
 import curl_options  # noqa: E402
 from service_reads import rclone_reads  # noqa: E402
 from path_forms import resolved  # noqa: E402
+from shell_commands import expands, simple_commands  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
 
 # The words of a tool's own name (`mcp__server__slack_read_channel` -> slack, read, channel), however
@@ -434,49 +435,6 @@ def form_file(ref: str) -> str:
     return ref.split(";", 1)[0]
 
 
-class Command(NamedTuple):
-    words: list[str]
-    stdin: tuple[str, str] | None   # ("file", path) / ("text", here-string) / ("unknown", why)
-
-
-def simple_commands(command: str) -> list[Command]:
-    """The simple commands of a shell command line, each with where its standard input comes
-    from: `< file`, a here-string `<<< text`, or something only known when it runs (a heredoc,
-    or a pipe from the command before). Other redirections are left out, as in shell_words.
-    A line break that ends a command is a `;`. Raises ValueError on an unclosed quote."""
-    lexer = shlex.shlex(with_line_breaks(command), posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    out: list[Command] = []
-    words: list[str] = []
-    stdin: tuple[str, str] | None = None
-    redirect: str | None = None
-    piped = False
-    for word in lexer:
-        if redirect is not None:
-            if redirect == "<":
-                stdin = ("file", word)
-            elif redirect == "<<<":
-                stdin = ("text", word)
-            redirect = None
-            continue
-        if word in SHELL_BREAK:
-            out.append(Command(words, stdin or (("unknown", "a pipe") if piped else None)))
-            piped, words, stdin = word in ("|", "|&"), [], None
-            continue
-        if word and set(word) <= set("<>&-") and set(word) & set("<>"):
-            if words and words[-1].isdigit():   # the fd of `2>`: split off by the lexer
-                words.pop()
-            if word.startswith("<<") and word != "<<<":
-                stdin = ("unknown", "a heredoc")
-            redirect = word
-            continue
-        words.append(word)
-    out.append(Command(words, stdin or (("unknown", "a pipe") if piped else None)))
-    return [c for c in out if c.words]
-
-
-# A body whose text the shell makes when the command runs: a substitution or a variable.
-RUNTIME_TEXT = re.compile(r"[`$]")
 # Body values that send the command's standard input.
 STDIN_REFS = {"@-", "-", "<-"}
 
@@ -511,7 +469,7 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
             value = inline if eq else (words[j + 1] if takes and j + 1 < len(words) else None)
             if flag in body_flags and value is not None:
                 ref = value.split("=", 1)[1] if flag in ("-F", "--form") and "=" in value else value
-                if RUNTIME_TEXT.search(value):
+                if expands(value):
                     unknown = "a substitution or a variable"
                 elif ref in STDIN_REFS or (tool == "wget" and value == "-"):
                     kind, source = stdin or ("text", "")
@@ -544,12 +502,12 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
                     unreadable += files
                 elif from_file:
                     unknown = "headers read from the standard input"
-                elif RUNTIME_TEXT.search(value) and flag not in CURL_CREDENTIALS and \
+                elif expands(value) and flag not in CURL_CREDENTIALS and \
                         not value.strip().lower().startswith(CREDENTIAL_HEADER):
                     unknown = "a substitution or a variable"
             elif not w.startswith("-"):
                 urls.append(w)
-                if RUNTIME_TEXT.search(w):
+                if expands(w):
                     unknown = "a substitution or a variable"
             j += 2 if takes else 1
         places = [p for p in map(place_of, urls) if p]
@@ -708,6 +666,10 @@ def stdin_payload(stdin, cwd: str, send_scan: Path) -> tuple[str, list[tuple[Pat
         return "", [], source
     if kind == "text":
         return source, [], None
+    path = Path(os.path.expanduser(source))
+    if not (path if path.is_absolute() else Path(cwd) / path).exists():
+        # The shell cannot open it, unless the command line makes it before this command runs.
+        return "", [], "a file that is not there before the command runs"
     text, files = local_payload(source, cwd, send_scan)
     return text, files, None
 
@@ -739,11 +701,12 @@ def shell_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) -
     carried = positional[1:] if tool == "ssh" else []
     if tool != "ssh" and ({"-e", "-c"} & flags):
         unknown = unknown or "a program nc runs"
-    if any(RUNTIME_TEXT.search(w) for w in carried):
+    if any(expands(w) for w in carried):
         unknown = unknown or "a substitution or a variable"
     if not (carried or stdin):
         return []
-    payload = "\n".join([*carried, text])
+    # ssh sends its remote command as one line, its words joined by spaces.
+    payload = "\n".join([" ".join(carried), text]) if carried else text
     # A command that names folders of areas on that machine is judged as sent into them; one that
     # names none, by the machine's own line.
     roots = remote_roots(send_scan) if tool == "ssh" else []
@@ -810,7 +773,7 @@ def http_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]
         else:
             texts.append(item)
     text, files, unknown = stdin_payload(stdin, cwd, send_scan)
-    unknown = unknown or ("a substitution or a variable" if any(RUNTIME_TEXT.search(i) for i in items) else None)
+    unknown = unknown or ("a substitution or a variable" if any(expands(i) for i in items) else None)
     if not (items or stdin or method in SENDING_METHODS) or not place:
         return []
     return [Send(place, "\n".join([*texts, text]), unreadable + files, unknown)]
@@ -878,7 +841,7 @@ def ws_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
     places = list(dict.fromkeys(p for p in (place_of(w) for w in words if WS_ADDRESS.match(w)) if p))
     said = [words[i + 1] for i, w in enumerate(words[:-1]) if w in WS_MESSAGE]
     text, unreadable, unknown = stdin_payload(stdin, cwd, send_scan)
-    if any(RUNTIME_TEXT.search(w) for w in said):
+    if any(expands(w) for w in said):
         unknown = unknown or "a substitution or a variable"
     if not (said or stdin):
         return []
@@ -914,15 +877,26 @@ def tmux_sends(words: list[str]) -> list[Send]:
     """tmux typing into a pane (`send-keys`, `paste-buffer`, `pipe-pane`), named `tmux:<session>`:
     the keys land in that terminal as if typed there. Like a `local:` name it stays on this
     machine, so only a line of destinations.txt that names `tmux:` reaches it. A typing command
-    wrapped in another (`run-shell`, `if-shell`) is named `tmux:?`."""
+    wrapped in another (`run-shell`, `if-shell`) is named `tmux:?`. A `;` word (`\\;` to the shell)
+    ends one tmux command and starts the next."""
     server, j = [], 0
     while j < len(words) and words[j].startswith("-"):
         take = 2 if words[j] in TMUX_SERVER_VALUED else 1
         server += words[j:j + take]
         j += take
-    if j >= len(words):
-        return []
-    verb, rest = words[j], words[j + 1:]
+    out, command = [], []
+    for word in [*words[j:], ";"]:
+        if word == ";":
+            out += tmux_command(server, command) if command else []
+            command = []
+        else:
+            command.append(word)
+    return out
+
+
+def tmux_command(server: list[str], words: list[str]) -> list[Send]:
+    """The send of one tmux command, after the server's options (tmux_sends)."""
+    verb, rest = words[0], words[1:]
     if verb not in TMUX_TYPES:
         inside = [w for w in rest if TMUX_TYPES_INSIDE.search(w)]
         return [Send("tmux:?", "\n".join(inside), [])] if inside else []
@@ -1005,9 +979,6 @@ def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
             out += ws_sends(args, stdin, cwd, send_scan)
         elif tool == "tmux":
             out += tmux_sends(args)
-        elif tool in TMUX_TYPES - {"send"}:
-            # the rest of `tmux new-window \\; send-keys ...`: the shell reader splits at tmux's own `;`
-            out += tmux_sends(words)
         elif tool == "sftp":
             hosts = [p.rsplit("@", 1)[-1].split(":", 1)[0] for p in split_options(args, VALUED["scp"])[1]]
             out += [Send(f"host:{h}", "", [], "sftp takes its commands as it runs") for h in hosts[:1]]
@@ -1134,7 +1105,7 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
             if tool == "Bash" and (unreadable or not written_in(payload, args.get("command") or "")):
                 return (f"outgoing: not sent to {name}: a send there needs the operator's order, and a command "
                         f"is matched against a shown call only when what it sends is written in the command "
-                        f"itself: put the body in the command (`-d '...'`), not in a file or a here-document")
+                        f"itself: put the body in the command (`-d '...'`, or a heredoc whose delimiter is quoted), not in a file")
             why, ordered = order_module().ordered(tool, args, event)
             if why:
                 return f"outgoing: not sent to {name}: {why}"
