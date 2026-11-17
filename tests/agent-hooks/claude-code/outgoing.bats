@@ -1446,6 +1446,55 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
     passed
 }
 
+@test "outgoing: curl's short options are read as curl reads them, joined to their value or bundled" {
+    held
+    destinations 'host:api.example.com company'
+    printf '%s\n' "${CLIENT_TEXT}" > "${H}/body.txt"
+    printf 'X-Note: %s\n' "${CLIENT_TEXT}" > "${H}/headers.txt"
+    printf 'data = "%s"\n' "${CLIENT_TEXT}" > "${H}/curl.conf"
+    local command
+    for command in "curl -sSd @${H}/body.txt -X POST https://api.example.com/v1/pages" \
+                   "curl -d@${H}/body.txt https://api.example.com/v1/pages" \
+                   "curl -sH @${H}/headers.txt https://api.example.com/v1/status" \
+                   "curl -H@${H}/headers.txt https://api.example.com/v1/status" \
+                   "curl -K${H}/curl.conf https://api.example.com/v1/pages" \
+                   "curl -Fnote=@${H}/body.txt https://api.example.com/v1/pages"; do
+        bash_call "${command}"
+        denied || { echo "passed: ${command}"; return 1; }
+        [[ "${output}" == *"client"* ]] || { echo "not scanned: ${command}"; return 1; }
+    done
+    bash_call "curl \"-HX-Note: \$(cat ${H}/body.txt)\" https://api.example.com/v1/status"
+    denied
+    [[ "${output}" == *"a substitution or a variable"* ]]
+    bash_call "curl -sW https://api.example.com/v1/status"
+    denied
+    [[ "${output}" == *"a curl option it does not know"* ]]
+    bash_call "curl -sS \"-ume:\$(cat ${H}/key)\" https://api.example.com/v1/status"
+    passed
+}
+
+@test "order: a body joined to a short option or bundled with others is never ordered past from a file" {
+    held
+    destinations 'host:api.example.com company order'
+    printf 'a body kept in a file\n' > "${H}/body.txt"
+    local command
+    for command in "curl -sSd @${H}/body.txt -X POST https://api.example.com/v1/pages" \
+                   "curl -d@${H}/body.txt https://api.example.com/v1/pages" \
+                   "curl -Kbody.txt https://api.example.com/v1/pages"; do
+        said "post it"
+        replied "$(printf '```send\ntool: Bash\ncommand:\n%s\n```' "${command}")"
+        said "送信して"
+        ordered Bash "$(jq -n --arg c "${command}" '{command: $c}')"
+        denied || { echo "passed: ${command}"; return 1; }
+    done
+    command="curl -sSd 'a line' -X POST https://api.example.com/v1/pages"
+    said "post it"
+    replied "$(printf '```send\ntool: Bash\ncommand:\n%s\n```' "${command}")"
+    said "送信して"
+    ordered Bash "$(jq -n --arg c "${command}" '{command: $c}')"
+    passed
+}
+
 @test "order: a POST whose path reads passes a destination held to an order; one that writes does not" {
     held
     destinations 'host:api.example.com company order'

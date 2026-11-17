@@ -130,12 +130,17 @@ MAX_FILE = 8 * 1024 * 1024
 # git's own test of a binary: a NUL in this many bytes at the head of the file.
 TEXT_PROBE = 8192
 LOOPBACK = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+# curl's short options (`curl --help all`), read one letter at a time as curl reads a word that
+# opens with one `-`: a letter that takes a value takes the rest of the word, or the next word
+# (`-sSd @f` is `-s -S -d @f`, `-d@f` is `-d @f`). A letter in neither set is read as unknown.
+CURL_SHORT_VALUED = frozenset("EKCbcdDFPHhmoxUQreXYytzTuAw")
+CURL_SHORT_FLAGS = frozenset("aqfGgI0ik46jlLMn:NZ#JORSs2318Bvp" + "V")
 CURL_BODY = {"-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode",
              "-F", "--form", "--form-string", "--json", "-T", "--upload-file"}
 CURL_TAKES_VALUE = CURL_BODY | {"-X", "--request", "-H", "--header", "-o", "--output", "-u", "--user",
                                 "-A", "--user-agent", "-e", "--referer", "-b", "--cookie", "-c", "--cookie-jar",
                                 "--url", "-x", "--proxy", "-m", "--max-time", "-w", "--write-out",
-                                "-K", "--config"}
+                                "-K", "--config"} | {f"-{letter}" for letter in CURL_SHORT_VALUED}
 # curl options whose value reaches the destination besides the body: a header, the user, the agent,
 # the referer, a cookie, the URL. A substitution or a variable there sends what is only known when
 # the command runs, except in a credential (`-u`, an `Authorization:` header), which the service
@@ -471,6 +476,33 @@ RUNTIME_TEXT = re.compile(r"[`$]")
 STDIN_REFS = {"@-", "-", "<-"}
 
 
+def curl_words(words: list[str]) -> tuple[list[str], str | None]:
+    """The words of a curl command with each word of short options split as curl splits it, one
+    option a word and its value the next (`-sSd @f` -> `-s -S -d @f`); and why the words cannot be
+    read, when a letter is no option this knows."""
+    out, odd, at = words[:1], None, 1
+    while at < len(words):
+        word = words[at]
+        at += 1
+        if not word.startswith("-") or word.startswith("--") or word == "-":
+            out.append(word)
+            continue
+        for place, letter in enumerate(word[1:], start=1):
+            out.append(f"-{letter}")
+            if letter in CURL_SHORT_VALUED:
+                rest = word[place + 1:]
+                if rest:
+                    out.append(rest)
+                elif at < len(words):
+                    out.append(words[at])
+                    at += 1
+                break
+            if letter not in CURL_SHORT_FLAGS:
+                odd = f"a curl option it does not know ({word})"
+                break
+    return out, odd
+
+
 def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
     """The send of each curl / wget in the command that sends a body or a file.
 
@@ -489,6 +521,8 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
         body_flags = CURL_BODY if tool == "curl" else WGET_BODY
         takes_value = CURL_TAKES_VALUE if tool == "curl" else WGET_BODY
         j, body, unreadable, urls, method, unknown = 1, [], [], [], None, None
+        if tool == "curl":
+            words, unknown = curl_words(words)
         while j < len(words):
             w = words[j]
             flag, eq, inline = w.partition("=") if w.startswith("--") else (w, "", "")
@@ -1120,7 +1154,7 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
             continue
         ordered = None
         if needs_order and not reading and not order_module().is_draft(tool):
-            if tool == "Bash" and not written_in(payload, args.get("command") or ""):
+            if tool == "Bash" and (unreadable or not written_in(payload, args.get("command") or "")):
                 return (f"outgoing: not sent to {name}: a send there needs the operator's order, and a command "
                         f"is matched against a shown call only when what it sends is written in the command "
                         f"itself: put the body in the command (`-d '...'`), not in a file or a here-document")
