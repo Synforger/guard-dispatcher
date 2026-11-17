@@ -1410,6 +1410,42 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
     [[ "$(reason)" == *"Write the body in the command"* ]]
 }
 
+@test "order: what a command sends from a config, a header file or a value made as it runs is never ordered past" {
+    held
+    destinations 'host:api.example.com company order'
+    printf 'data = "a body kept in a config"\n' > "${H}/curl.conf"
+    printf 'X-Note: a note kept in a file\n' > "${H}/headers.txt"
+    local command
+    for command in "curl -s -K ${H}/curl.conf https://api.example.com/v1/pages" \
+                   "curl -s -H @${H}/headers.txt -d 'x' https://api.example.com/v1/pages" \
+                   "curl -s -H \"X-Note: \$(cat ${H}/headers.txt)\" -d 'x' https://api.example.com/v1/pages" \
+                   "curl -s -H \"X-Note: \$NOTE\" -d 'x' https://api.example.com/v1/pages" \
+                   "curl -s -d 'x' \"https://api.example.com/v1/pages?q=\$(cat ${H}/headers.txt)\""; do
+        said "post it"
+        replied "$(printf '```send\ntool: Bash\ncommand:\n%s\n```' "${command}")"
+        said "送信して"
+        ordered Bash "$(jq -n --arg c "${command}" '{command: $c}')"
+        denied || { echo "passed: ${command}"; return 1; }
+    done
+}
+
+@test "outgoing: a header file and a config are read and scanned like a body, and a value made as it runs is refused" {
+    held
+    destinations 'host:api.example.com company'
+    printf 'X-Note: %s\n' "${CLIENT_TEXT}" > "${H}/headers.txt"
+    bash_call "curl -s -H @${H}/headers.txt https://api.example.com/v1/status"
+    denied
+    [[ "${output}" == *"client"* ]]
+    printf 'header = "X-Note: %s"\n' "${CLIENT_TEXT}" > "${H}/curl.conf"
+    bash_call "curl -s -K ${H}/curl.conf https://api.example.com/v1/status"
+    denied
+    bash_call "curl -s \"https://api.example.com/v1/blocks/\$ID\""
+    denied
+    [[ "${output}" == *"a substitution or a variable"* ]]
+    bash_call "curl -s https://api.example.com/v1/blocks/0f3c9a -H \"Authorization: Bearer \$(cat ${H}/key)\" -u \"me:\$TOKEN\""
+    passed
+}
+
 @test "order: a POST whose path reads passes a destination held to an order; one that writes does not" {
     held
     destinations 'host:api.example.com company order'

@@ -134,7 +134,17 @@ CURL_BODY = {"-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--d
              "-F", "--form", "--form-string", "--json", "-T", "--upload-file"}
 CURL_TAKES_VALUE = CURL_BODY | {"-X", "--request", "-H", "--header", "-o", "--output", "-u", "--user",
                                 "-A", "--user-agent", "-e", "--referer", "-b", "--cookie", "-c", "--cookie-jar",
-                                "--url", "-x", "--proxy", "-m", "--max-time", "-w", "--write-out"}
+                                "--url", "-x", "--proxy", "-m", "--max-time", "-w", "--write-out",
+                                "-K", "--config"}
+# curl options whose value reaches the destination besides the body: a header, the user, the agent,
+# the referer, a cookie, the URL. A substitution or a variable there sends what is only known when
+# the command runs, except in a credential (`-u`, an `Authorization:` header), which the service
+# takes and keeps nowhere.
+CURL_SENT = {"-H", "--header", "-u", "--user", "-A", "--user-agent", "-e", "--referer", "-b", "--cookie", "--url"}
+CURL_CREDENTIALS = {"-u", "--user"}
+CREDENTIAL_HEADER = "authorization:"
+# curl options that read more options (a body, headers, the URL) from a file.
+CURL_CONFIG = {"-K", "--config"}
 WGET_BODY = {"--post-data", "--post-file", "--body-data", "--body-file"}
 SENDING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # Words of a shell command that end one command and start the next.
@@ -505,8 +515,31 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
                     unreadable += files
             elif flag in ("-X", "--request") and value:
                 method = value.upper()
+            elif tool == "curl" and flag in CURL_CONFIG and value is not None:
+                if value in STDIN_REFS:
+                    unknown = "options read from the standard input"
+                else:
+                    text, files = body_text(tool, "-d", "@" + value, cwd, send_scan)
+                    body.append(text)
+                    unreadable += files
+            elif tool == "curl" and flag in CURL_SENT and value is not None:
+                if flag == "--url":
+                    urls.append(value)
+                from_file = (flag in ("-H", "--header") and value.startswith("@")) or \
+                    (flag in ("-b", "--cookie") and "=" not in value)
+                if from_file and value.lstrip("@") not in STDIN_REFS:
+                    text, files = body_text(tool, "-d", "@" + value.lstrip("@"), cwd, send_scan)
+                    body.append(text)
+                    unreadable += files
+                elif from_file:
+                    unknown = "headers read from the standard input"
+                elif RUNTIME_TEXT.search(value) and flag not in CURL_CREDENTIALS and \
+                        not value.strip().lower().startswith(CREDENTIAL_HEADER):
+                    unknown = "a substitution or a variable"
             elif not w.startswith("-"):
                 urls.append(w)
+                if RUNTIME_TEXT.search(w):
+                    unknown = "a substitution or a variable"
             j += 2 if takes else 1
         places = [p for p in map(place_of, urls) if p]
         # A POST whose path reads (a search, a query) to a service out of this machine: its body
@@ -1090,7 +1123,7 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
             if tool == "Bash" and not written_in(payload, args.get("command") or ""):
                 return (f"outgoing: not sent to {name}: a send there needs the operator's order, and a command "
                         f"is matched against a shown call only when what it sends is written in the command "
-                        f"itself: put the body in the command (`-d '...'` or a here-document), not in a file")
+                        f"itself: put the body in the command (`-d '...'`), not in a file or a here-document")
             why, ordered = order_module().ordered(tool, args, event)
             if why:
                 return f"outgoing: not sent to {name}: {why}"
