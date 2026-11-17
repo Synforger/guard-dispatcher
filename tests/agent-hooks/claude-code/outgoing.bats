@@ -1473,6 +1473,24 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
     passed
 }
 
+@test "outgoing: a long option's value that opens with - is its value, and an option curl has but this does not know is refused" {
+    held
+    destinations 'host:api.example.com company'
+    bash_call "curl -s -X POST https://api.example.com/v1/pages --data '-${CLIENT_TEXT}'"
+    denied
+    [[ "${output}" == *"client"* ]]
+    bash_call "curl -s --data-binary '-hello there' --cacert /etc/ssl/cert.pem https://api.example.com/v1/pages"
+    passed
+    bash_call "curl -s --url-query 'q=${CLIENT_TEXT}' https://api.example.com/v1/status"
+    denied
+    [[ "${output}" == *"client"* ]]
+    bash_call "curl -s --expand-data '{{body}}' https://api.example.com/v1/pages"
+    denied
+    [[ "${output}" == *"a curl option it does not know (--expand-data)"* ]]
+    bash_call "curl -s --no-progress-meter --no-silent https://api.example.com/v1/status"
+    passed
+}
+
 @test "order: a body joined to a short option or bundled with others is never ordered past from a file" {
     held
     destinations 'host:api.example.com company order'

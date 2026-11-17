@@ -86,6 +86,7 @@ from urllib.parse import unquote_plus, urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_events  # noqa: E402
+import curl_options  # noqa: E402
 from service_reads import rclone_reads  # noqa: E402
 from path_forms import resolved  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
@@ -130,17 +131,12 @@ MAX_FILE = 8 * 1024 * 1024
 # git's own test of a binary: a NUL in this many bytes at the head of the file.
 TEXT_PROBE = 8192
 LOOPBACK = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
-# curl's short options (`curl --help all`), read one letter at a time as curl reads a word that
-# opens with one `-`: a letter that takes a value takes the rest of the word, or the next word
-# (`-sSd @f` is `-s -S -d @f`, `-d@f` is `-d @f`). A letter in neither set is read as unknown.
-CURL_SHORT_VALUED = frozenset("EKCbcdDFPHhmoxUQreXYytzTuAw")
-CURL_SHORT_FLAGS = frozenset("aqfGgI0ik46jlLMn:NZ#JORSs2318Bvp" + "V")
 CURL_BODY = {"-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode",
-             "-F", "--form", "--form-string", "--json", "-T", "--upload-file"}
+             "-F", "--form", "--form-string", "--json", "-T", "--upload-file", "--url-query"}
 CURL_TAKES_VALUE = CURL_BODY | {"-X", "--request", "-H", "--header", "-o", "--output", "-u", "--user",
                                 "-A", "--user-agent", "-e", "--referer", "-b", "--cookie", "-c", "--cookie-jar",
                                 "--url", "-x", "--proxy", "-m", "--max-time", "-w", "--write-out",
-                                "-K", "--config"} | {f"-{letter}" for letter in CURL_SHORT_VALUED}
+                                "-K", "--config"} | curl_options.VALUED
 # curl options whose value reaches the destination besides the body: a header, the user, the agent,
 # the referer, a cookie, the URL. A substitution or a variable there sends what is only known when
 # the command runs, except in a credential (`-u`, an `Authorization:` header), which the service
@@ -476,33 +472,6 @@ RUNTIME_TEXT = re.compile(r"[`$]")
 STDIN_REFS = {"@-", "-", "<-"}
 
 
-def curl_words(words: list[str]) -> tuple[list[str], str | None]:
-    """The words of a curl command with each word of short options split as curl splits it, one
-    option a word and its value the next (`-sSd @f` -> `-s -S -d @f`); and why the words cannot be
-    read, when a letter is no option this knows."""
-    out, odd, at = words[:1], None, 1
-    while at < len(words):
-        word = words[at]
-        at += 1
-        if not word.startswith("-") or word.startswith("--") or word == "-":
-            out.append(word)
-            continue
-        for place, letter in enumerate(word[1:], start=1):
-            out.append(f"-{letter}")
-            if letter in CURL_SHORT_VALUED:
-                rest = word[place + 1:]
-                if rest:
-                    out.append(rest)
-                elif at < len(words):
-                    out.append(words[at])
-                    at += 1
-                break
-            if letter not in CURL_SHORT_FLAGS:
-                odd = f"a curl option it does not know ({word})"
-                break
-    return out, odd
-
-
 def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
     """The send of each curl / wget in the command that sends a body or a file.
 
@@ -522,7 +491,7 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
         takes_value = CURL_TAKES_VALUE if tool == "curl" else WGET_BODY
         j, body, unreadable, urls, method, unknown = 1, [], [], [], None, None
         if tool == "curl":
-            words, unknown = curl_words(words)
+            words, unknown = curl_options.curl_words(words)
         while j < len(words):
             w = words[j]
             flag, eq, inline = w.partition("=") if w.startswith("--") else (w, "", "")
