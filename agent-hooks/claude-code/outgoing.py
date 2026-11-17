@@ -421,8 +421,17 @@ def body_text(tool: str, flag: str, value: str, cwd: str, send_scan: Path) -> tu
     if flag == "--data-urlencode" and "@" in value and "=" not in value.split("@", 1)[0]:
         ref = "@" + value.split("@", 1)[1]
     if ref[:1] in ("@", "<") and ref[1:] != "-":
-        return contents(ref[1:])
+        return contents(form_file(ref[1:]) if flag in ("-F", "--form") else ref[1:])
     return value, []
+
+
+def form_file(ref: str) -> str:
+    """The file name of a form part, as curl reads it: up to the first `;` that starts the part's
+    attributes (`body.txt;type=text/plain`), or the text in double quotes when it opens with one."""
+    if ref.startswith('"'):
+        end = ref.find('"', 1)
+        return ref[1:end] if end > 0 else ref[1:]
+    return ref.split(";", 1)[0]
 
 
 class Command(NamedTuple):
@@ -519,12 +528,8 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
             elif flag in ("-X", "--request") and value:
                 method = value.upper()
             elif tool == "curl" and flag in CURL_CONFIG and value is not None:
-                if value in STDIN_REFS:
-                    unknown = "options read from the standard input"
-                else:
-                    text, files = body_text(tool, "-d", "@" + value, cwd, send_scan)
-                    body.append(text)
-                    unreadable += files
+                # A config holds options as a command line does, and may name more files to send.
+                unknown = "options read from a config file"
             elif tool == "curl" and flag in CURL_SENT and value is not None:
                 if flag == "--url":
                     urls.append(value)

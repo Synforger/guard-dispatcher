@@ -1429,7 +1429,7 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
     done
 }
 
-@test "outgoing: a header file and a config are read and scanned like a body, and a value made as it runs is refused" {
+@test "outgoing: a header file is read and scanned like a body, and a config or a value made as it runs is refused" {
     held
     destinations 'host:api.example.com company'
     printf 'X-Note: %s\n' "${CLIENT_TEXT}" > "${H}/headers.txt"
@@ -1457,8 +1457,9 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
                    "curl -d@${H}/body.txt https://api.example.com/v1/pages" \
                    "curl -sH @${H}/headers.txt https://api.example.com/v1/status" \
                    "curl -H@${H}/headers.txt https://api.example.com/v1/status" \
-                   "curl -K${H}/curl.conf https://api.example.com/v1/pages" \
-                   "curl -Fnote=@${H}/body.txt https://api.example.com/v1/pages"; do
+                   "curl -Fnote=@${H}/body.txt https://api.example.com/v1/pages" \
+                   "curl -F 'note=@${H}/body.txt;type=text/plain' https://api.example.com/v1/pages" \
+                   "curl -F 'note=<\"${H}/body.txt\";filename=a.txt' https://api.example.com/v1/pages"; do
         bash_call "${command}"
         denied || { echo "passed: ${command}"; return 1; }
         [[ "${output}" == *"client"* ]] || { echo "not scanned: ${command}"; return 1; }
@@ -1466,6 +1467,9 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
     bash_call "curl \"-HX-Note: \$(cat ${H}/body.txt)\" https://api.example.com/v1/status"
     denied
     [[ "${output}" == *"a substitution or a variable"* ]]
+    bash_call "curl -K${H}/curl.conf https://api.example.com/v1/pages"
+    denied
+    [[ "${output}" == *"options read from a config file"* ]]
     bash_call "curl -sW https://api.example.com/v1/status"
     denied
     [[ "${output}" == *"a curl option it does not know"* ]]
