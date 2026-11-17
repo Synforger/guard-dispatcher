@@ -1449,6 +1449,7 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
 @test "order: a POST whose path reads passes a destination held to an order; one that writes does not" {
     held
     destinations 'host:api.example.com company order'
+    said "look it up"
     local reads writes
     for reads in "curl -s -X POST https://api.example.com/v1/search -d '{\"query\": \"weekly notes\"}'" \
                  "curl -s https://api.example.com/v1/databases/0f3c9a/query --json '{\"page_size\": 10}'" \
@@ -1464,7 +1465,7 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
                   "curl -s -X POST https://api.example.com/graphql -d '{\"query\": \"{ viewer { login } }\"}'"; do
         ordered Bash "$(jq -n --arg c "${writes}" '{command: $c}')"
         denied || { echo "passed: ${writes}"; return 1; }
-        [[ "${output}" == *"needs the operator's order"* ]]
+        [[ "${output}" == *"orders no send"* ]]
     done
 }
 
