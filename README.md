@@ -863,10 +863,23 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   URL, the prompt and the query reach the service); for `curl` / `wget`, the body and the files it sends
   (`-d`, `--data*`, `--json`, `-F`, `-T`, `--post-*`, or `-X POST|PUT|PATCH`),
   including what they read from standard input (`@-`, `-T -`) when it comes
-  from `< file` or a here-string. A body only known when the command runs —
-  a `$(…)` or backtick substitution, a variable, or standard input from a
-  pipe or a heredoc — cannot be scanned and is refused when it goes to a
-  declared destination; write it to a file and send the file instead.
+  from `< file`, a here-string or a heredoc. A body only known when the command runs —
+  a `$(…)` or backtick substitution, a variable this machine's shell fills in, standard
+  input from a pipe, a heredoc whose delimiter is not quoted and that holds a `$`, a
+  backtick or a backslash the shell takes out, a file named by a pattern the shell expands
+  (`*`, `?`, `[ab]`, `{a,b}`), a file the command line writes or that is not there yet, the
+  files `find -exec` is handed, or what the shell writes to `/dev/tcp/<host>/<port>` —
+  cannot be scanned and is
+  refused when it goes to a declared destination; write it to a file and send the file
+  instead. A `$` inside single quotes is sent as written (the remote shell fills it in),
+  and a variable the command line set to a literal before (`S=/a; ssh h < $S/x`) is
+  written out. The command line is read as Bash runs it (`_common/shell_commands.py`):
+  a send inside a loop, a condition, a `{ … }` group, a function, a `coproc`, a `$(…)` or
+  backtick substitution (inside double quotes, `$((…))` and `${…}` too), a process
+  substitution, after an assignment, behind a program that runs the next words (`sudo`,
+  `env`, `timeout`, `nohup`, `nice`, `xargs`, …), in `eval`, `trap`, `watch` or GNU `parallel`, after `find -exec`,
+  or in a command ssh runs on this machine (`-o ProxyCommand=…`, `LocalCommand`, rsync's
+  `-e`) is read like one standing alone.
   Other network commands are read the same way: `scp` / `rsync` (the local
   files copied to a remote host; a folder counts as a file that cannot be
   scanned), `ssh` / `nc` (the remote command and standard input), `mail` /
@@ -1225,8 +1238,11 @@ other machine's client themselves: block the client's typing endpoint, and
 declare the other machine's host (`host:<name>   block`).
 
 A reading call and a tool that drafts (its name says `draft`) need no order.
-A command (`curl` and the like) never sends to such a destination: it cannot
-be matched against a shown call. What a send there carries reaches people only
+A command (`curl` and the like) is matched against a shown call only when
+everything it sends is written in the command itself: a body in `-d '...'`, or
+in a heredoc whose delimiter is quoted (`<<'EOF'`). A body it reads from a
+file, a pipe, a config or a variable is refused, since the shown call does not
+hold it. What a send there carries reaches people only
 after the operator has read it (the shown call, or the draft the operator
 sends), so it gets the word list and not the private-document scan: a client's
 text the operator has read may go to the company's chat, and a handle or a name
