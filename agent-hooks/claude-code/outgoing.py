@@ -86,6 +86,7 @@ from urllib.parse import unquote_plus, urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_events  # noqa: E402
+import curl_options  # noqa: E402
 from service_reads import rclone_reads  # noqa: E402
 from path_forms import resolved  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
@@ -131,10 +132,20 @@ MAX_FILE = 8 * 1024 * 1024
 TEXT_PROBE = 8192
 LOOPBACK = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 CURL_BODY = {"-d", "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode",
-             "-F", "--form", "--form-string", "--json", "-T", "--upload-file"}
+             "-F", "--form", "--form-string", "--json", "-T", "--upload-file", "--url-query"}
 CURL_TAKES_VALUE = CURL_BODY | {"-X", "--request", "-H", "--header", "-o", "--output", "-u", "--user",
                                 "-A", "--user-agent", "-e", "--referer", "-b", "--cookie", "-c", "--cookie-jar",
-                                "--url", "-x", "--proxy", "-m", "--max-time", "-w", "--write-out"}
+                                "--url", "-x", "--proxy", "-m", "--max-time", "-w", "--write-out",
+                                "-K", "--config"} | curl_options.VALUED
+# curl options whose value reaches the destination besides the body: a header, the user, the agent,
+# the referer, a cookie, the URL. A substitution or a variable there sends what is only known when
+# the command runs, except in a credential (`-u`, an `Authorization:` header), which the service
+# takes and keeps nowhere.
+CURL_SENT = {"-H", "--header", "-u", "--user", "-A", "--user-agent", "-e", "--referer", "-b", "--cookie", "--url"}
+CURL_CREDENTIALS = {"-u", "--user"}
+CREDENTIAL_HEADER = "authorization:"
+# curl options that read more options (a body, headers, the URL) from a file.
+CURL_CONFIG = {"-K", "--config"}
 WGET_BODY = {"--post-data", "--post-file", "--body-data", "--body-file"}
 SENDING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # Words of a shell command that end one command and start the next.
@@ -147,8 +158,11 @@ def place_of(url: str) -> str:
     reaches a `local:` name unless it names one (see send-scan.py): the operator declares the
     local endpoints an agent must not reach, such as one that types into a terminal as the
     operator would."""
-    parts = urlsplit(url if "://" in url else f"http://{url}")
-    host = parts.hostname or ""
+    try:
+        parts = urlsplit(url if "://" in url else f"http://{url}")
+        host = parts.hostname or ""
+    except ValueError:   # a word that is no URL (`[` of a JSON body): no destination
+        return ""
     if host not in LOOPBACK:
         return f"host:{host}" if host else ""
     try:
@@ -407,8 +421,17 @@ def body_text(tool: str, flag: str, value: str, cwd: str, send_scan: Path) -> tu
     if flag == "--data-urlencode" and "@" in value and "=" not in value.split("@", 1)[0]:
         ref = "@" + value.split("@", 1)[1]
     if ref[:1] in ("@", "<") and ref[1:] != "-":
-        return contents(ref[1:])
+        return contents(form_file(ref[1:]) if flag in ("-F", "--form") else ref[1:])
     return value, []
+
+
+def form_file(ref: str) -> str:
+    """The file name of a form part, as curl reads it: up to the first `;` that starts the part's
+    attributes (`body.txt;type=text/plain`), or the text in double quotes when it opens with one."""
+    if ref.startswith('"'):
+        end = ref.find('"', 1)
+        return ref[1:end] if end > 0 else ref[1:]
+    return ref.split(";", 1)[0]
 
 
 class Command(NamedTuple):
@@ -476,6 +499,8 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
         body_flags = CURL_BODY if tool == "curl" else WGET_BODY
         takes_value = CURL_TAKES_VALUE if tool == "curl" else WGET_BODY
         j, body, unreadable, urls, method, unknown = 1, [], [], [], None, None
+        if tool == "curl":
+            words, unknown = curl_options.curl_words(words)
         while j < len(words):
             w = words[j]
             flag, eq, inline = w.partition("=") if w.startswith("--") else (w, "", "")
@@ -502,8 +527,27 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
                     unreadable += files
             elif flag in ("-X", "--request") and value:
                 method = value.upper()
+            elif tool == "curl" and flag in CURL_CONFIG and value is not None:
+                # A config holds options as a command line does, and may name more files to send.
+                unknown = "options read from a config file"
+            elif tool == "curl" and flag in CURL_SENT and value is not None:
+                if flag == "--url":
+                    urls.append(value)
+                from_file = (flag in ("-H", "--header") and value.startswith("@")) or \
+                    (flag in ("-b", "--cookie") and "=" not in value)
+                if from_file and value.lstrip("@") not in STDIN_REFS:
+                    text, files = body_text(tool, "-d", "@" + value.lstrip("@"), cwd, send_scan)
+                    body.append(text)
+                    unreadable += files
+                elif from_file:
+                    unknown = "headers read from the standard input"
+                elif RUNTIME_TEXT.search(value) and flag not in CURL_CREDENTIALS and \
+                        not value.strip().lower().startswith(CREDENTIAL_HEADER):
+                    unknown = "a substitution or a variable"
             elif not w.startswith("-"):
                 urls.append(w)
+                if RUNTIME_TEXT.search(w):
+                    unknown = "a substitution or a variable"
             j += 2 if takes else 1
         places = [p for p in map(place_of, urls) if p]
         # A POST whose path reads (a search, a query) to a service out of this machine: its body
@@ -1050,6 +1094,13 @@ def to_session(to: str, payload: str, event: dict | None) -> str | None:
     return f"outgoing: {why}" if status else None
 
 
+def written_in(payload: str, command: str) -> bool:
+    """Whether every line a command sends is written in the command as it is, so the operator who
+    reads the shown command reads what goes: a body read from a file or made as the command runs
+    is not."""
+    return all(line.strip() in command for line in payload.splitlines() if line.strip())
+
+
 def check(tool: str, args: dict, cwd: str, send_scan: Path,
           marks: frozenset[str] = frozenset(), area_of=lambda path: None, tabs: dict | None = None,
           event: dict | None = None, state: Path | None = None) -> str | None:
@@ -1077,15 +1128,18 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
             continue
         ordered = None
         if needs_order and not reading and not order_module().is_draft(tool):
-            if tool == "Bash":
-                return (f"outgoing: not sent to {name}: a send there needs the operator's order, and a "
-                        f"command cannot be matched against a shown call. Send it through the service's tool")
+            if tool == "Bash" and (unreadable or not written_in(payload, args.get("command") or "")):
+                return (f"outgoing: not sent to {name}: a send there needs the operator's order, and a command "
+                        f"is matched against a shown call only when what it sends is written in the command "
+                        f"itself: put the body in the command (`-d '...'`), not in a file or a here-document")
             why, ordered = order_module().ordered(tool, args, event)
             if why:
                 return f"outgoing: not sent to {name}: {why}"
         if unknown:
+            instead = ("Write the body in the command (`-d '...'`), where the shown call holds it" if ordered
+                       else "Write the body to a file and send that file instead")
             return (f"outgoing: not sent to {name}: its body is only known when the command runs ({unknown}), "
-                    f"so it cannot be scanned. Write the body to a file and send that file instead")
+                    f"so it cannot be scanned. {instead}")
         for path, why in unreadable:
             area = area_of(path)
             if marks or area:

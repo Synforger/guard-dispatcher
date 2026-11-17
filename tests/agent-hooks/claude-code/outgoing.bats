@@ -1348,22 +1348,179 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
     [[ "${output}" == *"not one the agent showed"* ]]
 }
 
-@test "order: a command never sends to a destination held to an order; fetching from it passes" {
+@test "order: a command whose body is written in it passes once shown and ordered; fetching passes without" {
     held
     destinations 'host:hooks.example.com company order'
     said "post it"
     replied "$(printf '```send\ntool: Bash\ncommand:\ncurl -s -d ping https://hooks.example.com/x\n```')"
     said "送信して"
-    ordered Bash "$(jq -n '{command: "curl -s -d ping https://hooks.example.com/x"}')"
-    denied
-    [[ "${output}" == *"needs the operator's order"* ]]
+    ordered Bash "$(jq -n '{command: "curl -s -d ping https://hooks.example.com/x", description: "Post ping"}')"
+    passed
+    ordered Bash "$(jq -n '{command: "curl -s -d ping https://hooks.example.com/x"}')" toolu_2
+    denied                                                # one shown block, one send
+    [[ "${output}" == *"already been spent"* ]]
     ordered Bash "$(jq -n '{command: "curl -s https://hooks.example.com/status"}')"
+    passed
+}
+
+@test "order: a command is refused when its body is not in it, or it is not the shown one" {
+    held
+    destinations 'host:hooks.example.com company order'
+    printf 'a body kept in a file\n' > "${H}/body.txt"
+    said "post it"
+    replied "$(printf '```send\ntool: Bash\ncommand:\ncurl -s -d @%s https://hooks.example.com/x\n```' "${H}/body.txt")"
+    said "送信して"
+    ordered Bash "$(jq -n --arg c "curl -s -d @${H}/body.txt https://hooks.example.com/x" '{command: $c}')"
+    denied
+    [[ "${output}" == *"only when what it sends is written in the command itself"* ]]
+    said "post another"
+    replied "$(printf '```send\ntool: Bash\ncommand:\ncurl -s -d ping https://hooks.example.com/x\n```')"
+    said "送信して"
+    ordered Bash "$(jq -n '{command: "curl -s -d pong https://hooks.example.com/x"}')"
+    denied
+    [[ "${output}" == *"not one the agent showed"* ]]
+    [[ "${output}" == *'```send'* ]]
+}
+
+@test "order: a write to an API whose key comes from a file passes once shown and ordered, its body in -d" {
+    held
+    destinations 'host:api.example.com company order'
+    local command
+    command="$(printf 'curl -s -X PATCH https://api.example.com/v1/blocks/0f3c9a/children -H "Authorization: Bearer $(cat %s/key)" -H "Content-Type: application/json" -d %s{"children": [{"type": "bulleted_list_item", "bulleted_list_item": {"rich_text": [{"text": {"content": "会議の決め"}}]}}]}%s' "${H}" "'" "'")"
+    said "add the line"
+    ordered Bash "$(jq -n --arg c "${command}" '{command: $c}')"
+    denied
+    [[ "$(reason)" == *'```send'* ]]
+    replied "$(printf 'The call:\n\n%s\n' "$(shown_block)")"
+    said "送信して"
+    ordered Bash "$(jq -n --arg c "${command}" '{command: $c}')"
+    passed
+}
+
+@test "order: a body in a here-document is refused with the way that can be ordered, and never breaks the check" {
+    held
+    destinations 'host:api.example.com company order'
+    local command
+    command="$(printf 'curl -s -X PATCH https://api.example.com/v1/blocks/0f3c9a/children --data-binary @- <<%sEOF%s\n{"children": [{"paragraph": {"text": "x"}}]}\nEOF' "'" "'")"
+    said "add the line"
+    replied "$(printf '```send\ntool: Bash\ncommand:\n%s\n```' "${command}")"
+    said "送信して"
+    ordered Bash "$(jq -n --arg c "${command}" '{command: $c}')"
+    denied
+    [[ "$(reason)" == *"Write the body in the command"* ]]
+}
+
+@test "order: what a command sends from a config, a header file or a value made as it runs is never ordered past" {
+    held
+    destinations 'host:api.example.com company order'
+    printf 'data = "a body kept in a config"\n' > "${H}/curl.conf"
+    printf 'X-Note: a note kept in a file\n' > "${H}/headers.txt"
+    local command
+    for command in "curl -s -K ${H}/curl.conf https://api.example.com/v1/pages" \
+                   "curl -s -H @${H}/headers.txt -d 'x' https://api.example.com/v1/pages" \
+                   "curl -s -H \"X-Note: \$(cat ${H}/headers.txt)\" -d 'x' https://api.example.com/v1/pages" \
+                   "curl -s -H \"X-Note: \$NOTE\" -d 'x' https://api.example.com/v1/pages" \
+                   "curl -s -d 'x' \"https://api.example.com/v1/pages?q=\$(cat ${H}/headers.txt)\""; do
+        said "post it"
+        replied "$(printf '```send\ntool: Bash\ncommand:\n%s\n```' "${command}")"
+        said "送信して"
+        ordered Bash "$(jq -n --arg c "${command}" '{command: $c}')"
+        denied || { echo "passed: ${command}"; return 1; }
+    done
+}
+
+@test "outgoing: a header file is read and scanned like a body, and a config or a value made as it runs is refused" {
+    held
+    destinations 'host:api.example.com company'
+    printf 'X-Note: %s\n' "${CLIENT_TEXT}" > "${H}/headers.txt"
+    bash_call "curl -s -H @${H}/headers.txt https://api.example.com/v1/status"
+    denied
+    [[ "${output}" == *"client"* ]]
+    printf 'header = "X-Note: %s"\n' "${CLIENT_TEXT}" > "${H}/curl.conf"
+    bash_call "curl -s -K ${H}/curl.conf https://api.example.com/v1/status"
+    denied
+    bash_call "curl -s \"https://api.example.com/v1/blocks/\$ID\""
+    denied
+    [[ "${output}" == *"a substitution or a variable"* ]]
+    bash_call "curl -s https://api.example.com/v1/blocks/0f3c9a -H \"Authorization: Bearer \$(cat ${H}/key)\" -u \"me:\$TOKEN\""
+    passed
+}
+
+@test "outgoing: curl's short options are read as curl reads them, joined to their value or bundled" {
+    held
+    destinations 'host:api.example.com company'
+    printf '%s\n' "${CLIENT_TEXT}" > "${H}/body.txt"
+    printf 'X-Note: %s\n' "${CLIENT_TEXT}" > "${H}/headers.txt"
+    printf 'data = "%s"\n' "${CLIENT_TEXT}" > "${H}/curl.conf"
+    local command
+    for command in "curl -sSd @${H}/body.txt -X POST https://api.example.com/v1/pages" \
+                   "curl -d@${H}/body.txt https://api.example.com/v1/pages" \
+                   "curl -sH @${H}/headers.txt https://api.example.com/v1/status" \
+                   "curl -H@${H}/headers.txt https://api.example.com/v1/status" \
+                   "curl -Fnote=@${H}/body.txt https://api.example.com/v1/pages" \
+                   "curl -F 'note=@${H}/body.txt;type=text/plain' https://api.example.com/v1/pages" \
+                   "curl -F 'note=<\"${H}/body.txt\";filename=a.txt' https://api.example.com/v1/pages"; do
+        bash_call "${command}"
+        denied || { echo "passed: ${command}"; return 1; }
+        [[ "${output}" == *"client"* ]] || { echo "not scanned: ${command}"; return 1; }
+    done
+    bash_call "curl \"-HX-Note: \$(cat ${H}/body.txt)\" https://api.example.com/v1/status"
+    denied
+    [[ "${output}" == *"a substitution or a variable"* ]]
+    bash_call "curl -K${H}/curl.conf https://api.example.com/v1/pages"
+    denied
+    [[ "${output}" == *"options read from a config file"* ]]
+    bash_call "curl -sW https://api.example.com/v1/status"
+    denied
+    [[ "${output}" == *"a curl option it does not know"* ]]
+    bash_call "curl -sS \"-ume:\$(cat ${H}/key)\" https://api.example.com/v1/status"
+    passed
+}
+
+@test "outgoing: a long option's value that opens with - is its value, and an option curl has but this does not know is refused" {
+    held
+    destinations 'host:api.example.com company'
+    bash_call "curl -s -X POST https://api.example.com/v1/pages --data '-${CLIENT_TEXT}'"
+    denied
+    [[ "${output}" == *"client"* ]]
+    bash_call "curl -s --data-binary '-hello there' --cacert /etc/ssl/cert.pem https://api.example.com/v1/pages"
+    passed
+    bash_call "curl -s --url-query 'q=${CLIENT_TEXT}' https://api.example.com/v1/status"
+    denied
+    [[ "${output}" == *"client"* ]]
+    bash_call "curl -s --expand-data '{{body}}' https://api.example.com/v1/pages"
+    denied
+    [[ "${output}" == *"a curl option it does not know (--expand-data)"* ]]
+    bash_call "curl -s --no-progress-meter --no-silent https://api.example.com/v1/status"
+    passed
+}
+
+@test "order: a body joined to a short option or bundled with others is never ordered past from a file" {
+    held
+    destinations 'host:api.example.com company order'
+    printf 'a body kept in a file\n' > "${H}/body.txt"
+    local command
+    for command in "curl -sSd @${H}/body.txt -X POST https://api.example.com/v1/pages" \
+                   "curl -d@${H}/body.txt https://api.example.com/v1/pages" \
+                   "curl -Kbody.txt https://api.example.com/v1/pages"; do
+        said "post it"
+        replied "$(printf '```send\ntool: Bash\ncommand:\n%s\n```' "${command}")"
+        said "送信して"
+        ordered Bash "$(jq -n --arg c "${command}" '{command: $c}')"
+        denied || { echo "passed: ${command}"; return 1; }
+    done
+    command="curl -sSd 'a line' -X POST https://api.example.com/v1/pages"
+    said "post it"
+    replied "$(printf '```send\ntool: Bash\ncommand:\n%s\n```' "${command}")"
+    said "送信して"
+    ordered Bash "$(jq -n --arg c "${command}" '{command: $c}')"
     passed
 }
 
 @test "order: a POST whose path reads passes a destination held to an order; one that writes does not" {
     held
     destinations 'host:api.example.com company order'
+    said "look it up"
     local reads writes
     for reads in "curl -s -X POST https://api.example.com/v1/search -d '{\"query\": \"weekly notes\"}'" \
                  "curl -s https://api.example.com/v1/databases/0f3c9a/query --json '{\"page_size\": 10}'" \
@@ -1379,7 +1536,7 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
                   "curl -s -X POST https://api.example.com/graphql -d '{\"query\": \"{ viewer { login } }\"}'"; do
         ordered Bash "$(jq -n --arg c "${writes}" '{command: $c}')"
         denied || { echo "passed: ${writes}"; return 1; }
-        [[ "${output}" == *"needs the operator's order"* ]]
+        [[ "${output}" == *"orders no send"* ]]
     done
 }
 
