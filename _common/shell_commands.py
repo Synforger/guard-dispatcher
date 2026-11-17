@@ -56,7 +56,6 @@ RUNS_NEXT: dict[str, tuple[frozenset[str], int]] = {
     "gtimeout": (frozenset({"-s", "--signal", "-k", "--kill-after"}), 1),
     "caffeinate": (frozenset({"-t", "-w"}), 0),
     "stdbuf": (frozenset({"-i", "-o", "-e"}), 0),
-    "watch": (frozenset({"-n", "--interval", "-d"}), 0),
     "chronic": (frozenset(), 0),
     "unbuffer": (frozenset(), 0),
     "xargs": (frozenset({"-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a", "-J", "-R", "-S", "--max-args",
@@ -69,6 +68,17 @@ ENV_SPLIT = frozenset({"-S", "--split-string"})
 XARGS_REPLACE = frozenset({"-I", "--replace", "-J"})
 # find's actions that run the words after them up to a `;` (or `+`), with `{}` the file found.
 FIND_RUNS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+# Programs that join the words after their options into one command line for a shell: (options
+# that take a value, the options that run the words as they are instead, the words that end the
+# command). GNU parallel writes what it reads where a `{...}` stands.
+JOINS: dict[str, tuple[frozenset[str], frozenset[str], frozenset[str]]] = {
+    "watch": (frozenset({"-n", "--interval", "-q", "--equexit"}), frozenset({"-x", "--exec"}), frozenset()),
+    "parallel": (frozenset({"-j", "-P", "-S", "-a", "-n", "-N", "-L", "-l", "-C", "-d", "-E", "-I", "--jobs",
+                            "--sshlogin", "--arg-file", "--max-args", "--colsep", "--delimiter", "--timeout",
+                            "--joblog", "--results", "--tmpdir", "--eof", "--max-replace-args"}),
+                 frozenset(), frozenset({":::", "::::", ":::+", "::::+"})),
+}
+PARALLEL_SLOT = re.compile(r"\{[^{}\s]*\}")
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=.*", re.S)
 # Control operators and redirections, longest first.
 CONTROLS = (";;", "&&", "||", "|&", ";", "|", "&", "(", ")")
@@ -504,15 +514,52 @@ def _program(words: list[Word]) -> tuple[list[Word], list[str], list[list[Word]]
         return [], lines, []
     name = os.path.basename(rest[0])
     if name in ("eval", "trap"):
-        code = rest[1:] if name == "eval" else rest[1:2] if len(rest) > 1 and not rest[1].startswith("-") else []
+        code = rest[1:] if name == "eval" else _trap_action(rest[1:])
         if code and not any(expands(w) for w in code):
             return ([] if name == "eval" else rest), [*lines, " ".join(code)], []
         return rest, lines, []
+    if name in JOINS:
+        return _joined(name, rest)
     if fed:
         # xargs adds what it reads to the words, or writes it where its replace string stands.
         rest = [Word(w, expands=True) if replace and replace in w else w for w in rest]
         rest += [] if replace else [Word("", expands=True)]
     return rest, lines, _found_runs(rest) if name == "find" else []
+
+
+def _trap_action(args: list[Word]) -> list[Word]:
+    """The command line `trap` sets (its first word after `--`), or none for `-p` / `-l` or a reset."""
+    if args[:1] == ["--"]:
+        args = args[1:]
+    elif args[:1] and args[0].startswith("-") and args[0] != "-":
+        return []
+    return args[:1] if args and args[0] != "-" else []
+
+
+def _joined(name: str, words: list[Word]) -> tuple[list[Word], list[str], list[list[Word]]]:
+    """watch / parallel: the words after their options are joined into one command line for a
+    shell, unless an option runs them as they are (`watch -x`). What parallel writes into a
+    `{...}` (or its `-I` string) is only known when it runs."""
+    valued, as_words, ends = JOINS[name]
+    at, slot, direct = 1, None, False
+    while at < len(words) and words[at].startswith("-") and words[at] not in ends:
+        option = words[at]
+        at += 1
+        if option == "--":
+            break
+        direct |= option in as_words
+        if option in valued and at < len(words):
+            slot = words[at] if option == "-I" else slot
+            at += 1
+    end = next((i for i in range(at, len(words)) if words[i] in ends), len(words))
+    command = words[at:end]
+    if not command:
+        return words, [], []
+    if name == "parallel":
+        marked = [Word(PARALLEL_SLOT.sub("${PARALLEL_ARGUMENT}", w) if not slot else w.replace(slot, "${PARALLEL_ARGUMENT}"))
+                  for w in command]
+        return words, [] if direct else [" ".join(marked)], []
+    return words, [] if direct else [" ".join(command)], [command] if direct else []
 
 
 def _found_runs(words: list[Word]) -> list[list[Word]]:

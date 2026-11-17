@@ -166,3 +166,17 @@ EOF"
     [ "$(sed -n 2p <<< "${output}" | jq -r '.stdin[0]')" = "text" ]
     [ "$(sed -n 2p <<< "${output}" | jq -r '.stdin[1]')" = '{"a": "x\ny"}' ]
 }
+
+@test "shell_commands: trap after --, watch and GNU parallel hand their words on as a command line" {
+    local c
+    for c in "trap -- 'ssh h x' EXIT" "watch -n 5 'ssh h x'" "watch -x ssh h x" "watch ssh h x"; do
+        read_line "${c}"
+        grep -q '^{"words": \["ssh", "h", "x"\], "expands": \[false, false, false\],' <<< "${output}" \
+            || { echo "not read: ${c} -> ${output}"; return 1; }
+    done
+    read_line "trap -p; trap - EXIT"
+    [ "$(count)" -eq 2 ]
+    read_line "parallel 'curl -T {} https://a.example/' ::: a b"
+    [ "$(words_of 1)" = "curl|-T|\${PARALLEL_ARGUMENT}|https://a.example/" ]
+    [ "$(expands_of 1)" = "[false,false,true,false]" ]
+}

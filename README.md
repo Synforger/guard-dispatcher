@@ -877,7 +877,7 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   a send inside a loop, a condition, a `{ … }` group, a function, a `coproc`, a `$(…)` or
   backtick substitution (inside double quotes, `$((…))` and `${…}` too), a process
   substitution, after an assignment, behind a program that runs the next words (`sudo`,
-  `env`, `timeout`, `nohup`, `nice`, `xargs`, …), in `eval` or `trap`, after `find -exec`,
+  `env`, `timeout`, `nohup`, `nice`, `xargs`, …), in `eval`, `trap`, `watch` or GNU `parallel`, after `find -exec`,
   or in a command ssh runs on this machine (`-o ProxyCommand=…`, `LocalCommand`, rsync's
   `-e`) is read like one standing alone.
   Other network commands are read the same way: `scp` / `rsync` (the local
