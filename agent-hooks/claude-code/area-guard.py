@@ -2020,8 +2020,17 @@ def main() -> int:
         return area if area != EXEMPT else None
 
     tabs = state.setdefault("tabs", {})
-    if reason := outgoing_module().check(tool, args, cwd, SEND_SCAN, frozenset(marks), private_area, tabs,
-                                         event, STATE):
+    try:
+        reason = outgoing_module().check(tool, args, cwd, SEND_SCAN, frozenset(marks), private_area, tabs,
+                                         event, STATE)
+    except Exception as error:  # noqa: BLE001 — a hook that fails lets the call run: a check that breaks sends nothing
+        where = error.__traceback__
+        while where.tb_next:
+            where = where.tb_next
+        reason = (f"outgoing: the send check broke on this call ({type(error).__name__} in "
+                  f"{where.tb_frame.f_code.co_name}() at line {where.tb_lineno}: {error}), so nothing is sent. "
+                  f"Tell the guard's tab with the command")
+    if reason:
         deny(reason)
         return 0
     # A browser call that opens a tab at a page names that page for the tab's later calls.
