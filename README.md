@@ -1053,6 +1053,45 @@ python3 ~/.git-hooks/agent-hooks/claude-code/peers.py --to <receiver> --text <fi
 # passes only to a session that has read inside each of those areas; scanned like any message besides
 ```
 
+#### Tickets: where a request between sessions is kept
+
+A client that carries a request from session to session can keep it as a
+ticket, a file in a folder named `tickets` that only the client's backend
+writes. Where a ticket sits is the guard's to say, so the rule for it lives in
+one place (`agent-hooks/claude-code/ticket_places.py`) and the relay asks it:
+
+```sh
+peers.py --place-for <session> [--typed-in <session>]   # the folder for a ticket this session opens
+peers.py --to-place <folder> --text <file> [--typed-in <session>]
+peers.py --to <session> --covers-place <folder> [--folder <working folder>]
+peers.py --places [--session <session>]                 # every folder tickets sit in
+```
+
+A ticket opened by a session that has read inside no area sits in
+`<platform root>/state/claude-pwa-client/tickets`. One opened by a session that
+has read inside areas lying one inside the next (a client in its company) sits
+in `<root>/tickets` of the innermost one. When that area has several roots, or
+the folder is inside a git work tree, the area names the folder in its own
+settings (`areas/<area>/tickets.txt`: one line, `~` allowed, `#` starts a
+comment), which must lie in that area alone and outside every git work tree.
+Areas that do not lie one inside the next fit in no place (exit 1), and a
+place that cannot be named is exit 2 with the missing declaration in the line.
+
+A folder stands for a reader who has read inside the areas it lies in most
+closely and the areas around them (none, outside every area). `--to-place`
+judges a message written into it as `--to` judges one to a session, and
+`--covers-place` says whether a session may read all of those areas, by its
+marks or by what its working folder reaches (`--folder`, or the folder its
+running record says it started in). `--places` lists every folder, one per
+line, and with `--session` only those that session may read.
+
+The entry guard holds two lines for them. An agent's Write, Edit or
+NotebookEdit into one of those folders, and a shell command that writes or
+removes there, is refused: a ticket is written through the client, never by
+hand. Reading it passes, and marks the session as reading any file of the area
+does. And a command that runs `peers.py --places` without `--session` is
+refused, because the list names the areas by their folders.
+
 #### What stays on this machine
 
 A service on the loopback host and a tmux session are not ways out of the
