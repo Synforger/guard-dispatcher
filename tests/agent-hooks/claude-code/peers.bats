@@ -488,3 +488,201 @@ TMUX
     bash_call "tmux send-keys go Enter"
     denied
 }
+
+# --- where a ticket sits: the places the client keeps its tickets in ---------------------------
+
+# tickets_setup — a platform root (the place outside every area), and a place in each area: the
+# company's and the client's (`<root>/tickets`).
+tickets_setup() {
+    export AGENT_PLATFORM_ROOT="${H}/platform"
+    OUTSIDE_PLACE="${H}/platform/state/claude-pwa-client/tickets"
+    COMPANY_PLACE="${H}/org/tickets"
+    CLIENT_PLACE="${H}/org/clients/acme/tickets"
+}
+
+@test "peers.py --place-for: no area read sits in the platform's state, a chain of areas in the innermost one" {
+    tickets_setup
+    run python3 "${PEERS}" --place-for "${ID_PLAIN}"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${OUTSIDE_PLACE}" ]
+    run python3 "${PEERS}" --place-for "${ID_COMPANY}"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${COMPANY_PLACE}" ]
+    run python3 "${PEERS}" --place-for "${ID_CLIENT}"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${CLIENT_PLACE}" ]
+    # a session that has read inside the company and the client: the client lies inside the company
+    run python3 "${PEERS}" --place-for "${ID_BOTH}"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${CLIENT_PLACE}" ]
+    # a session is named by its name as well
+    run python3 "${PEERS}" --place-for client
+    [ "${status}" -eq 0 ]; [ "${output}" = "${CLIENT_PLACE}" ]
+}
+
+@test "peers.py --place-for: the marks of the session the operator typed in count too" {
+    tickets_setup
+    run python3 "${PEERS}" --place-for "${ID_PLAIN}" --typed-in "${ID_CLIENT}"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${CLIENT_PLACE}" ]
+    run python3 "${PEERS}" --place-for "${ID_COMPANY}" --typed-in "${ID_CLIENT}"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${CLIENT_PLACE}" ]
+    run python3 "${PEERS}" --place-for "${ID_PLAIN}" --typed-in "${ID_PLAIN}"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${OUTSIDE_PLACE}" ]
+}
+
+@test "peers.py --place-for: areas that do not lie one inside the next fit in no place, and exit 1 says so" {
+    tickets_setup
+    printf '%s\n' 'other ~/other' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mkdir -p "${H}/other"
+    session .claude-work apart "55555555-5555-4555-8555-555555555555" client other
+    run python3 "${PEERS}" --place-for "55555555-5555-4555-8555-555555555555"
+    [ "${status}" -eq 1 ]
+    [[ "${output}" == *"do not fit in one place"* ]]
+    # the second session's marks join the first's: a company session and an unrelated area
+    session .claude-work stray "66666666-6666-4666-8666-666666666666" other
+    run python3 "${PEERS}" --place-for "${ID_CLIENT}" --typed-in "66666666-6666-4666-8666-666666666666"
+    [ "${status}" -eq 1 ]
+}
+
+@test "peers.py --place-for: an area of several roots, or a root inside a git work tree, names its folder in tickets.txt" {
+    tickets_setup
+    printf '%s\n' 'shared ~/s1 ~/s2' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mkdir -p "${H}/s1" "${H}/s2/tix" "${H}/elsewhere" "${GUARD_CONFIG_DIR}/areas/shared"
+    session .claude-work sharer "77777777-7777-4777-8777-777777777777" shared
+    # two roots: no single `<root>/tickets`, and nothing declared
+    run python3 "${PEERS}" --place-for "77777777-7777-4777-8777-777777777777"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"tickets.txt"* ]]
+    # declared, with a comment and `~`
+    printf '%s\n' '# where the tickets of shared sit' '~/s2/tix   # inside the second root' > "${GUARD_CONFIG_DIR}/areas/shared/tickets.txt"
+    run python3 "${PEERS}" --place-for "77777777-7777-4777-8777-777777777777"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${H}/s2/tix" ]
+    # a folder outside the area is no place of it
+    printf '%s\n' '~/elsewhere' > "${GUARD_CONFIG_DIR}/areas/shared/tickets.txt"
+    run python3 "${PEERS}" --place-for "77777777-7777-4777-8777-777777777777"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"not a folder in shared alone outside any git work tree"* ]]
+    # nor is one inside a git work tree
+    printf '%s\n' '~/s2/tix' > "${GUARD_CONFIG_DIR}/areas/shared/tickets.txt"
+    mkdir "${H}/s2/.git"
+    run python3 "${PEERS}" --place-for "77777777-7777-4777-8777-777777777777"
+    [ "${status}" -eq 2 ]
+}
+
+@test "peers.py --place-for: a root that is a git work tree has no tickets folder of its own, and asks for tickets.txt" {
+    tickets_setup
+    mkdir "${H}/org/clients/acme/.git"
+    run python3 "${PEERS}" --place-for "${ID_CLIENT}"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"client has a \`tickets\` folder that is not fit for it"* ]]
+    [[ "${output}" == *"areas/client/tickets.txt"* ]]
+    # the company's own folder is not inside it, so the company still has its place
+    run python3 "${PEERS}" --place-for "${ID_COMPANY}"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${COMPANY_PLACE}" ]
+}
+
+@test "peers.py --place-for: a mark areas.txt no longer names, or no platform root, cannot be judged" {
+    tickets_setup
+    jq -n '{areas: ["retired"], tabs: {}}' > "${AREA_GUARD_STATE}/${ID_PLAIN}.json"
+    run python3 "${PEERS}" --place-for "${ID_PLAIN}"
+    [ "${status}" -eq 2 ]
+    [[ "${output}" == *"no longer names it"* ]]
+    unset AGENT_PLATFORM_ROOT
+    run python3 "${PEERS}" --place-for "${ID_COMPANY}"
+    [ "${status}" -eq 0 ]
+    session .claude-work fresh "88888888-8888-4888-8888-888888888888"
+    run python3 "${PEERS}" --place-for "88888888-8888-4888-8888-888888888888"
+    [ "${status}" -eq 2 ]
+}
+
+@test "peers.py --to-place: a copy of an area's document goes to the place of that area, not to a place outside" {
+    tickets_setup
+    printf '%s\n' "${CLIENT_TEXT}" > "${H}/message.txt"
+    run python3 "${PEERS}" --to-place "${OUTSIDE_PLACE}" --text "${H}/message.txt"
+    [ "${status}" -eq 1 ]
+    [[ "${output}" == *"peers: not sent to place:${OUTSIDE_PLACE}"* ]]
+    run python3 "${PEERS}" --to-place "${COMPANY_PLACE}" --text "${H}/message.txt"
+    [ "${status}" -eq 1 ]
+    run python3 "${PEERS}" --to-place "${CLIENT_PLACE}" --text "${H}/message.txt"
+    [ "${status}" -eq 0 ]; [ -z "${output}" ]
+    # the company's text sits where the company's place is, not in the client's inside it
+    printf '%s\n' "${COMPANY_TEXT}" > "${H}/message.txt"
+    run python3 "${PEERS}" --to-place "${CLIENT_PLACE}" --text "${H}/message.txt"
+    [ "${status}" -eq 1 ]
+    run python3 "${PEERS}" --to-place "${COMPANY_PLACE}" --text "${H}/message.txt"
+    [ "${status}" -eq 0 ]
+    run python3 "${PEERS}" --to-place "${OUTSIDE_PLACE}" --text "${H}/message.txt"
+    [ "${status}" -eq 1 ]
+    # words of the writer's own go anywhere, and so does a name nothing was read of
+    printf '%s\n' "${OWN_TEXT}" > "${H}/message.txt"
+    for place in "${OUTSIDE_PLACE}" "${COMPANY_PLACE}" "${CLIENT_PLACE}"; do
+        run python3 "${PEERS}" --to-place "${place}" --text "${H}/message.txt"
+        [ "${status}" -eq 0 ]
+    done
+    # the name of an area the place's boundaries lack is refused as for a session
+    printf '%s\n' "the acme tab asks for a fix" > "${H}/message.txt"
+    run python3 "${PEERS}" --to-place "${OUTSIDE_PLACE}" --text "${H}/message.txt"
+    [ "${status}" -eq 1 ]
+    [[ "${output}" == *"names 1 area that session has not read inside"* ]]
+}
+
+@test "peers.py --to-place: what the operator typed goes only to a place whose boundaries were all read where it was typed" {
+    tickets_setup
+    printf '%s\n' "fix the wrapped title, the client is waiting" > "${H}/said.txt"
+    run python3 "${PEERS}" --to-place "${OUTSIDE_PLACE}" --text "${H}/said.txt" --typed-in "${ID_PLAIN}"
+    [ "${status}" -eq 0 ]
+    run python3 "${PEERS}" --to-place "${OUTSIDE_PLACE}" --text "${H}/said.txt" --typed-in "${ID_CLIENT}"
+    [ "${status}" -eq 1 ]
+    [[ "${output}" == *"goes only to a session that has read there too"* ]]
+    run python3 "${PEERS}" --to-place "${COMPANY_PLACE}" --text "${H}/said.txt" --typed-in "${ID_CLIENT}"
+    [ "${status}" -eq 1 ]
+    run python3 "${PEERS}" --to-place "${CLIENT_PLACE}" --text "${H}/said.txt" --typed-in "${ID_CLIENT}"
+    [ "${status}" -eq 0 ]
+    run python3 "${PEERS}" --to-place "${CLIENT_PLACE}" --text "${H}/said.txt" --typed-in "${ID_BOTH}"
+    [ "${status}" -eq 0 ]
+}
+
+@test "peers.py --covers-place: a session reads a place's boundaries by its marks, or by where its work folder reaches" {
+    tickets_setup
+    covers() { run python3 "${PEERS}" --to "$1" --covers-place "$2" "${@:3}"; }
+    covers "${ID_CLIENT}" "${CLIENT_PLACE}"; [ "${status}" -eq 0 ]
+    covers "${ID_BOTH}" "${CLIENT_PLACE}"; [ "${status}" -eq 0 ]
+    covers "${ID_COMPANY}" "${CLIENT_PLACE}"; [ "${status}" -eq 1 ]
+    covers "${ID_PLAIN}" "${CLIENT_PLACE}"; [ "${status}" -eq 1 ]
+    covers "${ID_COMPANY}" "${COMPANY_PLACE}"; [ "${status}" -eq 0 ]
+    covers "${ID_CLIENT}" "${COMPANY_PLACE}"; [ "${status}" -eq 0 ]
+    # a place inside no area has no boundary to read
+    covers "${ID_PLAIN}" "${OUTSIDE_PLACE}"; [ "${status}" -eq 0 ]
+    # the folder a session works in reaches the areas around it
+    covers "${ID_PLAIN}" "${CLIENT_PLACE}" --folder "${H}/org/clients/acme"; [ "${status}" -eq 0 ]
+    covers "${ID_PLAIN}" "${CLIENT_PLACE}" --folder "${H}/repos/tool"; [ "${status}" -eq 1 ]
+    # and so does a name its reads file gives
+    printf '%s\n' 'client   # the client these notes are about' > "${H}/repos/tool/guard-reads.txt"
+    covers "${ID_PLAIN}" "${CLIENT_PLACE}" --folder "${H}/repos/tool"; [ "${status}" -eq 0 ]
+    covers "${ID_PLAIN}" "${COMPANY_PLACE}" --folder "${H}/repos/tool"; [ "${status}" -eq 0 ]
+}
+
+@test "peers.py --covers-place: with no --folder the folder the session's running record says it started in counts" {
+    tickets_setup
+    jq -n --arg i "99999999-9999-4999-8999-999999999999" --argjson p "$$" --arg c "${H}/org/clients/acme" \
+        '{pid: $p, sessionId: $i, name: "started", cwd: $c}' > "${H}/.claude/sessions/started.json"
+    run python3 "${PEERS}" --to "99999999-9999-4999-8999-999999999999" --covers-place "${CLIENT_PLACE}"
+    [ "${status}" -eq 0 ]
+    run python3 "${PEERS}" --to "${ID_PLAIN}" --covers-place "${CLIENT_PLACE}"
+    [ "${status}" -eq 1 ]
+}
+
+@test "peers.py --places: every place there is, and with --session only those the session may read" {
+    tickets_setup
+    run python3 "${PEERS}" --places
+    [ "${status}" -eq 0 ]
+    [ "${output}" = "${OUTSIDE_PLACE}"$'\n'"${CLIENT_PLACE}"$'\n'"${COMPANY_PLACE}" ]
+    run python3 "${PEERS}" --places --session "${ID_PLAIN}"
+    [ "${output}" = "${OUTSIDE_PLACE}" ]
+    run python3 "${PEERS}" --places --session "${ID_COMPANY}"
+    [ "${output}" = "${OUTSIDE_PLACE}"$'\n'"${COMPANY_PLACE}" ]
+    run python3 "${PEERS}" --places --session "${ID_CLIENT}"
+    [ "${output}" = "${OUTSIDE_PLACE}"$'\n'"${CLIENT_PLACE}"$'\n'"${COMPANY_PLACE}" ]
+    # an area whose place cannot be named is skipped, not an error
+    printf '%s\n' 'shared ~/s1 ~/s2' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mkdir -p "${H}/s1" "${H}/s2"
+    run python3 "${PEERS}" --places
+    [ "${status}" -eq 0 ]
+    [[ "${output}" != *"s1"* ]]
+}

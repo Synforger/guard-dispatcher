@@ -41,12 +41,34 @@ one. A role is shown only to a session that reads inside the area keeping it:
     peers.py --roles --folder FOLDER [--session SESSION]
                                           `<role>\t<folder>` per line, for every role a session
                                           working in FOLDER (and holding SESSION's marks) may see
+
+A request that travels between sessions is kept as a ticket in a folder named `tickets`, which the
+client's backend alone writes (`ticket_places.py` holds the rule). Where a ticket sits is told here,
+and what is written into it is judged here as a message to a session that has read inside the
+boundaries of that folder:
+
+    peers.py --place-for SESSION [--typed-in SESSION2]
+                                          the folder for a ticket opened by SESSION (and holding what
+                                          the operator typed in SESSION2): exit 0 prints it, 1 when the
+                                          areas read fit in no one place (one line why), 2 cannot judge
+    peers.py --to-place FOLDER --text FILE [--typed-in SESSION]
+                                          judge FILE as a message to the folder's boundaries: as
+                                          `--to`, with them standing for what a session has read
+    peers.py --to SESSION --covers-place FOLDER [--folder WORKING_FOLDER]
+                                          exit 0 when SESSION may read every boundary of FOLDER: the
+                                          areas it has read inside, and those its working folder
+                                          reaches (the folder it started in, unless --folder says), 1 if not
+    peers.py --places [--session SESSION]
+                                          every folder tickets sit in, one per line; with --session
+                                          only those SESSION may read
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import glob
+import importlib.util
 import json
 import os
 import re
@@ -59,6 +81,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import area_roles  # noqa: E402
 import guard_places  # noqa: E402
 from path_forms import resolved  # noqa: E402
+import ticket_places  # noqa: E402
 import work_reads  # noqa: E402
 from children import registry  # noqa: E402
 
@@ -148,30 +171,42 @@ def scan(name: str, payload: Path, areas: list[str]) -> tuple[int, str]:
     return (1 if r.returncode == 1 else 2), why
 
 
+def judge_for(name: str, payload: Path, area_sets: list[list[str]]) -> tuple[int, str]:
+    """(exit status, the line why) for a message to the destination `name`, judged as bound for a
+    reader that has read inside each set of areas in turn: the first set that refuses decides."""
+    for areas in area_sets:
+        status, why = scan(name, payload, areas)
+        if status:
+            return status, why
+    return 0, ""
+
+
 def judge(to: str, payload: Path) -> tuple[int, str]:
     """(exit status, the line why) for a message to `to`. A name no session here carries is a
     session elsewhere (another machine, the cloud) as far as this machine can tell: it is judged
     as one that has read nothing. Several sessions of one name must each take the message."""
-    name = f"session:{REF.sub('', to.strip())}"
     found = receivers(to)
-    for areas in [marks(s) for s in found] or [[]]:
-        status, why = scan(name, payload, areas)
-        if status:
-            if not found:
-                why += (". No session running on this machine has that name, so it is taken to be one "
-                        "elsewhere; this session's own subagent is named by its agent id")
-            return status, why
-    return 0, ""
+    status, why = judge_for(f"session:{REF.sub('', to.strip())}", payload, [marks(s) for s in found] or [[]])
+    if status and not found:
+        why += (". No session running on this machine has that name, so it is taken to be one "
+                "elsewhere; this session's own subagent is named by its agent id")
+    return status, why
+
+
+@functools.cache
+def corpus_module():
+    """The private-document scan as a module: the areas are parsed in that one place."""
+    spec = importlib.util.spec_from_file_location("corpus_scan", SEND_SCAN.parents[1] / "corpus/corpus-scan.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def covers(to: str, sender: str) -> bool:
     """Whether every session `to` names knows every area the sender has read inside: has read
     inside it, or works inside it (the company around the client it has read). A relaying client
     shows the sender's name (which says where it works) only then."""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("corpus_scan", SEND_SCAN.parents[1] / "corpus/corpus-scan.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = corpus_module()
     areas = module.load_areas()
     told = marks(REF.sub("", sender.strip()))
     for receiver in receivers(to) or [None]:
@@ -184,12 +219,9 @@ def covers(to: str, sender: str) -> bool:
 def roles(folder: Path, session: str | None) -> list[tuple[str, Path]]:
     """(role, folder) for every role a session working in `folder`, holding `session`'s marks,
     may see: those an area it reads inside keeps (area_roles.visible)."""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("corpus_scan", SEND_SCAN.parents[1] / "corpus/corpus-scan.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = corpus_module()
     named_areas = module.load_areas()
-    areas = [(name, root) for name, roots in named_areas.items() for root in roots]
+    areas = area_pairs(named_areas)
     home = resolved(folder)
     seen = area_roles.reach_from(home, areas, work_reads.named(home)) | set(marks(session) if session else [])
     shown = area_roles.visible(module.kept_roles(named_areas), seen,
@@ -198,17 +230,91 @@ def roles(folder: Path, session: str | None) -> list[tuple[str, Path]]:
     return [(name, place) for name, place, _ in shown]
 
 
-def typed_in(to: str, sender: str) -> tuple[int, str]:
-    """(exit status, the line why) for the operator's own words, typed in `sender`, bound for
-    `to`: they go only where every area `sender` has read inside has been read too."""
-    name = f"session:{REF.sub('', to.strip())}"
-    carried = set().union(*[set(marks(s)) for s in receivers(sender)] or [set()])
-    for session in receivers(to) or [None]:
-        missing = sorted(carried - set(marks(session) if session else []))
-        if missing:
+def area_pairs(named_areas: dict[str, list[Path]]) -> area_roles.Areas:
+    """The areas as (name, root) pairs, the form `area_roles` and `ticket_places` take."""
+    return [(name, root) for name, roots in named_areas.items() for root in roots]
+
+
+def marks_of(session: str) -> set[str]:
+    """The areas read inside by every session `session` names (an id or a name): none for a name no
+    session carries."""
+    return set().union(*[set(marks(s)) for s in receivers(session)] or [set()])
+
+
+def carried_refusal(name: str, carried: set[str], readers: list[set[str]]) -> tuple[int, str]:
+    """(exit status, the line why) for the operator's words that carry the areas `carried`, bound for
+    `name` that is read by readers who have read inside each set of `readers`: every one must have
+    read inside every area carried."""
+    for read in readers:
+        if missing := sorted(carried - read):
             return 1, (f"not sent to {name}: what the operator typed in a session that has read inside "
                        f"{', '.join(missing)} goes only to a session that has read there too")
     return 0, ""
+
+
+def typed_in(to: str, sender: str) -> tuple[int, str]:
+    """(exit status, the line why) for the operator's own words, typed in `sender`, bound for
+    `to`: they go only where every area `sender` has read inside has been read too."""
+    return carried_refusal(f"session:{REF.sub('', to.strip())}", marks_of(sender),
+                           [set(marks(s) if s else []) for s in receivers(to) or [None]])
+
+
+def place_boundaries(folder: Path) -> set[str]:
+    """The areas a ticket folder lies in most closely, and those around them."""
+    return ticket_places.boundaries(resolved(folder), area_pairs(corpus_module().load_areas()))
+
+
+def place_for(session: str, typed: str | None) -> tuple[int, str]:
+    """(exit status, the folder or the line why) for a ticket opened by `session`, that holds what
+    the operator typed in `typed`."""
+    read = marks_of(session) | (marks_of(typed) if typed else set())
+    try:
+        return 0, str(ticket_places.place_for(read, area_pairs(corpus_module().load_areas())))
+    except ticket_places.PlaceError as error:
+        return error.status, error.why
+    except (OSError, ValueError) as error:
+        return ticket_places.CANNOT_JUDGE, f"the areas could not be read: {error}"
+
+
+def judge_place(folder: Path, payload: Path, typed: str | None) -> tuple[int, str]:
+    """(exit status, the line why) for a message written into the ticket folder `folder`, which
+    stands for a reader that has read inside the folder's boundaries."""
+    name = f"place:{resolved(folder)}"
+    try:
+        wanted = place_boundaries(folder)
+    except (OSError, ValueError) as error:
+        return ticket_places.CANNOT_JUDGE, f"not sent to {name}: the areas could not be read ({error})"
+    status, why = carried_refusal(name, marks_of(typed), [wanted]) if typed else (0, "")
+    return (status, why) if status else judge_for(name, payload, [sorted(wanted)])
+
+
+def readable(session: str, work_folder: Path | None) -> set[str]:
+    """The areas `session` may read inside: those it has, and those the folder it works in reaches
+    (without one, the folder its running record says it started in)."""
+    named_areas = corpus_module().load_areas()
+    home = work_folder or next((Path(row["cwd"]) for row in running()
+                                if row["sessionId"] == session and row.get("cwd")), None)
+    reached = area_roles.reach_from(resolved(home), area_pairs(named_areas), work_reads.named(resolved(home))) \
+        if home else set()
+    return set(marks(session)) | reached
+
+
+def covers_place(to: str, folder: Path, work_folder: Path | None) -> bool:
+    """Whether every session `to` names may read every boundary of the ticket folder `folder`
+    (the areas around a read area count as read, as in `covers`)."""
+    named_areas = corpus_module().load_areas()
+    wanted = place_boundaries(folder)
+    for session in receivers(to) or [None]:
+        read = readable(session, work_folder) if session else set()
+        if wanted & set(corpus_module().unknown_areas(sorted(read), named_areas)):
+            return False
+    return True
+
+
+def places(session: str | None) -> list[Path]:
+    """Every folder a ticket sits in; with `session`, those whose boundaries it may read."""
+    found = ticket_places.all_places(area_pairs(corpus_module().load_areas()))
+    return [p for p in found if session is None or covers_place(session, p, None)]
 
 
 def main() -> int:
@@ -221,8 +327,17 @@ def main() -> int:
                         "session (its id, or its name): it carries every area that session has read inside")
     parser.add_argument("--roles", action="store_true", help="print the roles a session working in --folder "
                         "may see, one `<role>\\t<folder>` per line")
-    parser.add_argument("--folder", type=Path, help="with --roles: the folder the viewing session works in")
-    parser.add_argument("--session", help="with --roles: the viewing session, whose marks count too")
+    parser.add_argument("--folder", type=Path, help="with --roles: the folder the viewing session works in; "
+                        "with --covers-place: the folder the receiving session works in")
+    parser.add_argument("--session", help="with --roles: the viewing session, whose marks count too; "
+                        "with --places: only the folders this session may read")
+    parser.add_argument("--place-for", metavar="SESSION", help="print the folder a ticket opened by this "
+                        "session sits in")
+    parser.add_argument("--to-place", metavar="FOLDER", type=Path, help="judge --text as a message written "
+                        "into this ticket folder")
+    parser.add_argument("--covers-place", metavar="FOLDER", type=Path, help="exit 0 when the --to session may "
+                        "read every boundary of this ticket folder, 1 when not")
+    parser.add_argument("--places", action="store_true", help="print every folder tickets sit in")
     args = parser.parse_args()
     if args.roles:
         if args.folder is None:
@@ -230,6 +345,25 @@ def main() -> int:
         for name, place in roles(args.folder, args.session):
             print(f"{name}\t{place}")
         return 0
+    if args.places:
+        for place in places(args.session):
+            print(place)
+        return 0
+    if args.place_for:
+        status, said = place_for(args.place_for, args.typed_in)
+        print(said, file=sys.stdout if status == 0 else sys.stderr)
+        return status
+    if args.covers_place:
+        if not args.to:
+            parser.error("--covers-place needs --to")
+        return 0 if covers_place(args.to, args.covers_place, args.folder) else 1
+    if args.to_place:
+        if args.text is None:
+            parser.error("--to-place needs --text")
+        status, why = judge_place(args.to_place, args.text, args.typed_in)
+        if why:
+            print(f"peers: {why}", file=sys.stderr)
+        return status
     if not args.to:
         parser.error("give --to")
     if args.covers:
