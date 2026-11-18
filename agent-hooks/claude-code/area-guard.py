@@ -118,6 +118,7 @@ import records  # noqa: E402
 from path_forms import resolved  # noqa: E402
 import orders_edit  # noqa: E402
 import service_reads  # noqa: E402
+import ticket_places  # noqa: E402
 import work_reads  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
 
@@ -1923,6 +1924,22 @@ def ask_whom(wanted: set[str], areas, marks: set[str]) -> str:
     return "Ask " + " or ".join(f"the tab of {n} (`tabs send {n} <a file with what to do>`)" for n in names)
 
 
+def written_ticket_place(tool: str, args: dict, cwd: str, written: str, areas) -> Path | None:
+    """The folder of tickets this call writes into or removes from, or None. Only the client's backend
+    writes a ticket (`tabs ticket`): a file an agent could write there could carry the operator's
+    answer, which only the client may put in."""
+    if tool in WRITES:
+        targets = [Path(written)] if written else []
+    elif tool == "Bash":
+        targets = [path for found in named(args.get("command", ""), cwd) for path in found]
+    else:
+        return None
+    if not targets:
+        return None
+    places = ticket_places.all_places(areas)
+    return next((place for place in places for target in targets if ticket_places.holds(place, target)), None)
+
+
 def deny(reason: str) -> None:
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "deny",
@@ -2010,6 +2027,15 @@ def main() -> int:
                  f"(code written into a command counts as writing every path it names)"
                  + (f": {why}" if why else ""))
             return 0
+
+    if tool == "Bash" and ticket_places.lists_every_place(args.get("command", "")):
+        deny("area-guard: `peers.py --places` without `--session` prints the folder of every area's tickets, "
+             "and a folder carries the name of its area: ask with `--session <your session>`")
+        return 0
+    if ticket_place := written_ticket_place(tool, args, cwd, written, areas):
+        deny(f"area-guard: an agent does not write into the tickets folder {ticket_place}: "
+             f"a ticket is written with `tabs ticket`")
+        return 0
 
     if child is not None and (why := child_refusal(child, tool, args, cwd, written, transcript)):
         deny(why)
