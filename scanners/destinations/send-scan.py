@@ -9,7 +9,8 @@ first match winning:
 
 The pattern is a glob over the destination's name: a tool name (`mcp__*drive*`, `Artifact`) or
 `host:<host name>` for a network send (`host:*.example.com`). `block` refuses every send to it,
-whatever it carries. A line naming an unknown area stops every send until it is fixed.
+whatever it carries; a call that only reads through it still passes, except at an endpoint of this
+machine (`local:`), where a block refuses reads too. A line naming an unknown area stops every send until it is fixed.
 
 A third word `order` holds the destination's sends until the operator orders each one: the entry
 point that sees the call decides whether it was ordered (agent-hooks' order.py). Reading through it
@@ -102,7 +103,8 @@ DEFAULTS = [("Artifact*", OUTSIDE, False), ("mcp__claude[-_]artifacts__*", OUTSI
 # only a line that names the kind does.
 FILE = "file:"
 HOST = "host:"
-ON_THIS_MACHINE = ("local:", "tmux:", FILE)
+LOCAL = "local:"
+ON_THIS_MACHINE = (LOCAL, "tmux:", FILE)
 
 
 def file_name(path: Path) -> str:
@@ -239,7 +241,8 @@ def needs_order(name: str) -> bool:
 
 def judge(name: str, payload: Path, reading: bool = False, handles: Path | None = None) -> tuple[int, str]:
     """(exit status, the line why) for a payload bound for `name`. A reading call to a destination
-    blocked for sending is judged as outside every area: reading through it still works. `handles`
+    blocked for sending is judged as outside every area: reading through it still works, except at
+    an endpoint of this machine (`local:`), which a block closes to reads as well. `handles`
     holds the ids the call names the service's objects by: read against the word list only."""
     try:
         destination, held = find(name)
@@ -247,6 +250,10 @@ def judge(name: str, payload: Path, reading: bool = False, handles: Path | None 
         return 2, f"{broken}; nothing is sent until it is fixed"
     if destination == UNDECLARED:
         return 0, ""
+    if destination == BLOCK and name.lower().startswith(LOCAL):
+        # An endpoint of this machine answers whatever it holds: a list it serves, a screen it
+        # streams. Reading it is an action there, so a blocked one is closed to reads too.
+        return 1, f"{name} is blocked for sending and reading ({DESTINATIONS}): it is an endpoint of this machine"
     if destination == BLOCK and reading:
         destination = OUTSIDE
     if destination == BLOCK:
