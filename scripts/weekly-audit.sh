@@ -128,8 +128,10 @@ seen=" "
 # add_repo <repo> <area> — the first listing of a repository names its area. A repository the git
 # hooks hold to no word list (`guard.scope corpus`, an agent's own notes, or `exempt`) is left out
 # as they leave it: its words are there by design, and what it sends is still judged on the way out.
+# The same decision as the hooks' (dispatcher::detect_repo_kind), so a repository in an agent's
+# folder with no scope written is left out by its place, and the log says which of the two it was.
 add_repo() {
-    local real kind
+    local real kind why
     real="$(cd "$1" 2>/dev/null && pwd -P)" || return 0
     case "${seen}" in *" ${real} "*) return 0 ;; esac
     seen="${seen}${real} "
@@ -137,8 +139,10 @@ add_repo() {
         */archive/*|*/_archive/*) left_out+=("$1 (archive)"); return 0 ;;
     esac
     kind="$(cd "$1" && dispatcher::detect_repo_kind)"
+    why="guard.scope ${kind}"
+    [ -n "$(git -C "$1" config --get guard.scope 2>/dev/null)" ] || why="${kind} by its place"
     case "${kind}" in
-        corpus|exempt) left_out+=("$1 (guard.scope ${kind})"); return 0 ;;
+        corpus|exempt) left_out+=("$1 (${why})"); return 0 ;;
     esac
     repos+=("$1")
     repo_areas+=("$2")
