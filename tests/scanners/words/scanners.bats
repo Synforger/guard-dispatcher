@@ -811,6 +811,37 @@ old_run() {
     [ "$status" -eq 2 ]
 }
 
+@test "weekly audit: a repository in an agent's folder with no scope written is left out by its place, as the hooks leave it" {
+    mk_repo synforger
+    export STUB_SENTINEL=""
+    setup_gh_stub
+    leak_in_history old
+    local repo notes plain held
+    repo="$(pwd)"
+    export AGENT_PLATFORM_ROOT="${BATS_TEST_TMPDIR}/platform"
+    notes="${AGENT_PLATFORM_ROOT}/agents/agent-a/projects/tier-a"
+    plain="${AGENT_PLATFORM_ROOT}/work/plain"
+    for held in "${notes}" "${plain}"; do
+        mkdir -p "${held}"
+        git -C "${held}" init -q
+        (cd "${held}" && leak_in_history forgotten)
+    done
+    export GUARD_CONFIG_DIR="${BATS_TEST_TMPDIR}/guard-config"
+    mkdir -p "${GUARD_CONFIG_DIR}"
+    printf 'client %s\nclient %s\n' "${AGENT_PLATFORM_ROOT}" "$(dirname "${repo}")" > "${GUARD_CONFIG_DIR}/areas.txt"
+    git -C "${repo}" config guard.scope enforced
+    export HOME="${BATS_TEST_TMPDIR}/home"
+    mkdir -p "${AGENT_PLATFORM_ROOT}/config/guard/audit"
+    printf '# the area holds every repository\n' > "${AGENT_PLATFORM_ROOT}/config/guard/audit/weekly-audit.conf"
+    run bash "${GUARD_ROOT}/scripts/weekly-audit.sh"
+    [ "$status" -ne 0 ]
+    local log
+    log="$(cat "${AGENT_PLATFORM_ROOT}"/state/guard/audit/weekly-audit-*.log)"
+    [[ "${log}" == *"left out: "*"/agents/agent-a/projects/tier-a (corpus by its place)"* ]]
+    ! grep -q "^left out: .*/work/plain" <<< "${log}"
+    [[ "${log}" == *"plain: FINDINGS"* ]]
+}
+
 @test "weekly audit: a repository inside an area that the git hooks hold to no word list is left out" {
     mk_repo synforger
     export STUB_SENTINEL=""
