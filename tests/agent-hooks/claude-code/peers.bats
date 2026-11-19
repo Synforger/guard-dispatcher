@@ -327,6 +327,43 @@ AREAS
     denied
 }
 
+@test "local: a blocked endpoint is closed to reads through curl, wget, HTTPie, a listening client and code" {
+    declare_also 'local:8766/tickets block' 'local:8766/tickets/* block' 'local:8766/stream/unified* block'
+    bash_call "curl -s http://127.0.0.1:8766/tickets"
+    denied
+    [[ "${output}" == *"local:8766/tickets is blocked for sending and reading"* ]]
+    bash_call "curl -s 'http://localhost:8766/tickets/t1?reader=ses_2'"
+    denied
+    bash_call "wget -qO- http://127.0.0.1:8766/tickets/t1"
+    denied
+    bash_call "http :8766/tickets"
+    denied
+    bash_call "xh GET http://127.0.0.1:8766/stream/unified"
+    denied
+    bash_call "curl -sN 'http://127.0.0.1:8766/stream/unified?channels=tickets'"
+    denied
+    bash_call "websocat ws://127.0.0.1:8766/stream/unified"
+    denied
+    bash_call "python3 -c 'import urllib.request as u; print(u.urlopen(\"http://127.0.0.1:8766/tickets\").read())'"
+    denied
+    # what no line names, and another port, still pass
+    bash_call "curl -s http://127.0.0.1:8766/sessions"
+    passed
+    bash_call "http :8766/sessions"
+    passed
+    bash_call "curl -s http://127.0.0.1:9000/tickets"
+    passed
+}
+
+@test "local: a WebFetch of an address on this machine is named by it when a line names it" {
+    declare_also 'local:8766/tickets* block'
+    call WebFetch "$(jq -n '{url: "http://127.0.0.1:8766/tickets", prompt: "list"}')"
+    denied
+    [[ "${output}" == *"local:8766/tickets is blocked for sending and reading"* ]]
+    call WebFetch "$(jq -n '{url: "http://127.0.0.1:8766/sessions", prompt: "list"}')"
+    passed
+}
+
 @test "local: a blocked endpoint leaves the rest of the service, and another port, alone" {
     declare_also 'local:8766/pty/* block'
     bash_call "curl -s -d '{\"text\": \"hello\"}' http://127.0.0.1:8766/sessions/ses_1/agent-message"
@@ -358,8 +395,11 @@ AREAS
     [[ "${output}" == *"local:8766/ws/pty/ses_1 is blocked for sending"* ]]
     bash_call "wscat -c ws://127.0.0.1:8766/ws/pty/ses_1 -x '{\"type\": \"input\", \"data\": \"go\"}'"
     denied
-    # with nothing to send, a client only listens
+    # with nothing to send, a client only listens: a reading call, and the blocked endpoint is closed to it
     bash_call "websocat ws://127.0.0.1:8766/ws/pty/ses_1"
+    denied
+    [[ "${output}" == *"local:8766/ws/pty/ses_1 is blocked for sending and reading"* ]]
+    bash_call "websocat ws://127.0.0.1:8766/ws/other"
     passed
     bash_call "$(printf 'python3 - <<EOF\nimport websockets.sync.client as w\nw.connect("ws://127.0.0.1:8766/ws/pty/ses_1").send(b"go")\nEOF')"
     denied

@@ -54,7 +54,9 @@ search term, and the link it was taken from, are text like any other.
 What stays on this machine is named apart: `local:<port><path>` for a call to the loopback host,
 `tmux:<session>` for tmux typing into a pane. Neither leaves the machine, so both pass unless a
 line of destinations.txt names the kind (see send-scan.py): the operator blocks the endpoints that
-type into a terminal as the operator would.
+type into a terminal as the operator would, and those that serve what an agent must not read
+without the guard (a list of every area's requests). A blocked `local:` name is closed to reads
+too: a fetch, a client that only listens, a WebFetch of the address.
 
 A file tool's write (Write, Edit, MultiEdit, NotebookEdit) into a file left for the operator to
 hand to people is named `file:<path>` when a line names such files (`file:~/handout/*`); its
@@ -371,14 +373,17 @@ def destination_of(tool: str, args: dict, tabs: dict | None) -> str:
 
 
 def fetched_host(args: dict, send_scan: Path) -> str | None:
-    """`host:<host>` of a WebFetch's URL when a `host:` line names that host, else None. A
-    destinations.txt that cannot be read leaves the tool's name, which then stops the call."""
+    """`host:<host>` of a WebFetch's URL when a `host:` line names that host, `local:<port><path>`
+    when its URL is on this machine and a `local:` line names it, else None. A destinations.txt
+    that cannot be read leaves the tool's name, which then stops the call."""
     url = args.get("url")
     name = place_of(url) if isinstance(url, str) else ""
-    if not name.startswith("host:"):
+    if not name.startswith(("host:", "local:")):
         return None
     judged = send_scan_module(send_scan)
     try:
+        if name.startswith("local:"):
+            return name if judged.where(name) != judged.UNDECLARED else None
         return name if judged.host_named(name) else None
     except judged.Broken:
         return None
@@ -785,8 +790,12 @@ def http_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]
     text, files, unknown = stdin_payload(stdin, cwd, send_scan)
     unknown = unknown or ("a substitution or a variable" if any(expands(i) for i in items) else None)
     unknown = unknown or (EXPANDED_NAME if any(globs(i) and "@" in i for i in items) else None)
-    if not (items or stdin or method in SENDING_METHODS) or not place:
+    if not place:
         return []
+    if not (items or stdin or method in SENDING_METHODS):
+        # A fetch, as curl's: its URL still reaches the host, and an endpoint of this machine
+        # that a line closes is closed to it.
+        return [Send(place, "\n".join([url, unquote_plus(url)]), [], reading=True)]
     return [Send(place, "\n".join([*texts, text]), unreadable + files, unknown)]
 
 
@@ -849,14 +858,16 @@ WS_MESSAGE = {"-x", "--execute"}
 
 def ws_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
     """websocat / wscat: standard input, and the message wscat is given to send (`-x`), go to the
-    address it connects to. With neither, the client only listens."""
-    places = list(dict.fromkeys(p for p in (place_of(w) for w in words if WS_ADDRESS.match(w)) if p))
+    address it connects to. With neither, the client only listens: a reading call, whose address
+    still reaches the host."""
+    addresses = [w for w in words if WS_ADDRESS.match(w)]
+    places = list(dict.fromkeys(p for p in map(place_of, addresses) if p))
     said = [words[i + 1] for i, w in enumerate(words[:-1]) if w in WS_MESSAGE]
     text, unreadable, unknown = stdin_payload(stdin, cwd, send_scan)
     if any(expands(w) for w in said):
         unknown = unknown or "a substitution or a variable"
     if not (said or stdin):
-        return []
+        return [Send(place, "\n".join(addresses), [], reading=True) for place in places]
     return [Send(place, "\n".join([*said, text]), unreadable, unknown) for place in places]
 
 

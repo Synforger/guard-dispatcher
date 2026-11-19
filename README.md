@@ -1099,15 +1099,24 @@ machine, so they pass, and a catch-all line (`* outside`) does not reach
 them. Some of them the operator still wants closed to agents: a client's
 endpoint that types into a session's terminal **as the operator would**, or
 tmux typing into that terminal directly, would let an agent write the
-operator's words. Those are named, and a line that names the kind reaches
+operator's words. An endpoint that serves the operator's screen what no
+check stands between (a list of every area's requests) would let an agent
+read past the guard. Those are named, and a line that names the kind reaches
 them:
 
 ```
 # pattern                       area | outside | block
 local:8766/pty/*                block      # the client's own way of typing into a session
 local:8766/ws/pty/*             block      # the socket its terminal view types through
+local:8766/tickets              block      # the operator's list of requests
+local:8766/tickets/*            block      # a request, read or added to by naming a tab
+local:8766/stream/unified*      block      # the stream the operator's screen reads them from
 tmux:agents-*                   block      # typing into the sessions the client runs
 ```
+
+A blocked `local:` name is closed to reads as well as sends: a fetch with no
+body, a WebSocket client that only listens, a WebFetch of the address. A
+blocked service out of this machine still takes reads.
 
 A client often has more than one endpoint that types (a send call, a terminal
 socket), and a pattern is matched from the start of the name: the line for one
@@ -1115,9 +1124,10 @@ does not reach another under a different path. Give each its own line; the
 client's documentation should list them.
 
 - `local:<port><path>` is a `curl` / `wget` / HTTPie call, a WebSocket
-  client's (`websocat` / `wscat`), or code written into the command (an
-  `http://` or `ws://` address in it), bound for the loopback host. A script
-  file's own calls are not seen.
+  client's (`websocat` / `wscat`), code written into the command (an
+  `http://` or `ws://` address in it), or a WebFetch when a `local:` line
+  names its address, bound for the loopback host. A script file's own calls,
+  and a raw socket (`nc`, `/dev/tcp`), which names no path, are not seen.
 - `tmux:<session>` is `tmux send-keys` / `send-prefix` / `paste-buffer` /
   `pipe-pane`. The session is the one tmux itself resolves the target to (a
   pane id, a prefix, the pane the command runs in); a target tmux cannot
