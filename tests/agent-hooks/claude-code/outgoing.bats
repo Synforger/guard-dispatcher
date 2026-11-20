@@ -434,6 +434,22 @@ open(p, 'w', encoding='utf-8').write('- from: https://chat.example.com/archives/
     passed
 }
 
+@test "outgoing: a refusal of code says why the guard counts its URLs as sends" {
+    destinations 'host:chat.example.com company order'
+    py_heredoc "import os
+open('${H}/repos/tool/copy.md', 'w').write('https://chat.example.com/api')
+os.system('true')"
+    denied
+    [[ "${output}" == *"the Python code counts as sending to each URL it names, because it calls \`os.system\`, a call the guard does not know"* ]]
+    py_heredoc "import requests
+print('https://chat.example.com/api')"
+    denied
+    [[ "${output}" == *"because it imports \`requests\`"* ]]
+    bash_call "node -e \"console.log('https://chat.example.com/api')\""
+    denied
+    [[ "${output}" == *"node's code counts as sending to each URL it names: only Python is read"* ]]
+}
+
 @test "outgoing: Python code that may reach past this machine still sends to the hosts it names" {
     destinations 'host:chat.example.com company order'
     py_heredoc "import urllib.request

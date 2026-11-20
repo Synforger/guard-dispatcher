@@ -146,6 +146,8 @@ VALUE_ATTRIBUTES = frozenset({
 })
 #: Builtins that run, or reach, code or objects the tree does not show: named anywhere (a call, or a
 #: value handed on, `sorted(xs, key=eval)`), they make the code one this module does not know.
+#: How much of a part of the code a refusal line shows.
+SHOWN_SOURCE_LENGTH = 60
 DYNAMIC = frozenset({"eval", "exec", "compile", "getattr", "setattr", "delattr", "globals", "locals", "vars",
                      "breakpoint", "help"})
 
@@ -161,7 +163,14 @@ def written_code(code: str) -> str:
 
 
 def stays_here(code: str) -> bool:
-    """Whether `code` can do nothing but compute and read or write this machine's files: it parses,
+    """Whether `code` can do nothing but compute and read or write this machine's files (reaches_out
+    finds nothing)."""
+    return reaches_out(code) is None
+
+
+def reaches_out(code: str) -> str | None:
+    """Why `code` may reach past this machine, in a few words naming the first part that does, or None
+    when it can do nothing but compute and read or write this machine's files: it parses,
     imports only LOCAL_MODULES, names no DYNAMIC builtin and no dunder, hands on nothing it does not
     know (see the module's docstring), and every call in it is one this module knows (a pure one, an
     `open`, a path's method, one of LOCAL_WRITES, a function the code defines and does not rebind). A
@@ -169,8 +178,8 @@ def stays_here(code: str) -> bool:
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError):
-        return False
-    return _Reader(code, tree).stays_here()
+        return "it does not parse as Python"
+    return _Reader(code, tree).reaches_out()
 
 
 class _Reader:
@@ -185,7 +194,7 @@ class _Reader:
         self._called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
 
     def written(self) -> str:
-        if self._hands_on_unknown():
+        if self._hands_on_unknown() is not None:
             return self._code
         targets = [t for node in ast.walk(self._tree) if isinstance(node, ast.Call) for t in self._targets(node)]
         seen: set[int] = set()
@@ -194,25 +203,31 @@ class _Reader:
             self._sources(target, seen, parts)
         return "\n".join(parts)
 
-    def stays_here(self) -> bool:
-        if self._hands_on_unknown():
-            return False
+    def reaches_out(self) -> str | None:
+        if (handed := self._hands_on_unknown()) is not None:
+            return f"it hands on `{self._source(handed)}` without calling it"
         for node in ast.walk(self._tree):
             if isinstance(node, ast.Import):
-                if not all(_local_module(alias.name) for alias in node.names):
-                    return False
+                if names := [alias.name for alias in node.names if not _local_module(alias.name)]:
+                    return f"it imports `{names[0]}`"
             elif isinstance(node, ast.ImportFrom):
                 if node.level or not _local_module(node.module or ""):
-                    return False
+                    return f"it imports from `{'.' * node.level}{node.module or ''}`"
             elif isinstance(node, ast.Name):
                 if node.id in DYNAMIC or node.id.startswith("__"):
-                    return False
+                    return f"it names `{node.id}`"
             elif isinstance(node, ast.Attribute):
                 if node.attr.startswith("__"):
-                    return False
+                    return f"it names `{node.attr}`"
             elif isinstance(node, ast.Call) and not self._known(node):
-                return False
-        return True
+                return f"it calls `{self._source(node.func)}`, a call the guard does not know"
+        return None
+
+    def _source(self, node: ast.AST) -> str:
+        """The node's source on one line, cut to a length a refusal line can show."""
+        text = " ".join((ast.get_source_segment(self._code, node) or ast.dump(node)).split())
+        return text if len(text) <= SHOWN_SOURCE_LENGTH else text[:SHOWN_SOURCE_LENGTH - 3] + "..."
+
 
     def _known(self, call: ast.Call) -> bool:
         """Whether `call` is one this module knows: pure, or writing only the files it names."""
@@ -224,11 +239,11 @@ class _Reader:
         return name is not None and (name in OPENS or name in LOCAL_WRITES or name in self._functions
                                      or _pure(name))
 
-    def _hands_on_unknown(self) -> bool:
-        """Whether the code names, other than as the function of a call, something of an imported
-        module that is not pure, a known value or a constant (`key=os.system`, `o = os`), an `open`
-        (`functools.reduce(open, [path, "w"])` opens for writing), or a method that is neither pure nor
-        data (`key=p.write_text`)."""
+    def _hands_on_unknown(self) -> ast.AST | None:
+        """The first part of the code that names, other than as the function of a call, something of an
+        imported module that is not pure, a known value or a constant (`key=os.system`, `o = os`), an
+        `open` (`functools.reduce(open, [path, "w"])` opens for writing), or a method that is neither
+        pure nor data (`key=p.write_text`); None when there is none."""
         called: set[int] = set()
         inner: set[int] = set()
         for node in ast.walk(self._tree):
@@ -252,13 +267,13 @@ class _Reader:
                     if node.attr in RECEIVER_WRITES or node.attr == "open" or not (
                             node.attr in PURE_METHODS or node.attr in GROWS or node.attr.startswith("is_")
                             or node.attr in VALUE_ATTRIBUTES):
-                        return True
+                        return node
                     continue
             else:
                 continue
             if not (_pure(name) or name in MODULE_VALUES or name.rpartition(".")[2].isupper()):
-                return True
-        return False
+                return node
+        return None
 
     def _read_bindings(self) -> None:
         self._rebound = _rebound_names(self._tree)

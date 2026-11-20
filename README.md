@@ -921,7 +921,9 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   function it does not know, and every call in it is one the file-write reader
   knows, read as above, or one that makes, copies, moves or removes the local
   files and folders it is handed, such as `os.makedirs` or `shutil.copy`) sends nothing: a URL in it is text it holds, such as one
-  it writes into a local file. A
+  it writes into a local file. When code is counted as sending, the refusal
+  says why on a line of its own: the first call, import or name that may reach
+  past this machine, or that the interpreter is not Python. A
   shell's `-c` string is read as a command line of its own. A script for
   `osascript` (its `-e` lines, or one fed on standard input) sends Apple events
   to each application it names, `app:<name>` in lower case (`tell application
