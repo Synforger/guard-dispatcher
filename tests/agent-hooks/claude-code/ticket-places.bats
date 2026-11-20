@@ -107,12 +107,29 @@ says_tabs() { [[ "${output}" == *'a ticket is written with `tabs ticket`'* ]]; }
     bash_call "python3 ${PEERS} --places"
     denied
     [[ "${output}" == *"--session <your session>"* ]]
-    bash_call "python3 ${PEERS} --places --session 11111111-1111-4111-8111-111111111111"
+    bash_call "python3 ${PEERS} --places --session s1"
     passed
-    bash_call "python3 ${PEERS} --session=11111111-1111-4111-8111-111111111111 --places"
+    bash_call "python3 ${PEERS} --session=s1 --places"
     passed
-    bash_call "python3 ${PEERS} --places --sess 11111111-1111-4111-8111-111111111111"
+    bash_call "python3 ${PEERS} --places --sess s1"
     passed
+}
+
+@test "tickets: peers.py is asked about the calling session only where it prints what that session read" {
+    local other=11111111-1111-4111-8111-111111111111
+    for line in "--place-for ${other}" "--place-f=${other}" "--places --session ${other}" "--sess=${other} --places" \
+                "--place-for s1 --typed-in ${other}" "--roles --folder ${H} --session ${other}" "--places --session"; do
+        bash_call "python3 ${PEERS} ${line}"
+        denied || { echo "passed: ${line}"; return 1; }
+        [[ "${output}" == *"names another session"*"name your own session, s1"* ]]
+    done
+    # the calling session itself, and options that print no folder or role for the session they name
+    for line in "--place-for s1" "--place-for s1 --typed-in s1 --folder ${H}" "--places --session s1" \
+                "--to ${other} --covers-place ${H}/tickets" "--to-place ${H}/tickets --text ${H}/m.txt --typed-in ${other}" \
+                "--to ${other} --text ${H}/m.txt"; do
+        bash_call "python3 ${PEERS} ${line}"
+        passed || { echo "refused: ${line}"; return 1; }
+    done
 }
 
 @test "tickets: the listing is read as a command, wherever it stands in the line" {
@@ -125,7 +142,7 @@ says_tabs() { [[ "${output}" == *'a ticket is written with `tabs ticket`'* ]]; }
     bash_call "echo \"\$(python3 ${PEERS} --places)\""
     denied
     # another option of the program, or a word that only looks like it, lists nothing
-    bash_call "python3 ${PEERS} --place-for 11111111-1111-4111-8111-111111111111"
+    bash_call "python3 ${PEERS} --place-for s1"
     passed
     bash_call "echo peers.py is asked with a session"
     passed

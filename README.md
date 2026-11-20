@@ -1109,12 +1109,18 @@ marks or by what its working folder reaches (`--folder`, or the folder its
 running record says it started in). `--places` lists every folder, one per
 line, and with `--session` only those that session may read.
 
-The entry guard holds two lines for them. An agent's Write, Edit or
+The entry guard holds three lines for them. An agent's Write, Edit or
 NotebookEdit into one of those folders, and a shell command that writes or
 removes there, is refused: a ticket is written through the client, never by
 hand. Reading it passes, and marks the session as reading any file of the area
-does. And a command that runs `peers.py --places` without `--session` is
-refused, because the list names the areas by their folders.
+does. A command that runs `peers.py --places` without `--session` is
+refused, because the list names the areas by their folders. And a command that
+names another session than the calling one where `peers.py` prints what that
+session's reads decide (`--place-for`, `--session` with `--places` or `--roles`,
+`--typed-in` with `--place-for`) is refused for the same reason: the folder or
+role printed carries the names of the areas that session has read inside.
+Asking whether another session covers a place, or judging a text for it,
+prints no folder and passes.
 
 #### What stays on this machine
 

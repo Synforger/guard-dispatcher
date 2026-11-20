@@ -38,6 +38,13 @@ DECLARATION = "tickets.txt"
 PEERS_PROGRAM = "peers.py"
 LIST_PLACES_FLAG = "--places"
 SESSION_FLAG = "--session"
+#: The options of peers.py that name a session whose reads decide what the program prints (a tickets
+#: folder, a role), each with the options one of which must stand with it for that (empty: always).
+#: A folder and a role carry the names of the areas the session has read inside.
+PRINTS_FOR_SESSION = {"--place-for": (), "--typed-in": ("--place-for",), SESSION_FLAG: (LIST_PLACES_FLAG, "--roles")}
+#: Every long option of peers.py, so a shortened one is read as the program's parser reads it.
+PEERS_OPTIONS = ("--to", "--text", "--covers", "--typed-in", "--roles", "--folder", "--session", "--place-for",
+                 "--to-place", "--covers-place", "--places")
 
 #: The exit status the relay answers with: no single place holds the areas read / cannot be judged.
 NO_SINGLE_PLACE = 1
@@ -157,6 +164,35 @@ def holds(place: Path, path: Path) -> bool:
     folded = str(place).casefold()
     return any(spelled == folded or spelled.startswith(folded + os.sep)
                for spelled in (str(path).casefold(), str(resolved(path)).casefold()))
+
+
+def names_another_session(command: str, own: str) -> str | None:
+    """The option of a `peers.py` run in a Bash command that names a session other than `own` where the
+    program prints what that session's reads decide (`--place-for <id>`, `--places --session <id>`):
+    the folder or role it prints carries the names of the areas that session has read inside, which the
+    caller may not have. An option may be shortened as the program's parser allows, and its value may
+    follow `=` or stand as the next word."""
+    try:
+        commands = simple_commands(command)
+    except ValueError:      # the shell refuses to run a line it cannot read
+        return None
+    for run in commands:
+        words = [str(word) for word in run.words]
+        if not any(os.path.basename(word) == PEERS_PROGRAM for word in words):
+            continue
+        given: list[tuple[str, str | None]] = []
+        for at, word in enumerate(words):
+            if not word.startswith("--"):
+                continue
+            spelled, equals, value = word.partition("=")
+            for option in (o for o in PEERS_OPTIONS if len(spelled) >= 3 and o.startswith(spelled)):
+                given.append((option, value if equals else (words[at + 1] if at + 1 < len(words) else None)))
+        present = {option for option, _ in given}
+        for option, value in given:
+            if option in PRINTS_FOR_SESSION and value != own and (
+                    not PRINTS_FOR_SESSION[option] or present & set(PRINTS_FOR_SESSION[option])):
+                return option
+    return None
 
 
 def lists_every_place(command: str) -> bool:

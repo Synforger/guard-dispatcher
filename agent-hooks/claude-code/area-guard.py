@@ -2032,6 +2032,10 @@ def main() -> int:
         deny("area-guard: `peers.py --places` without `--session` prints the folder of every area's tickets, "
              "and a folder carries the name of its area: ask with `--session <your session>`")
         return 0
+    if tool == "Bash" and (option := ticket_places.names_another_session(args.get("command", ""), session)):
+        deny(f"area-guard: `peers.py {option}` names another session, and what it prints (a tickets folder, a "
+             f"role) carries the names of the areas that session has read inside: name your own session, {session}")
+        return 0
     if ticket_place := written_ticket_place(tool, args, cwd, written, areas):
         deny(f"area-guard: an agent does not write into the tickets folder {ticket_place}: "
              f"a ticket is written with `tabs ticket`")
