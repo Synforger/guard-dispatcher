@@ -10,8 +10,10 @@ target: a path handed to it is text. A name is followed back to every value assi
 local function's parameters to the arguments of its calls), so `p = Path("a"); p.write_text(x)`
 gives the source of `p` and of `Path("a")`. Code that does not parse gives itself whole.
 
-A name is read by what it stands for only while nothing rebinds it: a name the code assigns, loops
-over, takes as a parameter or binds twice is a call this module does not know (`print = shutil.copy`).
+A name is read by what it stands for only while nothing rebinds it: a name the code loops over, takes
+as a parameter or binds twice is a call this module does not know. A name one plain assignment alone
+binds stands for what it is given (`esc = html.escape` is `html.escape`; `print = shutil.copy` is
+`shutil.copy`, which this module does not know).
 Code that hands on, other than by calling it, something of a module this module does not know as pure
 (`key=shutil.copy`, `f = os.system`, `o = os`) or a method that writes its receiver (`key=p.write_text`)
 gives itself whole too: a known call may call what it is handed.
@@ -197,6 +199,8 @@ class _Reader:
         self._values: dict[str, list[ast.AST]] = {}
         self._functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
         self._rebound: set[str] = set()          # names something other than one def or one import binds
+        self._aliases: dict[str, ast.expr] = {}  # a name one plain assignment alone binds -> what it is given
+        self._resolving: set[str] = set()        # the aliases being followed, so a cycle stops
         self._read_bindings()
         self._called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
 
@@ -284,6 +288,7 @@ class _Reader:
 
     def _read_bindings(self) -> None:
         self._rebound = _rebound_names(self._tree)
+        self._aliases = _aliases(self._tree)
         for node in ast.walk(self._tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -353,6 +358,12 @@ class _Reader:
         """The dotted name a call's function stands for when it reads off an imported module or is a
         plain name (`osp.relpath` -> `os.path.relpath`), else None (a method of a value)."""
         if isinstance(node, ast.Name):
+            if node.id in self._aliases and node.id not in self._resolving:
+                self._resolving.add(node.id)
+                try:
+                    return self._dotted(self._aliases[node.id])
+                finally:
+                    self._resolving.discard(node.id)
             if node.id in self._rebound:
                 return None
             return _canonical(self._modules[node.id]) if node.id in self._modules else node.id
@@ -496,6 +507,41 @@ def _string_annotations(function: ast.FunctionDef | ast.AsyncFunctionDef) -> lis
                                           *([arguments.kwarg] if arguments.kwarg else []))]
     return [a.value for a in (*annotations, function.returns)
             if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+
+
+def _aliases(tree: ast.Module) -> dict[str, ast.expr]:
+    """The names one plain assignment of a name or an attribute binds and nothing else binds
+    (`esc = html.escape`): such a name stands for what it is given, wherever it is called. A name any
+    other binding also touches (a second assignment, a loop, a parameter, `global`, `del`, a def, an
+    import) is not one."""
+    bindings: dict[str, int] = {}
+
+    def bind(name: str) -> None:
+        bindings[name] = bindings.get(name, 0) + 1
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bind(node.id)
+        elif isinstance(node, ast.arg):
+            bind(node.arg)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for name in node.names:
+                bind(name)
+                bind(name)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bind(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            bind(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            bind(node.rest)
+        elif isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            bind(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bind(alias.asname or alias.name.split(".")[0])
+    return {node.targets[0].id: node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, (ast.Name, ast.Attribute)) and bindings.get(node.targets[0].id) == 1}
 
 
 def _local_module(name: str) -> bool:
