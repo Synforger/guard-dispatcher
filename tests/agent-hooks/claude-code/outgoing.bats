@@ -425,6 +425,13 @@ Path('${H}/repos/tool/copy.md').write_text(json.dumps({'from': url, 'note': '${C
     passed
     bash_call "python3 -c \"print('https://chat.example.com/archives/C000/p123')\""
     passed
+    py_heredoc "import json, os, shutil
+src = os.path.expanduser('${H}/repos/tool/x.jsonl')
+p = os.path.expanduser('${H}/repos/tool/out/y.md')
+os.makedirs(os.path.dirname(p), exist_ok=True)
+shutil.copy(src, p + '.bak')
+open(p, 'w', encoding='utf-8').write('- from: https://chat.example.com/archives/C000/p123\\n')"
+    passed
 }
 
 @test "outgoing: Python code that may reach past this machine still sends to the hosts it names" {

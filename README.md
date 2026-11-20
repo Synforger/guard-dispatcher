@@ -919,7 +919,8 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   code that can only compute and read or write this machine's files (it imports
   only such modules, names no `eval`, `exec`, `getattr` or dunder, hands on no
   function it does not know, and every call in it is one the file-write reader
-  knows, read as above) sends nothing: a URL in it is text it holds, such as one
+  knows, read as above, or one that makes, copies, moves or removes the local
+  files and folders it is handed, such as `os.makedirs` or `shutil.copy`) sends nothing: a URL in it is text it holds, such as one
   it writes into a local file. A
   shell's `-c` string is read as a command line of its own. A script for
   `osascript` (its `-e` lines, or one fed on standard input) sends Apple events
