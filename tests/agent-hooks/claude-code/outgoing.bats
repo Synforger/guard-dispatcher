@@ -432,6 +432,17 @@ os.makedirs(os.path.dirname(p), exist_ok=True)
 shutil.copy(src, p + '.bak')
 open(p, 'w', encoding='utf-8').write('- from: https://chat.example.com/archives/C000/p123\\n')"
     passed
+    py_heredoc "import json
+def find(rows, key):
+    for row in rows:
+        if row.get('ts', '').startswith(key):
+            return row
+    raise SystemExit('notfound ' + key)
+rows = []
+for line in open('${H}/repos/tool/x.jsonl'):
+    rows.append(json.loads(line.rstrip()))
+open('${H}/repos/tool/y.md', 'w').write('- from: https://chat.example.com/archives/C000/p123\\n' + str(find(rows, '1')))"
+    passed
 }
 
 @test "outgoing: a refusal of code says why the guard counts its URLs as sends" {
