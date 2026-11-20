@@ -976,6 +976,9 @@ print(place == m.Path('${CASE_REPO}'), note)
     local -a writes=(
         $'python3 - <<\'EOF\'\nimport pathlib\nq = pathlib.Path("'"${PERSONAL}"$'/notes/a.md")\nq.write_text("x")\nEOF'
         $'python3 - <<\'EOF\'\nimport shutil\nshutil.copy("pages/tab/index.html", "'"${PERSONAL}"$'/notes/b.md")\nEOF'
+        $'python3 - <<\'EOF\'\nimport shutil\nprint = shutil.copy\nprint("pages/tab/index.html", "'"${PERSONAL}"$'/notes/b.md")\nEOF'
+        $'python3 - <<\'EOF\'\nimport shutil, itertools\nlist(itertools.starmap(shutil.copy, [("pages/tab/index.html", "'"${PERSONAL}"$'/notes/b.md")]))\nEOF'
+        $'python3 - <<\'EOF\'\nfrom pathlib import Path\nsorted(["x"], key=Path("'"${PERSONAL}"$'/notes/a.md").write_text)\nEOF'
         $'python3 - <<\'EOF\'\ndef keep(where, text):\n    with open(where, "a") as f:\n        f.write(text)\nkeep("'"${PERSONAL}"$'/notes/a.md", "x")\nEOF'
         $'python3 - <<\'EOF\'\nimport somelib\nsomelib.save("'"${PERSONAL}"$'/notes/a.md")\nEOF'
         $'python3 - <<\'EOF\'\nparts = []\nparts.append("'"${PERSONAL}"$'/notes/a.md")\nopen(parts[0], "w")\nEOF'

@@ -666,8 +666,12 @@ step earlier, before each tool call, from the same `areas.txt`:
   that write it, the destination of a rename) or a call the guard does not
   know (`shutil.copy`, `subprocess.run`, a library's `save`), following a name
   back to the values it was given: a path handed to `os.path.relpath`, a
-  string's methods, `print` or an `open` that reads is text. Python that does
-  not parse, and every other interpreter's code (`node -e`, `ruby -e`), counts
+  string's methods, `print` or an `open` that reads is text. A name the code
+  rebinds (assigns, loops over, takes as a parameter, binds twice) is a call
+  the guard does not know, whatever it is spelled (`print = shutil.copy`).
+  Python that does not parse, that hands on other than by calling it a
+  function the guard does not know or a method that writes (`key=shutil.copy`,
+  `starmap(shutil.copy, …)`, `key=p.write_text`), and every other interpreter's code (`node -e`, `ruby -e`), counts
   every path it names, since code that reads a file cannot be told apart from
   code that writes it. Either way a path is an absolute or home path that stands by
   itself, as above, and a whole string that reads as a relative path (one word
@@ -906,9 +910,10 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   Code written into the command — `python -c`, `node -e`, a heredoc fed to an
   interpreter — sends to each host a URL in it names, carrying the code. Python
   code that can only compute and read or write this machine's files (it imports
-  only such modules, names no `eval`, `exec`, `getattr`, dunder or `sys.modules`,
-  and every call in it is one the file-write reader knows) sends nothing: a URL
-  in it is text it holds, such as one it writes into a local file. A
+  only such modules, names no `eval`, `exec`, `getattr` or dunder, hands on no
+  function it does not know, and every call in it is one the file-write reader
+  knows, read as above) sends nothing: a URL in it is text it holds, such as one
+  it writes into a local file. A
   shell's `-c` string is read as a command line of its own. A script for
   `osascript` (its `-e` lines, or one fed on standard input) sends Apple events
   to each application it names, `app:<name>` in lower case (`tell application

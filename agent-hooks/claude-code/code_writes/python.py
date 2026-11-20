@@ -10,6 +10,12 @@ target: a path handed to it is text. A name is followed back to every value assi
 local function's parameters to the arguments of its calls), so `p = Path("a"); p.write_text(x)`
 gives the source of `p` and of `Path("a")`. Code that does not parse gives itself whole.
 
+A name is read by what it stands for only while nothing rebinds it: a name the code assigns, loops
+over, takes as a parameter or binds twice is a call this module does not know (`print = shutil.copy`).
+Code that hands on, other than by calling it, something of a module this module does not know as pure
+(`key=shutil.copy`, `f = os.system`, `o = os`) or a method that writes its receiver (`key=p.write_text`)
+gives itself whole too: a known call may call what it is handed.
+
 The same reading tells outgoing.py whether code reaches past this machine (stays_here): code whose
 every call is known as above holds its URLs as text and sends nothing.
 """
@@ -23,7 +29,7 @@ import re
 PURE_MODULES = ("os.path", "posixpath", "re", "fnmatch", "glob", "json", "shlex", "urllib.parse", "html",
                 "textwrap", "string", "math", "datetime", "time", "hashlib", "base64", "collections",
                 "itertools", "functools", "difflib", "unicodedata", "operator", "statistics", "decimal",
-                "fractions", "uuid", "typing", "dataclasses", "enum", "copy", "pprint", "csv", "sys")
+                "fractions", "uuid", "typing", "dataclasses", "enum", "copy", "pprint", "csv")
 #: Functions that write no file they are handed a path for.
 PURE_FUNCTIONS = frozenset({
     "print", "len", "str", "repr", "format", "int", "float", "bool", "list", "tuple", "dict", "set",
@@ -32,8 +38,13 @@ PURE_FUNCTIONS = frozenset({
     "next", "divmod", "pow", "callable", "bytes", "bytearray",
     "pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath", "pathlib.PurePosixPath",
     "os.getcwd", "os.listdir", "os.scandir", "os.walk", "os.stat", "os.lstat", "os.getenv", "os.fspath",
-    "os.fsdecode", "os.fsencode", "os.environ.get", "os.access", "os.cpu_count", "os.getpid",
+    "os.fsdecode", "os.fsencode", "os.environ.get", "os.access", "os.cpu_count", "os.getpid", "sys.exit",
 })
+#: Values of `os` and `sys` the code may use: data and the standard streams, whose pure methods are pure
+#: (`sys.stdout.write`, `sys.path.insert`). The rest of `sys` is the interpreter's machinery.
+MODULE_VALUES = frozenset({"os.environ", "os.sep", "os.linesep", "os.pathsep", "os.curdir", "os.pardir",
+                           "os.name", "sys.argv", "sys.stdin", "sys.stdout", "sys.stderr", "sys.platform",
+                           "sys.version", "sys.version_info", "sys.maxsize", "sys.byteorder", "sys.path"})
 #: Methods that write no file: a string's, a mapping's or a sequence's, a path's that read, a match's,
 #: an open file's (what it writes was opened for writing, which the `open` already gives).
 PURE_METHODS = frozenset({
@@ -61,7 +72,7 @@ OPENS = frozenset({"open", "io.open", "codecs.open"})
 WRITING_MODE = re.compile(r"[wax+]")
 #: Modules whose import runs nothing but the module itself: the pure ones and those that work on this
 #: machine's files. A call into them that is not pure is still a call this module does not know.
-LOCAL_MODULES = (*PURE_MODULES, "__future__", "pathlib", "os", "io", "codecs", "shutil", "tempfile")
+LOCAL_MODULES = (*PURE_MODULES, "__future__", "pathlib", "os", "sys", "io", "codecs", "shutil", "tempfile")
 #: Builtins that run, or reach, code or objects the tree does not show: named anywhere (a call, or a
 #: value handed on, `sorted(xs, key=eval)`), they make the code one this module does not know.
 DYNAMIC = frozenset({"eval", "exec", "compile", "getattr", "setattr", "delattr", "globals", "locals", "vars",
@@ -80,9 +91,10 @@ def written_code(code: str) -> str:
 
 def stays_here(code: str) -> bool:
     """Whether `code` can do nothing but compute and read or write this machine's files: it parses,
-    imports only LOCAL_MODULES, names no DYNAMIC builtin, no dunder and not `sys.modules`, and every
-    call in it is one this module knows (a pure one, an `open`, a path's method, a function the code
-    defines). A URL in such code is text it holds, not a place it reaches."""
+    imports only LOCAL_MODULES, names no DYNAMIC builtin and no dunder, hands on nothing it does not
+    know (see the module's docstring), and every call in it is one this module knows (a pure one, an
+    `open`, a path's method, a function the code defines and does not rebind). A URL in such code is
+    text it holds, not a place it reaches."""
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError):
@@ -97,9 +109,12 @@ class _Reader:
         self._modules: dict[str, str] = {}       # a name bound by an import -> the dotted name it stands for
         self._values: dict[str, list[ast.AST]] = {}
         self._functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+        self._rebound: set[str] = set()          # names something other than one def or one import binds
         self._read_bindings()
 
     def written(self) -> str:
+        if self._hands_on_unknown():
+            return self._code
         targets = [t for node in ast.walk(self._tree) if isinstance(node, ast.Call) for t in self._targets(node)]
         seen: set[int] = set()
         parts: list[str] = []
@@ -108,6 +123,8 @@ class _Reader:
         return "\n".join(parts)
 
     def stays_here(self) -> bool:
+        if self._hands_on_unknown():
+            return False
         for node in ast.walk(self._tree):
             if isinstance(node, ast.Import):
                 if not all(_local_module(alias.name) for alias in node.names):
@@ -119,7 +136,7 @@ class _Reader:
                 if node.id in DYNAMIC or node.id.startswith("__"):
                     return False
             elif isinstance(node, ast.Attribute):
-                if node.attr.startswith("__") or self._dotted(node) == "sys.modules":
+                if node.attr.startswith("__"):
                     return False
             elif isinstance(node, ast.Call) and not self._known(node):
                 return False
@@ -132,10 +149,42 @@ class _Reader:
             method = call.func.attr
             return (method in RECEIVER_WRITES or method == "open" or method in PURE_METHODS
                     or method in GROWS or method.startswith("is_"))
-        return name is not None and (name in OPENS or name in PURE_FUNCTIONS or name in self._functions
-                                     or name.startswith(tuple(f"{m}." for m in PURE_MODULES)))
+        return name is not None and (name in OPENS or name in self._functions or _pure(name))
+
+    def _hands_on_unknown(self) -> bool:
+        """Whether the code names, other than as the function of a call, something of an imported
+        module that is not pure, a known value or a constant (`key=os.system`, `o = os`), or a method
+        that writes its receiver (`key=p.write_text`)."""
+        called: set[int] = set()
+        inner: set[int] = set()
+        for node in ast.walk(self._tree):
+            if isinstance(node, ast.Call):
+                function = node.func
+                while isinstance(function, ast.Attribute):
+                    called.add(id(function))
+                    function = function.value
+                called.add(id(function))
+            elif isinstance(node, ast.Attribute):
+                inner.add(id(node.value))
+        for node in ast.walk(self._tree):
+            if id(node) in called or id(node) in inner or not isinstance(getattr(node, "ctx", None), ast.Load):
+                continue
+            if isinstance(node, ast.Name) and node.id in self._modules and node.id not in self._rebound:
+                name = self._modules[node.id]
+            elif isinstance(node, ast.Attribute):
+                name = self._dotted(node)
+                if name is None:
+                    if node.attr in RECEIVER_WRITES or node.attr == "open":
+                        return True
+                    continue
+            else:
+                continue
+            if not (_pure(name) or name in OPENS or name in MODULE_VALUES or name.rpartition(".")[2].isupper()):
+                return True
+        return False
 
     def _read_bindings(self) -> None:
+        self._rebound = _rebound_names(self._tree)
         for node in ast.walk(self._tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -205,12 +254,13 @@ class _Reader:
         """The dotted name a call's function stands for when it reads off an imported module or is a
         plain name (`osp.relpath` -> `os.path.relpath`), else None (a method of a value)."""
         if isinstance(node, ast.Name):
-            return self._modules.get(node.id, node.id)
+            return None if node.id in self._rebound else self._modules.get(node.id, node.id)
         if isinstance(node, ast.Attribute):
             root = node
             while isinstance(root, ast.Attribute):
                 root = root.value
-            if isinstance(root, ast.Name) and root.id in self._modules and root.id not in self._values:
+            if (isinstance(root, ast.Name) and root.id in self._modules and root.id not in self._values
+                    and root.id not in self._rebound):
                 return f"{self._dotted(node.value)}.{node.attr}"
         return None
 
@@ -229,8 +279,7 @@ class _Reader:
             return args
         if name in OPENS:
             return [*call.args[:1], *(k.value for k in call.keywords if k.arg == "file")] if _writes(call, 1) else []
-        if name in PURE_FUNCTIONS or name in self._functions or (name or "").startswith(
-                tuple(f"{m}." for m in PURE_MODULES)):
+        if name is not None and (name in self._functions or _pure(name)):
             return []
         return args
 
@@ -250,6 +299,48 @@ class _Reader:
                 for sub in ast.walk(self._functions[inner.func.id]):
                     if isinstance(sub, ast.Return) and sub.value is not None:
                         self._sources(sub.value, seen, parts)
+
+
+def _pure(name: str) -> bool:
+    """Whether the dotted name is a function or a method of a known value that writes no file."""
+    owner, _, method = name.rpartition(".")
+    return (name in PURE_FUNCTIONS or name.startswith(tuple(f"{m}." for m in PURE_MODULES))
+            or (owner in MODULE_VALUES and (method in PURE_METHODS or method in GROWS)))
+
+
+def _rebound_names(tree: ast.Module) -> set[str]:
+    """The names something binds other than one `def` or one import: an assignment, a loop, a `with`,
+    an `except`, a parameter, `global`, `del`, a pattern, a class, or a second def or import."""
+    names: set[str] = set()
+    defined: dict[str, int] = {}
+    imported: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            names.update(node.names)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            names.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            names.add(node.rest)
+        elif isinstance(node, ast.ClassDef):
+            names.add(node.name)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined[node.name] = defined.get(node.name, 0) + 1
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.name.split(".")[0]
+                imported.setdefault(alias.asname or bound, set()).add(alias.name if alias.asname else bound)
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                imported.setdefault(alias.asname or alias.name, set()).add(f"{node.module}.{alias.name}")
+    names.update(name for name, count in defined.items() if count > 1 or name in imported)
+    names.update(name for name, sources in imported.items() if len(sources) > 1)
+    return names
 
 
 def _local_module(name: str) -> bool:
