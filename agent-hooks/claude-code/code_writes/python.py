@@ -219,8 +219,9 @@ class _Reader:
 
     def _hands_on_unknown(self) -> bool:
         """Whether the code names, other than as the function of a call, something of an imported
-        module that is not pure, a known value or a constant (`key=os.system`, `o = os`), or a method
-        that writes its receiver (`key=p.write_text`)."""
+        module that is not pure, a known value or a constant (`key=os.system`, `o = os`), an `open`
+        (`functools.reduce(open, [path, "w"])` opens for writing), or a method that is neither pure nor
+        data (`key=p.write_text`)."""
         called: set[int] = set()
         inner: set[int] = set()
         for node in ast.walk(self._tree):
@@ -235,8 +236,9 @@ class _Reader:
         for node in ast.walk(self._tree):
             if id(node) in called or id(node) in inner or not isinstance(getattr(node, "ctx", None), ast.Load):
                 continue
-            if isinstance(node, ast.Name) and node.id in self._modules and node.id not in self._rebound:
-                name = self._modules[node.id]
+            if (isinstance(node, ast.Name) and node.id not in self._rebound
+                    and (node.id in self._modules or node.id in OPENS)):
+                name = self._dotted(node)
             elif isinstance(node, ast.Attribute):
                 name = self._dotted(node)
                 if name is None:
@@ -247,7 +249,7 @@ class _Reader:
                     continue
             else:
                 continue
-            if not (_pure(name) or name in OPENS or name in MODULE_VALUES or name.rpartition(".")[2].isupper()):
+            if not (_pure(name) or name in MODULE_VALUES or name.rpartition(".")[2].isupper()):
                 return True
         return False
 
