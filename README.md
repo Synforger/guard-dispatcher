@@ -623,8 +623,9 @@ step earlier, before each tool call, from the same `areas.txt`:
   `grep --exclude-dir` keeps out of the walk is not read, and a listing of
   names (`ls -R`, `tree`, a `find` that runs nothing) reads no area.
   A command line written as one string inside other code
-  (`os.system("cat <path>")`) is a sentence too and is not read; neither is a
-  script run from a file.
+  (`os.system("cat <path>")`) is a sentence too and is not read. A file of
+  code the command hands to a program is read as that code written into the
+  command (see *A script in a file* below).
 
   A command that only checks the paths it names marks nothing either: `test`,
   `[ … ]`, `stat`, `realpath`, `readlink` or `ls -d` run on its own, every
@@ -688,8 +689,12 @@ step earlier, before each tool call, from the same `areas.txt`:
   that holds a `/`, ends in an extension, or names something in the command's
   folder). A word quoted inside a longer string (`` "see `notes.md`" ``) is
   that string's text, and a media type (`application/json`, a header's value)
-  is a path only where a folder of its first name is there to hold a file. A heredoc fed to anything else is text, not commands. A script run from a file
-  is not read, so what it writes is not judged. Destinations are judged
+  is a path only where a folder of its first name is there to hold a file. A heredoc fed to anything else is text, not commands. A path glued onto the
+  home folder (`Path.home() / "a"`, `os.path.join(os.path.expanduser("~"), "a")`,
+  `os.environ["HOME"] + "/a"`, `path.join(os.homedir(), "a")`) is a path under
+  it, as far as its pieces are plain strings: `Path.home() / "a" / f"{x}.json"`
+  names the folder `~/a`. A file of code the command hands to a program is read
+  as that code written into the command (see *A script in a file* below). Destinations are judged
   exactly as the push-time scan judges them (`corpus-scan.py --where`). Files
   outside any repository and `_exempt` areas stay writable, and an `_exempt`
   repository commits and pushes wherever it sends. A commit there is
@@ -806,11 +811,23 @@ step earlier, before each tool call, from the same `areas.txt`:
   that does not say (an `add -A` with no path, an interactive add, a `cd` or
   `git -C` between the add and the commit) counts every change. Every
   other file in the area stays refused, and a push is judged as before.
+- **A script in a file is read as the code it holds.** A file a command hands
+  to the program that runs it is read by every check above as the same code
+  written into the command: an interpreter given a file after its own options
+  (`python3 fix.py`, `bash run.sh`, `node`, `deno run`, `bun`, `ruby`, `perl`,
+  `php`, `osascript`), `source` and `.`, a file run by its path (the program its
+  `#!` line names, the shell when it has none) and `uv run fix.py`. It is
+  followed where the command stands (`cd`, a subshell, `-c`, `eval`), and a
+  script that runs another is followed a few steps. Not read: a module run by
+  name (`python3 -m`), a program found on PATH by its bare name, what the code
+  imports or starts in turn, a file over 512 KiB and one that is not text. A
+  shell script's comment lines are not held to the lines about switching the
+  guards off.
 - **A script asks before it writes where its arguments say.** The guard reads
-  the command that starts a script, never the script, and a relative path
-  handed to a script resolves where the script runs, not where the session
-  stands — so a script that writes into a folder it is given can write where
-  the session itself would be refused. Such a script asks first:
+  the script, not where the words handed to it go, and a relative path handed
+  to a script resolves where the script runs, not where the session stands —
+  so a script that writes into a folder it is given can write where the
+  session itself would be refused. Such a script asks first:
 
   ```bash
   python3 "$HOME/.git-hooks/agent-hooks/claude-code/area-guard.py" \
@@ -932,8 +949,11 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   to each application it names, `app:<name>` in lower case (`tell application
   "Calendar"` and `Application("com.apple.iCal")` name `app:calendar` and
   `app:com.apple.ical`), carrying the script; one piped in from another command
-  goes to `app:?`, since it is only known as it runs. A script in a file and a
-  command not listed here are not read.
+  goes to `app:?`, since it is only known as it runs, and one in a text file
+  the command names is read from the file. A file of code the command hands to
+  a program is read as that code written into the command (a shell script as a
+  command line, an interpreter's file as its `-c` code; see *A script in a
+  file*). A command not listed here is not read.
   The text of an Office document or a PDF is taken out of it first. A file
   whose text cannot be taken out (over 8 MB, or not text, like an image)
   cannot be scanned: it is refused once the session has read inside an area,

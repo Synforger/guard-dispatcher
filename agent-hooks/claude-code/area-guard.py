@@ -82,8 +82,9 @@ Nothing is printed when a call passes, so nothing lands in the agent's context. 
 line. Marks are kept in `<marks>/<session_id>.json` (`~/.cache/area-guard/`, or
 `<root>/state/guard/marks/` under a platform root), so they outlive compaction.
 
-A script the agent runs is not read: the guard sees the command that starts it, not what it
-writes. A script that writes where its arguments say asks before it writes:
+A script the agent runs from a file is read as the same code written into the command
+(script_files): what it writes, reads and sends is judged. Where the words handed to it go is not
+known, so a script that writes where its arguments say asks before it writes:
 
     area-guard.py may-write <session_id> <path>...
 
@@ -115,6 +116,7 @@ import commit_options  # noqa: E402
 import commit_scope  # noqa: E402
 import guard_places  # noqa: E402
 import records  # noqa: E402
+import script_files  # noqa: E402
 from path_forms import resolved  # noqa: E402
 import orders_edit  # noqa: E402
 import service_reads  # noqa: E402
@@ -347,7 +349,21 @@ CODE_BREAK = re.compile(r"[\s()\[\]{},;]+")
 
 
 # A call that joins its arguments into one path, the opening parenthesis included.
-PATH_JOINS = re.compile(r"(?:\bos\.path\.join|\bposixpath\.join|\bPure(?:Posix)?Path|\bPath|\.joinpath)\s*\(")
+PATH_JOINS = re.compile(r"(?:\bos\.path\.join|\bposixpath\.join|\bPure(?:Posix)?Path|\bPath|\.joinpath"
+                        r"|\bpath\.(?:join|resolve)|\bFile\.join)\s*\(")
+# What code says the home folder with, whatever the language: Python's `Path.home()`, `expanduser("~")`
+# and `HOME` from the environment, Node's `os.homedir()` and `process.env.HOME`, Ruby's `Dir.home` and
+# `ENV["HOME"]`, Perl's `$ENV{HOME}`. A path glued to it (`Path.home() / "a"`, `HOME + "/a"`,
+# `os.path.join(Path.home(), "a")`) is a path under the home folder.
+HOME_SAID = re.compile(r"""(?:\b(?:pathlib\.)?Path\.home\(\s*\)"""
+                       r"""|\b(?:os\.path|posixpath)\.expanduser\(\s*(['"])~\1\s*\)"""
+                       r"""|\b(?:pathlib\.)?Path\(\s*(['"])~\2\s*\)\.expanduser\(\s*\)"""
+                       r"""|\bos\.environ\[\s*(['"])HOME\3\s*\]|\bos\.environ\.get\(\s*(['"])HOME\4\s*\)"""
+                       r"""|\bos\.getenv\(\s*(['"])HOME\5\s*\)|\bos\.homedir\(\s*\)|\bprocess\.env\.HOME\b"""
+                       r"""|\bDir\.home\b|\bENV\[\s*(['"])HOME\6\s*\]|\$ENV\{HOME\})""")
+# What glues a piece onto a path: `/` (pathlib), `+` and `.` (strings), and a `joinpath` call.
+GLUE = re.compile(r"\s*[/+.]\s*")
+JOINPATH = re.compile(r"\s*\.joinpath\s*\(")
 # What tells a string is a template filled in when the code runs: `{name}` in an f-string or a
 # format string, `%s` and its kind.
 TEMPLATE = re.compile(r"\{[^{}]*\}|%[-+ #0-9.]*[sdrif]")
@@ -372,23 +388,58 @@ def _closing(code: str, opening: int) -> int:
 
 
 def _joins(code: str) -> tuple[list[str], list[tuple[int, int]]]:
-    """The calls of `code` that join their arguments into a path (PATH_JOINS): (the paths that can be
-    told, the stretches of code their arguments take). A call whose arguments are all strings names
-    the path they join into; one with a variable among them names a path this line cannot know."""
+    """The calls of `code` that join their arguments into a path (PATH_JOINS), and the paths glued
+    onto the home folder (HOME_SAID): (the paths that can be told, the stretches of code their
+    pieces take). A call whose arguments are all strings, or the home folder and strings, names the
+    path they join into; one with a variable among them names a path this line cannot know. A path
+    glued onto the home folder is told as far as its pieces are strings: `Path.home() / "a" /
+    f"{x}.json"` names the folder `~/a` the code works in."""
     told, spans = [], []
+    home = str(Path.home())
     for m in PATH_JOINS.finditer(code):
         end = _closing(code, m.end() - 1)
         if end < 0:
             continue
-        inside = code[m.end():end]
         spans.append((m.end(), end))
-        pieces = [piece.strip() for piece in inside.split(",") if piece.strip()]
-        strings = [STRING.fullmatch(piece) for piece in pieces]
-        if pieces and all(strings) and not m.group(0).startswith(".joinpath"):
-            parts = [next(g for g in (s.group(2), s.group(4), s.group(5)) if g is not None) for s in strings]
-            if not any("\n" in part or TEMPLATE.search(part) for part in parts):
-                told.append(os.path.join(*parts))
+        pieces = [piece.strip() for piece in code[m.end():end].split(",") if piece.strip()]
+        at_home = bool(pieces) and bool(HOME_SAID.fullmatch(pieces[0]))
+        parts = _string_pieces(pieces[at_home:])
+        if parts and not m.group(0).startswith(".joinpath"):
+            told.append(os.path.join(home, *(p.strip("/") for p in parts)) if at_home else os.path.join(*parts))
+    for m in HOME_SAID.finditer(code):
+        parts, pos = [], m.end()
+        while True:
+            if joined := JOINPATH.match(code, pos):
+                end = _closing(code, joined.end() - 1)
+                pieces = [piece.strip() for piece in code[joined.end():end].split(",") if piece.strip()] \
+                    if end >= 0 else []
+                more = _string_pieces(pieces)
+                if not more:
+                    break
+                spans.append((joined.end(), end))
+                pos = end + 1
+            elif (glue := GLUE.match(code, pos)) and (piece := STRING.match(code, glue.end())):
+                more = _string_pieces([piece.group(0)])
+                if not more:
+                    break
+                spans.append((glue.end(), piece.end()))
+                pos = piece.end()
+            else:
+                break
+            parts += [part.strip("/") for part in more]
+        if parts:
+            told.append(os.path.join(home, *parts))
     return told, spans
+
+
+def _string_pieces(pieces: list[str]) -> list[str]:
+    """The text of each piece when every one is a plain string on one line (no template filled in
+    as the code runs), else []."""
+    strings = [STRING.fullmatch(piece) for piece in pieces]
+    if not pieces or not all(strings):
+        return []
+    parts = [next(g for g in (s.group(2), s.group(4), s.group(5)) if g is not None) for s in strings]
+    return [] if any("\n" in part or TEMPLATE.search(part) for part in parts) else parts
 
 
 def _alone(code: str, m: re.Match) -> bool:
@@ -554,17 +605,24 @@ def said(command: str, depth: int = 0):
 GLOB_MATCHES = 64
 
 
-def mentioned_paths(command: str, areas) -> list[Path]:
+def mentioned_paths(command: str, areas, cwd: str) -> list[Path]:
     """Area paths a Bash command names standing by themselves (said, standing): spelled with ~,
     $HOME or absolute, through a shortcut symlink whose target is inside an area, or by a glob
     that matches one (`ls ~/or*` names ~/org)."""
-    return [path for path in named_paths(command) if area_of(path, areas)]
+    return [path for path in named_paths(command, cwd) if area_of(path, areas)]
 
 
-def named_paths(command: str) -> list[Path]:
-    """Every path a Bash command names standing by themselves, globs matched (mentioned_paths)."""
+def named_paths(command: str, cwd: str, depth: int = 0) -> list[Path]:
+    """Every path a Bash command names standing by themselves, globs matched (mentioned_paths), and
+    every path the code of a file it runs names (ran_scripts), as that code written into the command."""
+    stretches = list(said(command))
+    for program, code, here in ran_scripts(command, cwd) if depth < NESTED else []:
+        if SHELL_CODE.fullmatch(program):
+            stretches += [str(path) for path in named_paths(code, here, depth + 1)]
+        else:
+            stretches += [stretch for stretch, _ in literals(code)]
     found = []
-    for stretch in said(command):
+    for stretch in stretches:
         for name in standing(stretch):
             try:
                 matches = list(itertools.islice(glob.iglob(name), GLOB_MATCHES)) if GLOB.search(name) else []
@@ -586,7 +644,7 @@ def record_areas(tool: str, args: dict, cwd: str) -> set[str]:
             folders.append(real(args.get("path") or cwd, cwd))
     elif tool == "Bash":
         command = args.get("command", "")
-        files += [] if path_only(command) else named_paths(command)
+        files += [] if path_only(command) else named_paths(command, cwd)
         folders += [folder for folder, _ in recursive_reads(command, cwd)]
     sessions = {s for f in files if (s := records.session_of(f, homes))}
     for folder in folders:
@@ -730,7 +788,7 @@ class Standing:
         return carried
 
 
-def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
+def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path]]:
     """(paths a Bash command names as a place it writes, paths it names as removed).
 
     Written: a redirection's target (`>`, `>>`), the files of tee / touch / truncate, the
@@ -742,8 +800,10 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
     code that writes it. A shell's `-c` string, and a heredoc fed to
     a shell, is a command line of its own, read the same way. Removed: the files of rm / unlink / rmdir /
     shred, and what mv moves away. A glob stands for the files it matches now. What stands
-    before a command (`sudo`, `env`, a variable) is skipped. A script run from a file is not
-    read, and neither is a heredoc's body fed to anything else (it is text, not commands).
+    before a command (`sudo`, `env`, a variable) is skipped. A file of code the command hands to
+    a program (`python3 fix.py`, `bash run.sh`, `./run.sh`; script_files) is read as that code
+    written into the command. A heredoc's body fed to anything else is not read (it is text, not
+    commands).
 
     A relative name is a file of the folder the command stands in when it reaches that word: `cd`,
     `pushd` / `popd` move it and a subshell gives the place back. A variable the command line set to
@@ -767,7 +827,9 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
     def run(tool: str, code: str, base: str) -> None:
         """Code handed to a program that runs it."""
         if SHELL_CODE.fullmatch(tool):
-            inner = named(code, base)
+            if depth >= NESTED:
+                return
+            inner = named(code, base, depth + 1)
             found[0].extend(inner[0])
             found[1].extend(inner[1])
         elif code_flags(tool):
@@ -819,6 +881,8 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
                 run(tool, code, here)
         if stdin is not None:
             run(tool, stdin, here)
+        if depth < NESTED and (script := script_files.ran([filled(words[0]), *args], here)) is not None:
+            run(*script, here)
 
     # The command line is read in order, following where it stands, as sends_of does for a send:
     # `cd`, `pushd` / `popd` move it and a `( ... )` subshell gives the place back, so
@@ -853,6 +917,37 @@ def named(command: str, cwd: str) -> tuple[list[Path], list[Path]]:
         return out
 
     return spelled(written) + found[0], spelled(removed) + found[1]
+
+
+def ran_scripts(command: str, cwd: str, depth: int = 0) -> list[tuple[str, str, str]]:
+    """(the program the code is read as, the code, the folder it runs in) for each file of code the
+    command hands to a program (script_files), in order, following where the command stands (Standing),
+    a shell's `-c` string and `eval` included."""
+    line, _ = split_heredocs(spell_home(command))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return []
+    found: list[tuple[str, str, str]] = []
+    standing = Standing(cwd)
+    for words, _, _, ended_by in steps:
+        rest = words
+        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT):
+            rest = rest[1:]
+        if rest and not standing.move(os.path.basename(rest[0]), rest[1:]):
+            tool, here = os.path.basename(rest[0]), standing.here
+            if (script := script_files.ran(rest, here)) is not None:
+                found.append((*script, here))
+            elif depth < NESTED and (tool == "eval" or SHELL_CODE.fullmatch(tool)):
+                codes = [" ".join(rest[1:])] if tool == "eval" else \
+                    [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
+                for code in codes:
+                    found += ran_scripts(code, here, depth + 1)
+        if ended_by == "(":
+            standing.open()
+        elif ended_by == ")":
+            standing.close()
+    return found
 
 
 def write_targets(command: str, cwd: str) -> list[Path]:
@@ -978,7 +1073,7 @@ def kept_by(command: str, cwd: str, transcript: str | None,
 def bash_marks(command: str, cwd: str, areas) -> list[Path]:
     """What a Bash command reads from: its folder always, the area paths it names unless
     it only checks them, and the roots of the areas inside a folder it reads recursively."""
-    named = [] if path_only(command) else mentioned_paths(command, areas)
+    named = [] if path_only(command) else mentioned_paths(command, areas, cwd)
     return [*named, real(cwd), *roots_under(recursive_reads(command, cwd), areas)]
 
 
@@ -1049,7 +1144,8 @@ def recursive_reads(command: str, cwd: str, depth: int = 0) -> list[tuple[Path, 
     """The folders a Bash command reads every file under, each with the folder names its walk
     leaves out: what a recursive grep, rg, a `find` that runs a command on what it finds (or hands
     it to xargs), or a recursive copy is given, and the command's folder when it is given nothing.
-    A shell's `-c` string is followed the same way. A relative folder is the one the command stands
+    A shell's `-c` string, and a shell script the command runs from a file (script_files), is
+    followed the same way. A relative folder is the one the command stands
     in when it reaches it (= `cd /b && grep -r x .` reads /b; see Standing)."""
     line, _ = split_heredocs(spell_home(command))
     try:
@@ -1080,6 +1176,9 @@ def _walked(words: list[str], steps: list, index: int, standing: Standing, depth
     cwd = standing.here
     ended_by = steps[index][3]
     found: list[tuple[Path, list[str]]] = []
+    script = script_files.ran(rest, cwd) if depth < NESTED else None
+    if script is not None and SHELL_CODE.fullmatch(script[0]):
+        return recursive_reads(script[1], cwd, depth + 1)
     if SHELL_CODE.fullmatch(tool) and depth < NESTED:
         for at, word in enumerate(args[:-1]):
             if re.fullmatch(r"-[A-Za-z]*c", word):
@@ -1160,7 +1259,7 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
     return send_places(command, cwd)[0]
 
 
-def send_places(command: str, cwd: str) -> tuple[list[tuple[Path, list[str]]], list[str], list[str]]:
+def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path, list[str]]], list[str], list[str]]:
     """(every send in a command -- git commit / push, a sending gh call -- as (repository it runs
     in, arguments naming its destination for corpus-scan), the words that leave a send's folder
     to be known only as the command runs, the commits whose options switch their hooks off
@@ -1169,7 +1268,8 @@ def send_places(command: str, cwd: str) -> tuple[list[tuple[Path, list[str]]], l
     The command is read in order, following where it stands: `cd`, `pushd` / `popd` and a
     `( ... )` subshell move it, and each git runs where the command stands at that point, moved
     again by its own `-C`. So `cd a; cd b && git push` pushes from b, and `(cd a); git commit`
-    commits where it started. A shell's -c string is read the same way from where it runs.
+    commits where it started. A shell's -c string, and a shell script the command runs from a file
+    (script_files), is read the same way from where it runs.
 
     A variable the command line set to a literal before (`W=/a/b; cd $W`) is written out, and one
     of the session's environment (`$HOME`) too. A folder still spelled with a variable or a
@@ -1237,13 +1337,18 @@ def send_places(command: str, cwd: str) -> tuple[list[tuple[Path, list[str]]], l
         here = Path(standing.here)
 
         def inner(code: str) -> None:
-            sends, unreadable, skips = send_places(code, str(here))
+            if depth >= NESTED:
+                return
+            sends, unreadable, skips = send_places(code, str(here), depth + 1)
             found.extend([] if lost else sends)
             unread.extend([lost] * len(sends) if lost else [])
             unread.extend(unreadable)
             skipping.extend(skips)
 
-        if name in SHELLS and "-c" in args[:-1]:
+        script = script_files.ran(argv, str(here))
+        if script is not None and SHELL_CODE.fullmatch(script[0]):
+            inner(script[1])
+        elif name in SHELLS and "-c" in args[:-1]:
             inner(args[args.index("-c") + 1])
         elif name == "eval" and args:
             inner(" ".join(args))
@@ -1781,9 +1886,14 @@ def approval(tool: str, args: dict, event: dict, places: list[Path], areas) -> s
     return why or order_module().spend(found, event, STATE)
 
 
-def bypass(command: str, cwd: str, areas) -> str | None:
+def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
     """Why a command switches the guards off or around, or None. It passes on the operator's yes
-    (`approval`), but for the marks."""
+    (`approval`), but for the marks. A shell script the command runs from a file (ran_scripts) is
+    held to the same lines, its comment lines left out: they are matched as text here."""
+    for program, code, here in ran_scripts(command, cwd) if depth < NESTED else []:
+        lines = "\n".join(line for line in code.splitlines() if not line.lstrip().startswith("#"))
+        if SHELL_CODE.fullmatch(program) and (reason := bypass(lines, here, areas, depth + 1)):
+            return reason
     expanded = spell_home(command)
     marks = "|".join(re.escape(name) for name in sorted(marks_names()))
     if re.search(rf"\b(rm|mv|cp|truncate|tee|touch|ln)\b[^|;&]*(?:{marks})|>\s*\S*(?:{marks})", expanded):
@@ -1821,7 +1931,7 @@ def bypass(command: str, cwd: str, areas) -> str | None:
 def ask(argv: list[str]) -> int:
     """`may-write <session_id> <path>...`: whether the session may write each path, judged as the hook
     judges an Edit of it. For a script that writes where its arguments say -- the hook reads the
-    command that starts a script, never the script, and a relative path it is handed resolves where
+    script, not where the words handed to it go, and a relative path it is handed resolves where
     the script runs, not where the session stands. A relative path here resolves from the caller's
     working directory. Exit 0: every path may be written (also with the entry guard off, with no
     areas, and for a session with no marks, but for the guard's own settings and a transcript, judged as
@@ -1979,7 +2089,7 @@ def main() -> int:
     # operator's yes to this very call: the marks, which keep areas apart, never.
     if tool == "Bash" and (reason := bypass(args.get("command", ""), cwd, areas)):
         command = args.get("command", "")
-        places = [real(cwd), *mentioned_paths(command, areas), *(t for t, _ in sends_of(command, cwd))]
+        places = [real(cwd), *mentioned_paths(command, areas, cwd), *(t for t, _ in sends_of(command, cwd))]
         if reason == MARKS_REWRITE or (why := approval(tool, args, event, places, areas)):
             deny(f"area-guard: an agent does not switch the guards off or around ({reason})"
                  + ("" if reason == MARKS_REWRITE else f": {why}"))

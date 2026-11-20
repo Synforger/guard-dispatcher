@@ -24,8 +24,9 @@ judgement in `scanners/destinations/send-scan.py`, which decides as for a push (
   `host:<host>` for each URL it names, and its payload is the code. Python code that can only
   compute and read or write this machine's files (code_writes.python.stays_here: every call one the
   reader knows) sends nothing, and a URL in it is text. A shell's `-c` string is read as a command
-  line of its own. A script in a file is not read.
-- A script for `osascript` (its `-e` lines, or standard input when it names no script file) sends
+  line of its own. A file of code the command hands to a program (`python3 fix.py`, `bash run.sh`,
+  `./run.sh`, `osascript x.applescript`; script_files) is read as that code written into the command.
+- A script for `osascript` (its `-e` lines, standard input, or the text file it names) sends
   Apple events to each application it names, `app:<name>` in lower case (`tell application
   "Calendar"`, `Application("com.apple.iCal")`); its payload is the script.
 
@@ -92,6 +93,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_events  # noqa: E402
 import code_writes  # noqa: E402
 import curl_options  # noqa: E402
+import script_files  # noqa: E402
 from service_reads import rclone_reads  # noqa: E402
 from path_forms import resolved  # noqa: E402
 from shell_commands import expands, globs, simple_commands  # noqa: E402
@@ -754,8 +756,8 @@ def mail_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) ->
 
 def osascript_sends(words: list[str], stdin, command: str, cwd: str, send_scan: Path) -> list[Send]:
     """osascript: each application its script names; the script is the payload. The script is its
-    `-e` lines, or standard input when there are none and no script file is named (a file is not
-    read, as for any interpreter). A script only known when it runs is sent to `app:?`."""
+    `-e` lines, or standard input when there are none and no script file is named (a text file it
+    names is read by code_sends). A script only known when it runs is sent to `app:?`."""
     options, positional = split_options(words, VALUED["osascript"])
     codes = [v for o, v in options if o == "-e" and v]
     unknown = None
@@ -945,6 +947,8 @@ def tmux_command(server: list[str], words: list[str]) -> list[Send]:
 INTERPRETERS = {"python", "python3", "node", "ruby", "perl", "deno", "bun", "php"}
 SHELLS = {"bash", "sh", "zsh", "dash"}
 CODE_FLAGS = {"-c", "-e", "--eval", "-E", "-r"}
+# A folder word only known as the command runs (a variable, a substitution, the previous folder).
+UNREAD_FOLDER = re.compile(r"[$`]|^-$")
 URL = re.compile(r"(?i)\b(?:https?|wss?|ftp)://[A-Za-z0-9.-]+(?::\d+)?(?:/[^\s'\"`\\)<>]*)?")
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n(.*?)\n\s*\2\s*(?:\n|$)", re.S)
 
@@ -967,15 +971,33 @@ def local_commands(tool: str, args: list[str]) -> list[str]:
 def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[Send]:
     """Code written into the command line: a shell's `-c` string is a command line of its own; an
     interpreter's `-c` / `-e` code, or a heredoc fed to one, sends to each host a URL in it names,
-    unless it is Python that stays on this machine."""
+    unless it is Python that stays on this machine. A file of code the command hands to a program
+    (script_files) is that code: a shell script is a command line of its own, an osascript file
+    sends to the applications it names, and an interpreter's file is read as its `-c` code. A
+    relative file is looked for where the command stands after the `cd`s before it that are written
+    out (a `cd` to a folder only known as it runs leaves it where it was)."""
     try:
         commands = simple_commands(command)
     except ValueError:
         return []
     bodies = [m.group(3) for m in HEREDOC.finditer(command)]
     out = []
+    here = cwd
     for words, stdin in commands:
         tool = os.path.basename(words[0])
+        if tool == "cd" and len(words) > 1 and not UNREAD_FOLDER.search(words[1]):
+            here = str(resolved(Path(os.path.join(here, os.path.expanduser(words[1])))))
+            continue
+        script = script_files.ran(list(words), here) if depth < 3 else None
+        if script is not None:
+            program, text = script
+            if program in SHELLS:
+                out += sends("Bash", {"command": text}, here, send_scan, depth=depth + 1)
+                continue
+            if program == "osascript":
+                out += [Send(f"app:{name}", text, []) for name in apple_events.applications(text)]
+                continue
+            tool, words = program, [program, "-c", text]
         codes = [words[i + 1] for i, w in enumerate(words[:-1]) if w in CODE_FLAGS]
         if tool in SHELLS and depth < 3:
             for code in codes:
@@ -1006,7 +1028,7 @@ def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[
 
 def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
     """The sends of network commands other than curl / wget. A command with no reader here is
-    not seen (see the README: a script's own network calls are not seen)."""
+    not seen (see the README). A script in a file is read by code_sends."""
     try:
         commands = simple_commands(command)
     except ValueError:
