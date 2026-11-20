@@ -39,6 +39,7 @@ purpose, and a gap is counted against it (see *Scan guarantee*).
 | AI agent message to another session | `agent-hooks/claude-code/peers.py` (called by the same hook, and by a client that relays messages) | a message is judged by where the receiving session has read: text of an area it has not read inside is refused, words of the sender's own pass, in every direction |
 | repair | `scanners/words/anon-fix.sh` | rewrites unpushed history in place (`git filter-repo`) so neither the leak nor the repair scar is published |
 | health | `scripts/doctor.sh` | reports unarmed repos, hooksPath overrides, word-list drift |
+| client health | `scripts/client-checks.sh --root <platform root>` | one line per judgement missing from the configuration of a client that relays messages and tickets (`agent_message_check`, `ticket_write_check`, ...), or not running `peers.py` with the options it needs; reads only, exit 1 when a line is printed, exit 0 on a machine without the client |
 
 Content scanning is **default-on for every repository** — the only way
 out is an explicit `exempt` opt-out. Identity and branch-flow
