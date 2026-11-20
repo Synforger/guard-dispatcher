@@ -315,8 +315,8 @@ class _Reader:
         for node in ast.walk(self._tree):
             if not isinstance(node, ast.Call):
                 continue
-            if isinstance(node.func, ast.Name) and node.func.id in self._functions:
-                self._bind_parameters(self._functions[node.func.id], node)
+            if (function := self._function(node.func)) is not None:
+                self._bind_parameters(function, node)
             elif isinstance(node.func, ast.Attribute) and node.func.attr in GROWS:
                 for arg in [*node.args, *(k.value for k in node.keywords)]:
                     self._bind(node.func.value, arg)
@@ -353,6 +353,12 @@ class _Reader:
         if isinstance(node, ast.Attribute) and (base := self._key(node.value)) is not None:
             return f"{base}.{node.attr}"
         return None
+
+    def _function(self, node: ast.AST) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+        """The function the code defines that a name stands for, through its aliases (`g = f`)."""
+        if not isinstance(node, ast.Name):
+            return None
+        return self._functions.get(self._dotted(node) or "")
 
     def _dotted(self, node: ast.AST) -> str | None:
         """The dotted name a call's function stands for when it reads off an imported module or is a
@@ -409,12 +415,11 @@ class _Reader:
             key = self._key(inner) if isinstance(inner, (ast.Name, ast.Attribute)) else None
             for value in self._values.get(key, []) if key else []:
                 self._sources(value, seen, parts)
-            if isinstance(inner, ast.Name) and inner.id in self._functions and id(inner) not in self._called:
-                function = self._functions[inner.id]
+            if id(inner) not in self._called and (function := self._function(inner)) is not None:
                 self._sources(function, seen, parts)
                 parts += _string_annotations(function)
-            if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name) and inner.func.id in self._functions:
-                for sub in ast.walk(self._functions[inner.func.id]):
+            if isinstance(inner, ast.Call) and (function := self._function(inner.func)) is not None:
+                for sub in ast.walk(function):
                     if isinstance(sub, ast.Return) and sub.value is not None:
                         self._sources(sub.value, seen, parts)
 

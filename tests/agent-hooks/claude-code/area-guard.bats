@@ -987,6 +987,8 @@ print(place == m.Path('${CASE_REPO}'), note)
         $'python3 - <<\'EOF\'\nimport functools\nfunctools.reduce(open, ["'"${PERSONAL}"$'/notes/a.md", "w"]).write("x")\nEOF'
         $'python3 - <<\'EOF\'\nimport itertools\nlist(itertools.accumulate(["'"${PERSONAL}"$'/notes/a.md", "w"], open))\nEOF'
         $'python3 - <<\'EOF\'\nimport functools, io\nfunctools.reduce(io.open, ["'"${PERSONAL}"$'/notes/a.md", "w"]).write("x")\nEOF'
+        $'python3 - <<\'EOF\'\ndef f(p):\n    open(p, "w").write("x")\ng = f\ng("'"${PERSONAL}"$'/notes/a.md")\nEOF'
+        $'python3 - <<\'EOF\'\nimport shutil\ndef f(a, b):\n    shutil.copy(a, b)\ng = f\ng("pages/tab/index.html", "'"${PERSONAL}"$'/notes/b.md")\nEOF'
         $'python3 - <<\'EOF\'\ndef keep(where, text):\n    with open(where, "a") as f:\n        f.write(text)\nkeep("'"${PERSONAL}"$'/notes/a.md", "x")\nEOF'
         $'python3 - <<\'EOF\'\nimport somelib\nsomelib.save("'"${PERSONAL}"$'/notes/a.md")\nEOF'
         $'python3 - <<\'EOF\'\nparts = []\nparts.append("'"${PERSONAL}"$'/notes/a.md")\nopen(parts[0], "w")\nEOF'
