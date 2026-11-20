@@ -566,6 +566,25 @@ tickets_setup() {
     [ "${status}" -eq 0 ]; [ "${output}" = "${OUTSIDE_PLACE}" ]
 }
 
+@test "peers.py --place-for: with --folder the areas the opening session's working folder reaches count as read" {
+    tickets_setup
+    run python3 "${PEERS}" --place-for "${ID_PLAIN}" --folder "${H}/org/clients/acme"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${CLIENT_PLACE}" ]
+    run python3 "${PEERS}" --place-for "${ID_PLAIN}" --folder "${H}/org"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${COMPANY_PLACE}" ]
+    run python3 "${PEERS}" --place-for "${ID_PLAIN}" --folder "${H}/repos/tool"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${OUTSIDE_PLACE}" ]
+    # a name the working folder's reads file gives counts too, as for --covers-place
+    printf '%s\n' 'client   # the client these notes are about' > "${H}/repos/tool/guard-reads.txt"
+    run python3 "${PEERS}" --place-for "${ID_PLAIN}" --folder "${H}/repos/tool"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${CLIENT_PLACE}" ]
+    # the session's own marks still count, and without --folder only they do
+    run python3 "${PEERS}" --place-for "${ID_CLIENT}" --folder "${H}/org"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${CLIENT_PLACE}" ]
+    run python3 "${PEERS}" --place-for "${ID_PLAIN}"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${OUTSIDE_PLACE}" ]
+}
+
 @test "peers.py --place-for: areas that do not lie one inside the next fit in no place, and exit 1 says so" {
     tickets_setup
     printf '%s\n' 'other ~/other' >> "${GUARD_CONFIG_DIR}/areas.txt"

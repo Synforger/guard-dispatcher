@@ -1082,7 +1082,7 @@ writes. Where a ticket sits is the guard's to say, so the rule for it lives in
 one place (`agent-hooks/claude-code/ticket_places.py`) and the relay asks it:
 
 ```sh
-peers.py --place-for <session> [--typed-in <session>]   # the folder for a ticket this session opens
+peers.py --place-for <session> [--typed-in <session>] [--folder <working folder>]   # the folder for a ticket this session opens
 peers.py --to-place <folder> --text <file> [--typed-in <session>]
 peers.py --to <session> --covers-place <folder> [--folder <working folder>]
 peers.py --places [--session <session>]                 # every folder tickets sit in
@@ -1091,7 +1091,10 @@ peers.py --places [--session <session>]                 # every folder tickets s
 A ticket opened by a session that has read inside no area sits in
 `<platform root>/state/claude-pwa-client/tickets`. One opened by a session that
 has read inside areas lying one inside the next (a client in its company) sits
-in `<root>/tickets` of the innermost one. When that area has several roots, or
+in `<root>/tickets` of the innermost one. With `--folder`, the areas the
+folder the session works in reaches count as read, as for `--covers-place`:
+a session working inside an area that has read nothing yet opens its tickets
+there, not outside. When that area has several roots, or
 the folder is inside a git work tree, the area names the folder in its own
 settings (`areas/<area>/tickets.txt`: one line, `~` allowed, `#` starts a
 comment), which must lie in that area alone and outside every git work tree.

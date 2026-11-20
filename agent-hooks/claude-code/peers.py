@@ -47,9 +47,11 @@ client's backend alone writes (`ticket_places.py` holds the rule). Where a ticke
 and what is written into it is judged here as a message to a session that has read inside the
 boundaries of that folder:
 
-    peers.py --place-for SESSION [--typed-in SESSION2]
+    peers.py --place-for SESSION [--typed-in SESSION2] [--folder WORKING_FOLDER]
                                           the folder for a ticket opened by SESSION (and holding what
-                                          the operator typed in SESSION2): exit 0 prints it, 1 when the
+                                          the operator typed in SESSION2; with --folder, the areas the
+                                          folder SESSION works in reaches count as read, as for
+                                          --covers-place): exit 0 prints it, 1 when the
                                           areas read fit in no one place (one line why), 2 cannot judge
     peers.py --to-place FOLDER --text FILE [--typed-in SESSION]
                                           judge FILE as a message to the folder's boundaries: as
@@ -264,11 +266,13 @@ def place_boundaries(folder: Path) -> set[str]:
     return ticket_places.boundaries(resolved(folder), area_pairs(corpus_module().load_areas()))
 
 
-def place_for(session: str, typed: str | None) -> tuple[int, str]:
+def place_for(session: str, typed: str | None, work_folder: Path | None = None) -> tuple[int, str]:
     """(exit status, the folder or the line why) for a ticket opened by `session`, that holds what
-    the operator typed in `typed`."""
-    read = marks_of(session) | (marks_of(typed) if typed else set())
+    the operator typed in `typed`. With `work_folder`, the areas the folder `session` works in reaches
+    count as read too: a tab inside an area that has read nothing yet still writes inside it."""
     try:
+        read = marks_of(session) | (marks_of(typed) if typed else set()) | \
+            (reached(work_folder) if work_folder else set())
         return 0, str(ticket_places.place_for(read, area_pairs(corpus_module().load_areas())))
     except ticket_places.PlaceError as error:
         return error.status, error.why
@@ -288,15 +292,19 @@ def judge_place(folder: Path, payload: Path, typed: str | None) -> tuple[int, st
     return (status, why) if status else judge_for(name, payload, [sorted(wanted)])
 
 
+def reached(work_folder: Path) -> set[str]:
+    """The areas a session working in `work_folder` may read inside without having read there: the
+    areas around the folder, and those its reads file names."""
+    home = resolved(work_folder)
+    return set(area_roles.reach_from(home, area_pairs(corpus_module().load_areas()), work_reads.named(home)))
+
+
 def readable(session: str, work_folder: Path | None) -> set[str]:
     """The areas `session` may read inside: those it has, and those the folder it works in reaches
     (without one, the folder its running record says it started in)."""
-    named_areas = corpus_module().load_areas()
     home = work_folder or next((Path(row["cwd"]) for row in running()
                                 if row["sessionId"] == session and row.get("cwd")), None)
-    reached = area_roles.reach_from(resolved(home), area_pairs(named_areas), work_reads.named(resolved(home))) \
-        if home else set()
-    return set(marks(session)) | reached
+    return set(marks(session)) | (reached(home) if home else set())
 
 
 def covers_place(to: str, folder: Path, work_folder: Path | None) -> bool:
@@ -328,7 +336,8 @@ def main() -> int:
     parser.add_argument("--roles", action="store_true", help="print the roles a session working in --folder "
                         "may see, one `<role>\\t<folder>` per line")
     parser.add_argument("--folder", type=Path, help="with --roles: the folder the viewing session works in; "
-                        "with --covers-place: the folder the receiving session works in")
+                        "with --covers-place: the folder the receiving session works in; "
+                        "with --place-for: the folder the opening session works in")
     parser.add_argument("--session", help="with --roles: the viewing session, whose marks count too; "
                         "with --places: only the folders this session may read")
     parser.add_argument("--place-for", metavar="SESSION", help="print the folder a ticket opened by this "
@@ -350,7 +359,7 @@ def main() -> int:
             print(place)
         return 0
     if args.place_for:
-        status, said = place_for(args.place_for, args.typed_in)
+        status, said = place_for(args.place_for, args.typed_in, args.folder)
         print(said, file=sys.stdout if status == 0 else sys.stderr)
         return status
     if args.covers_place:
