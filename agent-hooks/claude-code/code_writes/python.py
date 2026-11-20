@@ -165,8 +165,7 @@ def stays_here(code: str) -> bool:
     imports only LOCAL_MODULES, names no DYNAMIC builtin and no dunder, hands on nothing it does not
     know (see the module's docstring), and every call in it is one this module knows (a pure one, an
     `open`, a path's method, one of LOCAL_WRITES, a function the code defines and does not rebind). A
-    URL in such code is
-    text it holds, not a place it reaches."""
+    URL in such code is text it holds, not a place it reaches."""
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError):
