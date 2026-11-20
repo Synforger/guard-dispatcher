@@ -443,6 +443,11 @@ for line in open('${H}/repos/tool/x.jsonl'):
     rows.append(json.loads(line.rstrip()))
 open('${H}/repos/tool/y.md', 'w').write('- from: https://chat.example.com/archives/C000/p123\\n' + str(find(rows, '1')))"
     passed
+    py_heredoc "import html
+esc = html.escape
+s = open('${H}/repos/tool/page.html').read().replace('<a href=\"https://chat.example.com/archives/D1/p1\">x</a>', '<a href=\"#y\">' + esc('y') + '</a>')
+open('${H}/repos/tool/page.html', 'w').write(s)"
+    passed
 }
 
 @test "outgoing: a refusal of code says why the guard counts its URLs as sends" {
