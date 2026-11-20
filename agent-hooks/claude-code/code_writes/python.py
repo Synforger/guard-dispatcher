@@ -79,9 +79,16 @@ _MODULE_FUNCTIONS = {
     "csv": ("reader", "writer", "DictReader", "DictWriter"),
     "io": ("StringIO", "BytesIO"),
 }
+#: The built-in exceptions: making one only makes the value a `raise` throws.
+_EXCEPTIONS = ("BaseException", "Exception", "SystemExit", "KeyboardInterrupt", "ArithmeticError", "AssertionError",
+               "AttributeError", "EOFError", "FileExistsError", "FileNotFoundError", "ImportError", "IndexError",
+               "IsADirectoryError", "KeyError", "LookupError", "NotADirectoryError", "NotImplementedError",
+               "OSError", "PermissionError", "RuntimeError", "StopIteration", "TimeoutError", "TypeError",
+               "UnicodeDecodeError", "UnicodeEncodeError", "ValueError", "ZeroDivisionError")
 #: Functions that write no file they are handed a path for and run no command or code, by the name
 #: _canonical gives them.
 PURE_FUNCTIONS = frozenset({
+    *_EXCEPTIONS,
     *(f"{module}.{function}" for module in ("os.path", "posixpath") for function in _PATH_FUNCTIONS),
     *(f"{module}.{function}" for module, functions in _MODULE_FUNCTIONS.items() for function in functions),
     "print", "len", "str", "repr", "format", "int", "float", "bool", "list", "tuple", "dict", "set",
