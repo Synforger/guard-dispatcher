@@ -23,7 +23,11 @@ every call is known as above holds its URLs as text and sends nothing.
 from __future__ import annotations
 
 import ast
+import functools
+import importlib
 import re
+import types
+import warnings
 
 #: Modules whose functions write no file they are handed a path for (they read, or compute).
 PURE_MODULES = ("os.path", "posixpath", "re", "fnmatch", "glob", "json", "shlex", "urllib.parse", "html",
@@ -75,6 +79,15 @@ WRITING_MODE = re.compile(r"[wax+]")
 LOCAL_MODULES = (*PURE_MODULES, "__future__", "pathlib", "os", "sys", "io", "codecs", "shutil", "tempfile")
 #: Builtins that run, or reach, code or objects the tree does not show: named anywhere (a call, or a
 #: value handed on, `sorted(xs, key=eval)`), they make the code one this module does not know.
+#: Attributes of the values known calls give (a path, a match, a date, a stat, an open file, a number)
+#: that hold data and run nothing: handed on as a value, they are not a method a known call may call.
+VALUE_ATTRIBUTES = frozenset({
+    "name", "stem", "suffix", "suffixes", "parent", "parents", "parts", "anchor", "root", "drive", "path",
+    "string", "pos", "endpos", "lastindex", "lastgroup", "pattern", "flags", "groupindex",
+    "year", "month", "day", "hour", "minute", "second", "microsecond", "tzinfo", "days", "seconds",
+    "st_size", "st_mtime", "st_atime", "st_ctime", "st_mode", "mode", "closed", "encoding",
+    "real", "imag", "numerator", "denominator",
+})
 DYNAMIC = frozenset({"eval", "exec", "compile", "getattr", "setattr", "delattr", "globals", "locals", "vars",
                      "breakpoint", "help"})
 
@@ -174,7 +187,9 @@ class _Reader:
             elif isinstance(node, ast.Attribute):
                 name = self._dotted(node)
                 if name is None:
-                    if node.attr in RECEIVER_WRITES or node.attr == "open":
+                    if node.attr in RECEIVER_WRITES or node.attr == "open" or not (
+                            node.attr in PURE_METHODS or node.attr in GROWS or node.attr.startswith("is_")
+                            or node.attr in VALUE_ATTRIBUTES):
                         return True
                     continue
             else:
@@ -254,14 +269,16 @@ class _Reader:
         """The dotted name a call's function stands for when it reads off an imported module or is a
         plain name (`osp.relpath` -> `os.path.relpath`), else None (a method of a value)."""
         if isinstance(node, ast.Name):
-            return None if node.id in self._rebound else self._modules.get(node.id, node.id)
+            if node.id in self._rebound:
+                return None
+            return _canonical(self._modules[node.id]) if node.id in self._modules else node.id
         if isinstance(node, ast.Attribute):
             root = node
             while isinstance(root, ast.Attribute):
                 root = root.value
             if (isinstance(root, ast.Name) and root.id in self._modules and root.id not in self._values
                     and root.id not in self._rebound):
-                return f"{self._dotted(node.value)}.{node.attr}"
+                return _canonical(f"{self._dotted(node.value)}.{node.attr}")
         return None
 
     def _targets(self, call: ast.Call) -> list[ast.AST]:
@@ -299,6 +316,43 @@ class _Reader:
                 for sub in ast.walk(self._functions[inner.func.id]):
                     if isinstance(sub, ast.Return) and sub.value is not None:
                         self._sources(sub.value, seen, parts)
+
+
+@functools.lru_cache(maxsize=None)
+def _canonical(name: str) -> str:
+    """The dotted name as the modules it passes through name themselves: each step that lands on a
+    module starts the name again at that module's own name (`glob.os.system` is `os.system`,
+    `os.path.join` is `posixpath.join`), so a pure module's prefix does not cover a module it holds.
+    Only LOCAL_MODULES are imported, all of the standard library; a name under none of them is kept.
+    A step this Python does not have is unknown (`?.` in front), since the code's Python may have it."""
+    parts = name.split(".")
+    module = None
+    for size in range(len(parts), 0, -1):
+        prefix = ".".join(parts[:size])
+        if _local_module(prefix):
+            try:
+                module = importlib.import_module(prefix)
+                break
+            except ImportError:
+                continue
+    if module is None:
+        return name
+    value: object = module
+    canonical = [module.__name__]
+    for part in parts[size:]:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if (not hasattr(value, part) and isinstance(value, types.ModuleType)
+                    and _local_module(value.__name__)):
+                try:
+                    importlib.import_module(f"{value.__name__}.{part}")
+                except ImportError:
+                    pass
+            if not hasattr(value, part):
+                return f"?.{name}"
+            value = getattr(value, part)
+        canonical = [value.__name__] if isinstance(value, types.ModuleType) else [*canonical, part]
+    return ".".join(canonical)
 
 
 def _pure(name: str) -> bool:

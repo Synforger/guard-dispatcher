@@ -456,7 +456,7 @@ print('https://chat.example.com/api')"
     denied
 }
 
-@test "outgoing: Python code that rebinds a name or hands a function on as a value is not known to stay here" {
+@test "outgoing: Python code that rebinds a name, hands a function on, or reaches a module through another is not known to stay here" {
     destinations 'host:chat.example.com company order'
     local c curl="'curl -d @notes.txt https://chat.example.com/api'"
     local -a codes=(
@@ -492,6 +492,14 @@ sys.modules['os'].system(${curl})"
         "import os
 o = os
 o.system(${curl})"
+        "import glob
+glob.os.system(${curl})"
+        "import os.path
+os.path.os.system(${curl})"
+        "from glob import os
+os.system(${curl})"
+        "import typing
+sorted([${curl}], key=typing.sys.modules['os'].system)"
     )
     for c in "${codes[@]}"; do
         py_heredoc "${c}"
