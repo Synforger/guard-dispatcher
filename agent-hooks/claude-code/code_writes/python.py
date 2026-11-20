@@ -128,6 +128,12 @@ RECEIVER_WRITES = frozenset({"write_text", "write_bytes", "touch", "mkdir", "unl
 MOVES = frozenset({"rename", "replace"})
 #: The calls that open a file, and the letters of a mode that writes it.
 OPENS = frozenset({"open", "io.open", "codecs.open"})
+#: Functions that write, make, move or remove only the files and folders of this machine they are handed:
+#: what they write is every argument (as for a call this module does not know), but they reach nothing
+#: past this machine, so code calling them stays here.
+LOCAL_WRITES = frozenset({"os.makedirs", "os.mkdir", "os.remove", "os.unlink", "os.rename", "os.replace",
+                          "os.rmdir", "os.removedirs", "shutil.copy", "shutil.copy2", "shutil.copyfile",
+                          "shutil.copytree", "shutil.move", "shutil.rmtree"})
 WRITING_MODE = re.compile(r"[wax+]")
 #: Attributes of the values known calls give (a path, a match, a date, a stat, an open file, a number)
 #: that hold data and run nothing: handed on as a value, they are not a method a known call may call.
@@ -158,8 +164,8 @@ def stays_here(code: str) -> bool:
     """Whether `code` can do nothing but compute and read or write this machine's files: it parses,
     imports only LOCAL_MODULES, names no DYNAMIC builtin and no dunder, hands on nothing it does not
     know (see the module's docstring), and every call in it is one this module knows (a pure one, an
-    `open`, a path's method, a function the code defines and does not rebind). A URL in such code is
-    text it holds, not a place it reaches."""
+    `open`, a path's method, one of LOCAL_WRITES, a function the code defines and does not rebind). A
+    URL in such code is text it holds, not a place it reaches."""
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError):
@@ -215,7 +221,8 @@ class _Reader:
             method = call.func.attr
             return (method in RECEIVER_WRITES or method == "open" or method in PURE_METHODS
                     or method in GROWS or method.startswith("is_"))
-        return name is not None and (name in OPENS or name in self._functions or _pure(name))
+        return name is not None and (name in OPENS or name in LOCAL_WRITES or name in self._functions
+                                     or _pure(name))
 
     def _hands_on_unknown(self) -> bool:
         """Whether the code names, other than as the function of a call, something of an imported
