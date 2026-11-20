@@ -294,6 +294,7 @@ class Send(NamedTuple):
     reading: bool = False                # a reading call: only its own strings reach the service
     handles: str = ""                    # the ids it names objects of the service by: not text it carries
     arguments: dict = {}                 # a reading call's arguments by name, matched by reads.txt (read only)
+    because: str = ""                    # why the guard counts it as a send, when the call does not say it
 
 
 @functools.lru_cache(maxsize=None)
@@ -991,10 +992,15 @@ def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[
         elif stdin and stdin[1] == "a heredoc":
             codes += bodies
         for code in codes:
-            if tool.startswith("python") and code_writes.python.stays_here(code):
-                continue
+            if tool.startswith("python"):
+                why = code_writes.python.reaches_out(code)
+                if why is None:
+                    continue
+                because = f"the Python code counts as sending to each URL it names, because {why}"
+            else:
+                because = f"{tool}'s code counts as sending to each URL it names: only Python is read"
             for place in dict.fromkeys(p for p in map(place_of, URL.findall(code)) if p):
-                out.append(Send(place, code, []))
+                out.append(Send(place, code, [], because=because))
     return out
 
 
@@ -1139,17 +1145,19 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
     from the hook's `event` (its transcript); once everything else has passed it takes one of
     the order's shown blocks, kept under `state`."""
     judged = send_scan_module(send_scan)
-    for name, payload, unreadable, unknown, reading, handles, _arguments in sends(tool, args, cwd, send_scan, tabs):
+
+    def refusal(send: Send) -> str | None:
+        name, payload, unreadable, unknown, reading, handles = send[:6]
         if name.startswith(SESSION):
             if why := to_session(name[len(SESSION):], payload, event):
                 return why
-            continue
+            return None
         try:
             where, needs_order = judged.find(name)
         except judged.Broken as broken:
             return f"outgoing: not sent to {name}: {broken}; nothing is sent until it is fixed"
         if where == judged.UNDECLARED:
-            continue
+            return None
         ordered = None
         if needs_order and not reading and not order_module().is_draft(tool):
             if tool == "Bash" and (unreadable or not written_in(payload, args.get("command") or "")):
@@ -1203,4 +1211,9 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
                 else "the guard has nowhere to keep what the order lets through"
             if why:
                 return f"outgoing: not sent to {name}: {why}"
+        return None
+
+    for send in sends(tool, args, cwd, send_scan, tabs):
+        if why := refusal(send):
+            return why + (f"\n  ({send.because})" if send.because else "")
     return None
