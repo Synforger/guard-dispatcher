@@ -21,8 +21,10 @@ judgement in `scanners/destinations/send-scan.py`, which decides as for a push (
   or `-X POST|PUT|PATCH`) is named `host:<host>`; its payload is the body and the files it sends.
   One without a body is a reading call whose payload is its URLs (a query string reaches the host).
 - Code written into the command (`python -c`, `node -e`, a heredoc fed to an interpreter) is named
-  `host:<host>` for each URL it names, and its payload is the code. A shell's `-c` string is read
-  as a command line of its own. A script in a file is not read.
+  `host:<host>` for each URL it names, and its payload is the code. Python code that can only
+  compute and read or write this machine's files (code_writes.python.stays_here: every call one the
+  reader knows) sends nothing, and a URL in it is text. A shell's `-c` string is read as a command
+  line of its own. A script in a file is not read.
 - A script for `osascript` (its `-e` lines, or standard input when it names no script file) sends
   Apple events to each application it names, `app:<name>` in lower case (`tell application
   "Calendar"`, `Application("com.apple.iCal")`); its payload is the script.
@@ -88,6 +90,7 @@ from urllib.parse import unquote_plus, urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_events  # noqa: E402
+import code_writes  # noqa: E402
 import curl_options  # noqa: E402
 from service_reads import rclone_reads  # noqa: E402
 from path_forms import resolved  # noqa: E402
@@ -962,7 +965,8 @@ def local_commands(tool: str, args: list[str]) -> list[str]:
 
 def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[Send]:
     """Code written into the command line: a shell's `-c` string is a command line of its own; an
-    interpreter's `-c` / `-e` code, or a heredoc fed to one, sends to each host a URL in it names."""
+    interpreter's `-c` / `-e` code, or a heredoc fed to one, sends to each host a URL in it names,
+    unless it is Python that stays on this machine."""
     try:
         commands = simple_commands(command)
     except ValueError:
@@ -987,6 +991,8 @@ def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[
         elif stdin and stdin[1] == "a heredoc":
             codes += bodies
         for code in codes:
+            if tool.startswith("python") and code_writes.python.stays_here(code):
+                continue
             for place in dict.fromkeys(p for p in map(place_of, URL.findall(code)) if p):
                 out.append(Send(place, code, []))
     return out

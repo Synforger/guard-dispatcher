@@ -9,27 +9,100 @@ values into other values (`os.path.relpath`, a string's methods, `Path.read_text
 target: a path handed to it is text. A name is followed back to every value assigned to it (and a
 local function's parameters to the arguments of its calls), so `p = Path("a"); p.write_text(x)`
 gives the source of `p` and of `Path("a")`. Code that does not parse gives itself whole.
+
+A name is read by what it stands for only while nothing rebinds it: a name the code assigns, loops
+over, takes as a parameter or binds twice is a call this module does not know (`print = shutil.copy`).
+Code that hands on, other than by calling it, something of a module this module does not know as pure
+(`key=shutil.copy`, `f = os.system`, `o = os`) or a method that writes its receiver (`key=p.write_text`)
+gives itself whole too: a known call may call what it is handed.
+
+The same reading tells outgoing.py whether code reaches past this machine (stays_here): code whose
+every call is known as above holds its URLs as text and sends nothing.
 """
 
 from __future__ import annotations
 
 import ast
+import functools
+import importlib
 import re
+import types
+import warnings
 
-#: Modules whose functions write no file they are handed a path for (they read, or compute).
-PURE_MODULES = ("os.path", "posixpath", "re", "fnmatch", "glob", "json", "shlex", "urllib.parse", "html",
-                "textwrap", "string", "math", "datetime", "time", "hashlib", "base64", "collections",
-                "itertools", "functools", "difflib", "unicodedata", "operator", "statistics", "decimal",
-                "fractions", "uuid", "typing", "dataclasses", "enum", "copy", "pprint", "csv", "sys")
-#: Functions that write no file they are handed a path for.
+#: Standard modules whose import runs nothing but the module itself. Importing one names no function as
+#: known: a module is not pure as a whole, since a function that runs a command
+#: (`uuid._get_command_stdout`), evaluates a string (`typing.get_type_hints`) or takes an attribute by
+#: its name (`operator.attrgetter`) sits beside the pure ones. Only PURE_FUNCTIONS are known.
+LOCAL_MODULES = ("os", "posixpath", "sys", "io", "codecs", "pathlib", "shutil", "tempfile", "__future__", "re",
+                 "fnmatch", "glob", "json", "shlex", "urllib.parse", "html", "textwrap", "string", "math",
+                 "datetime", "time", "hashlib", "base64", "collections", "itertools", "functools", "difflib",
+                 "unicodedata", "operator", "statistics", "decimal", "fractions", "uuid", "typing",
+                 "dataclasses", "enum", "copy", "pprint", "csv")
+#: The path functions of `os.path`, which _canonical names `posixpath`.
+_PATH_FUNCTIONS = ("join", "basename", "dirname", "exists", "isfile", "isdir", "islink", "isabs", "abspath",
+                   "realpath", "relpath", "normpath", "expanduser", "expandvars", "splitext", "split", "getsize",
+                   "getmtime", "commonpath", "commonprefix", "samefile")
+#: The functions of the standard modules that write no file they are handed a path for and run no
+#: command or code, by module. No name that starts with `_` is listed.
+_MODULE_FUNCTIONS = {
+    "re": ("compile", "match", "search", "fullmatch", "sub", "subn", "split", "findall", "finditer", "escape"),
+    "fnmatch": ("fnmatch", "fnmatchcase", "filter", "translate"),
+    "glob": ("glob", "iglob", "escape"),
+    "json": ("dumps", "loads", "dump", "load"),
+    "shlex": ("split", "quote", "join"),
+    "urllib.parse": ("quote", "quote_plus", "unquote", "unquote_plus", "urlparse", "urlsplit", "urlunparse",
+                     "urlunsplit", "urlencode", "urljoin", "urldefrag", "parse_qs", "parse_qsl"),
+    "html": ("escape", "unescape"),
+    "textwrap": ("dedent", "indent", "wrap", "fill", "shorten"),
+    "string": ("capwords", "Template"),
+    "math": ("floor", "ceil", "sqrt", "log", "log2", "log10", "exp", "fabs", "isclose", "isnan", "isinf", "gcd",
+             "prod", "fsum"),
+    "datetime": ("datetime", "date", "time", "timedelta", "timezone", "datetime.now", "datetime.utcnow",
+                 "datetime.fromisoformat", "datetime.fromtimestamp", "datetime.strptime", "date.today",
+                 "date.fromisoformat"),
+    "time": ("time", "monotonic", "perf_counter", "strftime", "localtime", "gmtime", "sleep"),
+    "hashlib": ("sha256", "sha1", "sha512", "md5"),
+    "base64": ("b64encode", "b64decode", "urlsafe_b64encode", "urlsafe_b64decode"),
+    "collections": ("Counter", "OrderedDict", "defaultdict", "deque"),
+    "itertools": ("chain", "chain.from_iterable", "islice", "groupby", "product", "permutations", "combinations",
+                  "count", "repeat", "zip_longest", "accumulate"),
+    "functools": ("reduce", "cmp_to_key"),
+    "operator": ("itemgetter",),
+    "difflib": ("unified_diff", "ndiff", "SequenceMatcher", "get_close_matches"),
+    "unicodedata": ("normalize", "category", "east_asian_width"),
+    "statistics": ("mean", "median", "stdev", "pstdev", "variance"),
+    "decimal": ("Decimal",),
+    "fractions": ("Fraction",),
+    "uuid": ("uuid4", "UUID"),
+    "copy": ("copy", "deepcopy"),
+    "pprint": ("pprint", "pformat"),
+    "csv": ("reader", "writer", "DictReader", "DictWriter"),
+    "io": ("StringIO", "BytesIO"),
+}
+#: Functions that write no file they are handed a path for and run no command or code, by the name
+#: _canonical gives them.
 PURE_FUNCTIONS = frozenset({
+    *(f"{module}.{function}" for module in ("os.path", "posixpath") for function in _PATH_FUNCTIONS),
+    *(f"{module}.{function}" for module, functions in _MODULE_FUNCTIONS.items() for function in functions),
     "print", "len", "str", "repr", "format", "int", "float", "bool", "list", "tuple", "dict", "set",
     "frozenset", "sorted", "reversed", "enumerate", "zip", "min", "max", "sum", "any", "all", "isinstance",
     "issubclass", "abs", "round", "range", "chr", "ord", "hex", "oct", "bin", "id", "hash", "type", "iter",
     "next", "divmod", "pow", "callable", "bytes", "bytearray",
     "pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath", "pathlib.PurePosixPath",
     "os.getcwd", "os.listdir", "os.scandir", "os.walk", "os.stat", "os.lstat", "os.getenv", "os.fspath",
-    "os.fsdecode", "os.fsencode", "os.environ.get", "os.access", "os.cpu_count", "os.getpid",
+    "os.fsdecode", "os.fsencode", "os.environ.get", "os.access", "os.cpu_count", "os.getpid", "sys.exit",
+})
+#: Values of `os` and `sys` the code may use: data and the standard streams, whose pure methods are pure
+#: (`sys.stdout.write`, `sys.path.insert`). The rest of `sys` is the interpreter's machinery.
+MODULE_VALUES = frozenset({
+    "os.environ", "os.sep", "os.linesep", "os.pathsep", "os.curdir", "os.pardir", "os.name",
+    "sys.argv", "sys.stdin", "sys.stdout", "sys.stderr", "sys.platform", "sys.version", "sys.version_info",
+    "sys.maxsize", "sys.byteorder", "sys.path",
+    "math.pi", "math.e", "math.tau", "math.inf", "math.nan", "datetime.timezone.utc",
+    *(f"string.{name}" for name in ("ascii_letters", "ascii_lowercase", "ascii_uppercase", "digits", "hexdigits",
+                                    "octdigits", "punctuation", "whitespace", "printable")),
+    *(f"typing.{name}" for name in ("Any", "Optional", "Union", "List", "Dict", "Tuple", "Set", "FrozenSet",
+                                    "Iterable", "Iterator", "Callable", "Sequence", "Mapping", "Literal")),
 })
 #: Methods that write no file: a string's, a mapping's or a sequence's, a path's that read, a match's,
 #: an open file's (what it writes was opened for writing, which the `open` already gives).
@@ -56,6 +129,19 @@ MOVES = frozenset({"rename", "replace"})
 #: The calls that open a file, and the letters of a mode that writes it.
 OPENS = frozenset({"open", "io.open", "codecs.open"})
 WRITING_MODE = re.compile(r"[wax+]")
+#: Attributes of the values known calls give (a path, a match, a date, a stat, an open file, a number)
+#: that hold data and run nothing: handed on as a value, they are not a method a known call may call.
+VALUE_ATTRIBUTES = frozenset({
+    "name", "stem", "suffix", "suffixes", "parent", "parents", "parts", "anchor", "root", "drive", "path",
+    "string", "pos", "endpos", "lastindex", "lastgroup", "pattern", "flags", "groupindex",
+    "year", "month", "day", "hour", "minute", "second", "microsecond", "tzinfo", "days", "seconds",
+    "st_size", "st_mtime", "st_atime", "st_ctime", "st_mode", "mode", "closed", "encoding",
+    "real", "imag", "numerator", "denominator",
+})
+#: Builtins that run, or reach, code or objects the tree does not show: named anywhere (a call, or a
+#: value handed on, `sorted(xs, key=eval)`), they make the code one this module does not know.
+DYNAMIC = frozenset({"eval", "exec", "compile", "getattr", "setattr", "delattr", "globals", "locals", "vars",
+                     "breakpoint", "help"})
 
 
 def written_code(code: str) -> str:
@@ -68,6 +154,19 @@ def written_code(code: str) -> str:
     return _Reader(code, tree).written()
 
 
+def stays_here(code: str) -> bool:
+    """Whether `code` can do nothing but compute and read or write this machine's files: it parses,
+    imports only LOCAL_MODULES, names no DYNAMIC builtin and no dunder, hands on nothing it does not
+    know (see the module's docstring), and every call in it is one this module knows (a pure one, an
+    `open`, a path's method, a function the code defines and does not rebind). A URL in such code is
+    text it holds, not a place it reaches."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return False
+    return _Reader(code, tree).stays_here()
+
+
 class _Reader:
     def __init__(self, code: str, tree: ast.Module) -> None:
         self._code = code
@@ -75,9 +174,13 @@ class _Reader:
         self._modules: dict[str, str] = {}       # a name bound by an import -> the dotted name it stands for
         self._values: dict[str, list[ast.AST]] = {}
         self._functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+        self._rebound: set[str] = set()          # names something other than one def or one import binds
         self._read_bindings()
+        self._called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
 
     def written(self) -> str:
+        if self._hands_on_unknown():
+            return self._code
         targets = [t for node in ast.walk(self._tree) if isinstance(node, ast.Call) for t in self._targets(node)]
         seen: set[int] = set()
         parts: list[str] = []
@@ -85,7 +188,73 @@ class _Reader:
             self._sources(target, seen, parts)
         return "\n".join(parts)
 
+    def stays_here(self) -> bool:
+        if self._hands_on_unknown():
+            return False
+        for node in ast.walk(self._tree):
+            if isinstance(node, ast.Import):
+                if not all(_local_module(alias.name) for alias in node.names):
+                    return False
+            elif isinstance(node, ast.ImportFrom):
+                if node.level or not _local_module(node.module or ""):
+                    return False
+            elif isinstance(node, ast.Name):
+                if node.id in DYNAMIC or node.id.startswith("__"):
+                    return False
+            elif isinstance(node, ast.Attribute):
+                if node.attr.startswith("__"):
+                    return False
+            elif isinstance(node, ast.Call) and not self._known(node):
+                return False
+        return True
+
+    def _known(self, call: ast.Call) -> bool:
+        """Whether `call` is one this module knows: pure, or writing only the files it names."""
+        name = self._dotted(call.func)
+        if name is None and isinstance(call.func, ast.Attribute):
+            method = call.func.attr
+            return (method in RECEIVER_WRITES or method == "open" or method in PURE_METHODS
+                    or method in GROWS or method.startswith("is_"))
+        return name is not None and (name in OPENS or name in self._functions or _pure(name))
+
+    def _hands_on_unknown(self) -> bool:
+        """Whether the code names, other than as the function of a call, something of an imported
+        module that is not pure, a known value or a constant (`key=os.system`, `o = os`), an `open`
+        (`functools.reduce(open, [path, "w"])` opens for writing), or a method that is neither pure nor
+        data (`key=p.write_text`)."""
+        called: set[int] = set()
+        inner: set[int] = set()
+        for node in ast.walk(self._tree):
+            if isinstance(node, ast.Call):
+                function = node.func
+                while isinstance(function, ast.Attribute):
+                    called.add(id(function))
+                    function = function.value
+                called.add(id(function))
+            elif isinstance(node, ast.Attribute):
+                inner.add(id(node.value))
+        for node in ast.walk(self._tree):
+            if id(node) in called or id(node) in inner or not isinstance(getattr(node, "ctx", None), ast.Load):
+                continue
+            if (isinstance(node, ast.Name) and node.id not in self._rebound
+                    and (node.id in self._modules or node.id in OPENS)):
+                name = self._dotted(node)
+            elif isinstance(node, ast.Attribute):
+                name = self._dotted(node)
+                if name is None:
+                    if node.attr in RECEIVER_WRITES or node.attr == "open" or not (
+                            node.attr in PURE_METHODS or node.attr in GROWS or node.attr.startswith("is_")
+                            or node.attr in VALUE_ATTRIBUTES):
+                        return True
+                    continue
+            else:
+                continue
+            if not (_pure(name) or name in MODULE_VALUES or name.rpartition(".")[2].isupper()):
+                return True
+        return False
+
     def _read_bindings(self) -> None:
+        self._rebound = _rebound_names(self._tree)
         for node in ast.walk(self._tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -155,13 +324,16 @@ class _Reader:
         """The dotted name a call's function stands for when it reads off an imported module or is a
         plain name (`osp.relpath` -> `os.path.relpath`), else None (a method of a value)."""
         if isinstance(node, ast.Name):
-            return self._modules.get(node.id, node.id)
+            if node.id in self._rebound:
+                return None
+            return _canonical(self._modules[node.id]) if node.id in self._modules else node.id
         if isinstance(node, ast.Attribute):
             root = node
             while isinstance(root, ast.Attribute):
                 root = root.value
-            if isinstance(root, ast.Name) and root.id in self._modules and root.id not in self._values:
-                return f"{self._dotted(node.value)}.{node.attr}"
+            if (isinstance(root, ast.Name) and root.id in self._modules and root.id not in self._values
+                    and root.id not in self._rebound):
+                return _canonical(f"{self._dotted(node.value)}.{node.attr}")
         return None
 
     def _targets(self, call: ast.Call) -> list[ast.AST]:
@@ -179,13 +351,14 @@ class _Reader:
             return args
         if name in OPENS:
             return [*call.args[:1], *(k.value for k in call.keywords if k.arg == "file")] if _writes(call, 1) else []
-        if name in PURE_FUNCTIONS or name in self._functions or (name or "").startswith(
-                tuple(f"{m}." for m in PURE_MODULES)):
+        if name is not None and (name in self._functions or _pure(name)):
             return []
         return args
 
     def _sources(self, node: ast.AST, seen: set[int], parts: list[str]) -> None:
-        """Add the source of `node`, and of every value its names were given, to `parts`."""
+        """Add the source of `node`, and of every value its names were given, to `parts`. A function the
+        code defines, handed on without being called, adds its whole definition: what it is handed to may
+        read its annotations and defaults or run its body (`typing.get_type_hints(f)`)."""
         if id(node) in seen:
             return
         seen.add(id(node))
@@ -196,10 +369,108 @@ class _Reader:
             key = self._key(inner) if isinstance(inner, (ast.Name, ast.Attribute)) else None
             for value in self._values.get(key, []) if key else []:
                 self._sources(value, seen, parts)
+            if isinstance(inner, ast.Name) and inner.id in self._functions and id(inner) not in self._called:
+                function = self._functions[inner.id]
+                self._sources(function, seen, parts)
+                parts += _string_annotations(function)
             if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name) and inner.func.id in self._functions:
                 for sub in ast.walk(self._functions[inner.func.id]):
                     if isinstance(sub, ast.Return) and sub.value is not None:
                         self._sources(sub.value, seen, parts)
+
+
+@functools.lru_cache(maxsize=None)
+def _canonical(name: str) -> str:
+    """The dotted name as the modules it passes through name themselves: each step that lands on a
+    module starts the name again at that module's own name (`glob.os.system` is `os.system`,
+    `os.path.join` is `posixpath.join`), the name PURE_FUNCTIONS is read by.
+    Only LOCAL_MODULES are imported, all of the standard library; a name under none of them is kept.
+    A step this Python does not have is unknown (`?.` in front), since the code's Python may have it."""
+    parts = name.split(".")
+    module = None
+    for size in range(len(parts), 0, -1):
+        prefix = ".".join(parts[:size])
+        if _local_module(prefix):
+            try:
+                module = importlib.import_module(prefix)
+                break
+            except ImportError:
+                continue
+    if module is None:
+        return name
+    value: object = module
+    canonical = [module.__name__]
+    for part in parts[size:]:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if (not hasattr(value, part) and isinstance(value, types.ModuleType)
+                    and _local_module(value.__name__)):
+                try:
+                    importlib.import_module(f"{value.__name__}.{part}")
+                except ImportError:
+                    pass
+            if not hasattr(value, part):
+                return f"?.{name}"
+            value = getattr(value, part)
+        canonical = [value.__name__] if isinstance(value, types.ModuleType) else [*canonical, part]
+    return ".".join(canonical)
+
+
+def _pure(name: str) -> bool:
+    """Whether the dotted name is a function or a method of a known value that writes no file."""
+    owner, _, method = name.rpartition(".")
+    return (name in PURE_FUNCTIONS
+            or (owner in MODULE_VALUES and (method in PURE_METHODS or method in GROWS)))
+
+
+def _rebound_names(tree: ast.Module) -> set[str]:
+    """The names something binds other than one `def` or one import: an assignment, a loop, a `with`,
+    an `except`, a parameter, `global`, `del`, a pattern, a class, or a second def or import."""
+    names: set[str] = set()
+    defined: dict[str, int] = {}
+    imported: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            names.update(node.names)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            names.add(node.name)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            names.add(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            names.add(node.rest)
+        elif isinstance(node, ast.ClassDef):
+            names.add(node.name)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined[node.name] = defined.get(node.name, 0) + 1
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.name.split(".")[0]
+                imported.setdefault(alias.asname or bound, set()).add(alias.name if alias.asname else bound)
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                imported.setdefault(alias.asname or alias.name, set()).add(f"{node.module}.{alias.name}")
+    names.update(name for name, count in defined.items() if count > 1 or name in imported)
+    names.update(name for name, sources in imported.items() if len(sources) > 1)
+    return names
+
+
+def _string_annotations(function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """The text of the function's annotations written as strings, which `typing.get_type_hints` and the
+    like evaluate as code: a path quoted inside one is a path that code names, not a word of a string."""
+    arguments = function.args
+    annotations = [a.annotation for a in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
+                                          *([arguments.vararg] if arguments.vararg else []),
+                                          *([arguments.kwarg] if arguments.kwarg else []))]
+    return [a.value for a in (*annotations, function.returns)
+            if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+
+
+def _local_module(name: str) -> bool:
+    return any(name == m or name.startswith(f"{m}.") for m in LOCAL_MODULES)
 
 
 def _writes(call: ast.Call, position: int) -> bool:

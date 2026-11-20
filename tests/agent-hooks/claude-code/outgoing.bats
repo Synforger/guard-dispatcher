@@ -411,6 +411,111 @@ mk_binary() { printf '\x89PNG\r\n\x1a\n\0\0\0\rIHDR' > "$1"; }
     passed
 }
 
+# py_heredoc <code> — a Bash call that feeds <code> to python3 on a quoted heredoc.
+py_heredoc() { bash_call "$(printf "python3 - <<'PY'\n%s\nPY" "$1")"; }
+
+@test "outgoing: Python code that only computes and writes local files holds its URLs as text" {
+    destinations 'host:chat.example.com company order' 'host:api.example.com outside'
+    py_heredoc "open('${H}/repos/tool/copy.md', 'w').write('- from: https://chat.example.com/archives/C000/p123\n')"
+    passed
+    py_heredoc "from pathlib import Path
+import json, re
+url = 'https://api.example.com/x?q=1'
+Path('${H}/repos/tool/copy.md').write_text(json.dumps({'from': url, 'note': '${CLIENT_TEXT}'}))"
+    passed
+    bash_call "python3 -c \"print('https://chat.example.com/archives/C000/p123')\""
+    passed
+}
+
+@test "outgoing: Python code that may reach past this machine still sends to the hosts it names" {
+    destinations 'host:chat.example.com company order'
+    py_heredoc "import urllib.request
+urllib.request.urlopen('https://chat.example.com/api')"
+    denied
+    py_heredoc "import subprocess
+subprocess.run(['curl', '-d', 'x', 'https://chat.example.com/api'])"
+    denied
+    py_heredoc "import os
+os.system('curl -d x https://chat.example.com/api')"
+    denied
+    py_heredoc "print(sorted([\"open('https://chat.example.com/api')\"], key=eval))"
+    denied
+    py_heredoc "__import__('urllib.request').request.urlopen('https://chat.example.com/api')"
+    denied
+    py_heredoc "import sys
+sys.modules['urllib'].request.urlopen('https://chat.example.com/api')"
+    denied
+    py_heredoc "post('https://chat.example.com/api')"
+    denied
+    py_heredoc "import requests
+print('https://chat.example.com/api')"
+    denied
+    py_heredoc "open('${H}/repos/tool/copy.md', 'w').write('https://chat.example.com/api'"
+    denied
+    bash_call "node -e \"require('fs').writeFileSync('${H}/repos/tool/copy.md', 'https://chat.example.com/api')\""
+    denied
+}
+
+@test "outgoing: Python code that rebinds a name, hands a function on, or reaches a module through another is not known to stay here" {
+    destinations 'host:chat.example.com company order'
+    local c curl="'curl -d @notes.txt https://chat.example.com/api'"
+    local -a codes=(
+        "import os
+print = os.system
+print(${curl})"
+        "import os
+def f(print):
+    print(${curl})
+f(os.system)"
+        "import os
+for len in [os.system]:
+    len(${curl})"
+        "import os
+def g(x):
+    return x
+g = os.system
+g(${curl})"
+        "import os
+sorted([${curl}], key=os.system)"
+        "from os import system
+max([${curl}], key=system)"
+        "import os, sys
+sys.call_tracing(os.system, (${curl},))"
+        "import os, operator
+operator.call(os.system, ${curl})"
+        "import os, collections, functools
+collections.defaultdict(functools.partial(os.system, ${curl}))['k']"
+        "import os, itertools
+list(itertools.starmap(os.system, [(${curl},)]))"
+        "import sys
+sys.modules['os'].system(${curl})"
+        "import os
+o = os
+o.system(${curl})"
+        "import glob
+glob.os.system(${curl})"
+        "import os.path
+os.path.os.system(${curl})"
+        "from glob import os
+os.system(${curl})"
+        "import typing
+sorted([${curl}], key=typing.sys.modules['os'].system)"
+        "import uuid
+uuid._get_command_stdout('curl', '-s', '-d', '@notes.txt', 'https://chat.example.com/api')"
+        "import typing
+def f(x: \"__import__('os').system('curl -d x https://chat.example.com/api')\"):
+    pass
+typing.get_type_hints(f)"
+        "import glob, itertools, operator
+m = next(itertools.starmap(operator.attrgetter('__globals__'), [(glob.glob,)]))
+list(itertools.starmap(operator.methodcaller('system', ${curl}), [(m['os'],)]))"
+    )
+    for c in "${codes[@]}"; do
+        py_heredoc "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+    done
+}
+
 # --- a network command ------------------------------------------------------------------
 
 bash_call() { call Bash "$(jq -n --arg c "$1" '{command: $c}')"; }
