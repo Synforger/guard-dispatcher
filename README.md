@@ -1092,10 +1092,11 @@ peers.py --places [--session <session>]                 # every folder tickets s
 A ticket opened by a session that has read inside no area sits in
 `<platform root>/state/claude-pwa-client/tickets`. One opened by a session that
 has read inside areas lying one inside the next (a client in its company) sits
-in `<root>/tickets` of the innermost one. With `--folder`, the areas the
-folder the session works in reaches count as read, as for `--covers-place`:
-a session working inside an area that has read nothing yet opens its tickets
-there, not outside. When that area has several roots, or
+in `<root>/tickets` of the innermost one. With `--folder`, the areas holding
+the folder the session works in count as read: a session working inside an
+area that has read nothing yet opens its tickets there, not outside. The names
+the folder's reads file gives do not count here (they are areas the session
+may read, not ones it has read), though `--covers-place` counts them. When that area has several roots, or
 the folder is inside a git work tree, the area names the folder in its own
 settings (`areas/<area>/tickets.txt`: one line, `~` allowed, `#` starts a
 comment), which must lie in that area alone and outside every git work tree.

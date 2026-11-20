@@ -49,9 +49,9 @@ boundaries of that folder:
 
     peers.py --place-for SESSION [--typed-in SESSION2] [--folder WORKING_FOLDER]
                                           the folder for a ticket opened by SESSION (and holding what
-                                          the operator typed in SESSION2; with --folder, the areas the
-                                          folder SESSION works in reaches count as read, as for
-                                          --covers-place): exit 0 prints it, 1 when the
+                                          the operator typed in SESSION2; with --folder, the areas
+                                          holding the folder SESSION works in count as read, but not
+                                          the names its reads file gives): exit 0 prints it, 1 when the
                                           areas read fit in no one place (one line why), 2 cannot judge
     peers.py --to-place FOLDER --text FILE [--typed-in SESSION]
                                           judge FILE as a message to the folder's boundaries: as
@@ -268,11 +268,14 @@ def place_boundaries(folder: Path) -> set[str]:
 
 def place_for(session: str, typed: str | None, work_folder: Path | None = None) -> tuple[int, str]:
     """(exit status, the folder or the line why) for a ticket opened by `session`, that holds what
-    the operator typed in `typed`. With `work_folder`, the areas the folder `session` works in reaches
-    count as read too: a tab inside an area that has read nothing yet still writes inside it."""
+    the operator typed in `typed`. With `work_folder`, the areas holding the folder `session` works in
+    count as read too: a tab inside an area that has read nothing yet still writes its name and tier
+    inside it. The names the folder's reads file gives do not count: they are areas the session may
+    read, and a ticket carries only what it has read, so a reads file naming many areas (`client-*`)
+    would leave every ticket of the tab in no one place."""
     try:
         read = marks_of(session) | (marks_of(typed) if typed else set()) | \
-            (reached(work_folder) if work_folder else set())
+            (reached(work_folder, with_reads_file=False) if work_folder else set())
         return 0, str(ticket_places.place_for(read, area_pairs(corpus_module().load_areas())))
     except ticket_places.PlaceError as error:
         return error.status, error.why
@@ -292,11 +295,14 @@ def judge_place(folder: Path, payload: Path, typed: str | None) -> tuple[int, st
     return (status, why) if status else judge_for(name, payload, [sorted(wanted)])
 
 
-def reached(work_folder: Path) -> set[str]:
+def reached(work_folder: Path, *, with_reads_file: bool = True) -> set[str]:
     """The areas a session working in `work_folder` may read inside without having read there: the
-    areas around the folder, and those its reads file names."""
+    areas holding the folder and those around them, and (`with_reads_file`) the areas its reads file
+    names, a glob in it (`client-*`) standing for every area it matches. Only names areas.txt has."""
     home = resolved(work_folder)
-    return set(area_roles.reach_from(home, area_pairs(corpus_module().load_areas()), work_reads.named(home)))
+    areas = area_pairs(corpus_module().load_areas())
+    found = area_roles.reach_from(home, areas, work_reads.named(home) if with_reads_file else ())
+    return set(found) & {name for name, _ in areas}
 
 
 def readable(session: str, work_folder: Path | None) -> set[str]:
