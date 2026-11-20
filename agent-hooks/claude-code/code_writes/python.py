@@ -9,6 +9,9 @@ values into other values (`os.path.relpath`, a string's methods, `Path.read_text
 target: a path handed to it is text. A name is followed back to every value assigned to it (and a
 local function's parameters to the arguments of its calls), so `p = Path("a"); p.write_text(x)`
 gives the source of `p` and of `Path("a")`. Code that does not parse gives itself whole.
+
+The same reading tells outgoing.py whether code reaches past this machine (stays_here): code whose
+every call is known as above holds its URLs as text and sends nothing.
 """
 
 from __future__ import annotations
@@ -56,6 +59,13 @@ MOVES = frozenset({"rename", "replace"})
 #: The calls that open a file, and the letters of a mode that writes it.
 OPENS = frozenset({"open", "io.open", "codecs.open"})
 WRITING_MODE = re.compile(r"[wax+]")
+#: Modules whose import runs nothing but the module itself: the pure ones and those that work on this
+#: machine's files. A call into them that is not pure is still a call this module does not know.
+LOCAL_MODULES = (*PURE_MODULES, "__future__", "pathlib", "os", "io", "codecs", "shutil", "tempfile")
+#: Builtins that run, or reach, code or objects the tree does not show: named anywhere (a call, or a
+#: value handed on, `sorted(xs, key=eval)`), they make the code one this module does not know.
+DYNAMIC = frozenset({"eval", "exec", "compile", "getattr", "setattr", "delattr", "globals", "locals", "vars",
+                     "breakpoint", "help"})
 
 
 def written_code(code: str) -> str:
@@ -66,6 +76,18 @@ def written_code(code: str) -> str:
     except (SyntaxError, ValueError):
         return code
     return _Reader(code, tree).written()
+
+
+def stays_here(code: str) -> bool:
+    """Whether `code` can do nothing but compute and read or write this machine's files: it parses,
+    imports only LOCAL_MODULES, names no DYNAMIC builtin, no dunder and not `sys.modules`, and every
+    call in it is one this module knows (a pure one, an `open`, a path's method, a function the code
+    defines). A URL in such code is text it holds, not a place it reaches."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return False
+    return _Reader(code, tree).stays_here()
 
 
 class _Reader:
@@ -84,6 +106,34 @@ class _Reader:
         for target in targets:
             self._sources(target, seen, parts)
         return "\n".join(parts)
+
+    def stays_here(self) -> bool:
+        for node in ast.walk(self._tree):
+            if isinstance(node, ast.Import):
+                if not all(_local_module(alias.name) for alias in node.names):
+                    return False
+            elif isinstance(node, ast.ImportFrom):
+                if node.level or not _local_module(node.module or ""):
+                    return False
+            elif isinstance(node, ast.Name):
+                if node.id in DYNAMIC or node.id.startswith("__"):
+                    return False
+            elif isinstance(node, ast.Attribute):
+                if node.attr.startswith("__") or self._dotted(node) == "sys.modules":
+                    return False
+            elif isinstance(node, ast.Call) and not self._known(node):
+                return False
+        return True
+
+    def _known(self, call: ast.Call) -> bool:
+        """Whether `call` is one this module knows: pure, or writing only the files it names."""
+        name = self._dotted(call.func)
+        if name is None and isinstance(call.func, ast.Attribute):
+            method = call.func.attr
+            return (method in RECEIVER_WRITES or method == "open" or method in PURE_METHODS
+                    or method in GROWS or method.startswith("is_"))
+        return name is not None and (name in OPENS or name in PURE_FUNCTIONS or name in self._functions
+                                     or name.startswith(tuple(f"{m}." for m in PURE_MODULES)))
 
     def _read_bindings(self) -> None:
         for node in ast.walk(self._tree):
@@ -200,6 +250,10 @@ class _Reader:
                 for sub in ast.walk(self._functions[inner.func.id]):
                     if isinstance(sub, ast.Return) and sub.value is not None:
                         self._sources(sub.value, seen, parts)
+
+
+def _local_module(name: str) -> bool:
+    return any(name == m or name.startswith(f"{m}.") for m in LOCAL_MODULES)
 
 
 def _writes(call: ast.Call, position: int) -> bool:

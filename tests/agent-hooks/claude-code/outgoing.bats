@@ -411,6 +411,51 @@ mk_binary() { printf '\x89PNG\r\n\x1a\n\0\0\0\rIHDR' > "$1"; }
     passed
 }
 
+# py_heredoc <code> — a Bash call that feeds <code> to python3 on a quoted heredoc.
+py_heredoc() { bash_call "$(printf "python3 - <<'PY'\n%s\nPY" "$1")"; }
+
+@test "outgoing: Python code that only computes and writes local files holds its URLs as text" {
+    destinations 'host:chat.example.com company order' 'host:api.example.com outside'
+    py_heredoc "open('${H}/repos/tool/copy.md', 'w').write('- from: https://chat.example.com/archives/C000/p123\n')"
+    passed
+    py_heredoc "from pathlib import Path
+import json, re
+url = 'https://api.example.com/x?q=1'
+Path('${H}/repos/tool/copy.md').write_text(json.dumps({'from': url, 'note': '${CLIENT_TEXT}'}))"
+    passed
+    bash_call "python3 -c \"print('https://chat.example.com/archives/C000/p123')\""
+    passed
+}
+
+@test "outgoing: Python code that may reach past this machine still sends to the hosts it names" {
+    destinations 'host:chat.example.com company order'
+    py_heredoc "import urllib.request
+urllib.request.urlopen('https://chat.example.com/api')"
+    denied
+    py_heredoc "import subprocess
+subprocess.run(['curl', '-d', 'x', 'https://chat.example.com/api'])"
+    denied
+    py_heredoc "import os
+os.system('curl -d x https://chat.example.com/api')"
+    denied
+    py_heredoc "print(sorted([\"open('https://chat.example.com/api')\"], key=eval))"
+    denied
+    py_heredoc "__import__('urllib.request').request.urlopen('https://chat.example.com/api')"
+    denied
+    py_heredoc "import sys
+sys.modules['urllib'].request.urlopen('https://chat.example.com/api')"
+    denied
+    py_heredoc "post('https://chat.example.com/api')"
+    denied
+    py_heredoc "import requests
+print('https://chat.example.com/api')"
+    denied
+    py_heredoc "open('${H}/repos/tool/copy.md', 'w').write('https://chat.example.com/api'"
+    denied
+    bash_call "node -e \"require('fs').writeFileSync('${H}/repos/tool/copy.md', 'https://chat.example.com/api')\""
+    denied
+}
+
 # --- a network command ------------------------------------------------------------------
 
 bash_call() { call Bash "$(jq -n --arg c "$1" '{command: $c}')"; }

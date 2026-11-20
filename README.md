@@ -904,7 +904,11 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   judged by the machine's own `host:<host>` line. Naming such a path marks an
   agent session as naming a folder here does.
   Code written into the command — `python -c`, `node -e`, a heredoc fed to an
-  interpreter — sends to each host a URL in it names, carrying the code; a
+  interpreter — sends to each host a URL in it names, carrying the code. Python
+  code that can only compute and read or write this machine's files (it imports
+  only such modules, names no `eval`, `exec`, `getattr`, dunder or `sys.modules`,
+  and every call in it is one the file-write reader knows) sends nothing: a URL
+  in it is text it holds, such as one it writes into a local file. A
   shell's `-c` string is read as a command line of its own. A script for
   `osascript` (its `-e` lines, or one fed on standard input) sends Apple events
   to each application it names, `app:<name>` in lower case (`tell application
