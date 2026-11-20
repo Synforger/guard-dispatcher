@@ -982,6 +982,8 @@ print(place == m.Path('${CASE_REPO}'), note)
         $'python3 - <<\'EOF\'\nimport glob\nglob.os.replace("pages/tab/index.html", "'"${PERSONAL}"$'/notes/b.md")\nEOF'
         $'python3 - <<\'EOF\'\nimport os.path\nos.path.os.remove("'"${PERSONAL}"$'/notes/a.md")\nEOF'
         $'python3 - <<\'EOF\'\nimport typing\nsorted(["'"${PERSONAL}"$'/notes/a.md"], key=typing.sys.modules["os"].remove)\nEOF'
+        $'python3 - <<\'EOF\'\nimport uuid\nuuid._get_command_stdout("cp", "pages/tab/index.html", "'"${PERSONAL}"$'/notes/b.md")\nEOF'
+        $'python3 - <<\'EOF\'\nimport typing\ndef f(x: "__import__(\'shutil\').copy(\'pages/tab/index.html\', \''"${PERSONAL}"$'/notes/b.md\')"):\n    pass\ntyping.get_type_hints(f)\nEOF'
         $'python3 - <<\'EOF\'\ndef keep(where, text):\n    with open(where, "a") as f:\n        f.write(text)\nkeep("'"${PERSONAL}"$'/notes/a.md", "x")\nEOF'
         $'python3 - <<\'EOF\'\nimport somelib\nsomelib.save("'"${PERSONAL}"$'/notes/a.md")\nEOF'
         $'python3 - <<\'EOF\'\nparts = []\nparts.append("'"${PERSONAL}"$'/notes/a.md")\nopen(parts[0], "w")\nEOF'

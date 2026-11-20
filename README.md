@@ -669,9 +669,12 @@ step earlier, before each tool call, from the same `areas.txt`:
   string's methods, `print` or an `open` that reads is text. A name the code
   rebinds (assigns, loops over, takes as a parameter, binds twice) is a call
   the guard does not know, whatever it is spelled (`print = shutil.copy`). A
-  name is followed through the real modules it passes: a module a pure module
-  holds is read as itself (`glob.os.system` is `os.system`, `os.path.join` is
-  `posixpath.join`).
+  name is followed through the real modules it passes and read as the module
+  it lands on names it (`glob.os.system` is `os.system`, `os.path.join` is
+  `posixpath.join`). A function is known by its name in a list of the standard
+  library's pure functions, not by its module: `uuid`, `typing` and `operator`
+  also hold functions that run a command, evaluate a string or take an
+  attribute by its name.
   Python that does not parse, that hands on other than by calling it a
   function the guard does not know, or a method of a value that is neither
   pure nor data (`key=shutil.copy`, `starmap(shutil.copy, …)`,

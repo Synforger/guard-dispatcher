@@ -29,13 +29,61 @@ import re
 import types
 import warnings
 
-#: Modules whose functions write no file they are handed a path for (they read, or compute).
-PURE_MODULES = ("os.path", "posixpath", "re", "fnmatch", "glob", "json", "shlex", "urllib.parse", "html",
-                "textwrap", "string", "math", "datetime", "time", "hashlib", "base64", "collections",
-                "itertools", "functools", "difflib", "unicodedata", "operator", "statistics", "decimal",
-                "fractions", "uuid", "typing", "dataclasses", "enum", "copy", "pprint", "csv")
-#: Functions that write no file they are handed a path for.
+#: Standard modules whose import runs nothing but the module itself. Importing one names no function as
+#: known: a module is not pure as a whole, since a function that runs a command
+#: (`uuid._get_command_stdout`), evaluates a string (`typing.get_type_hints`) or takes an attribute by
+#: its name (`operator.attrgetter`) sits beside the pure ones. Only PURE_FUNCTIONS are known.
+LOCAL_MODULES = ("os", "posixpath", "sys", "io", "codecs", "pathlib", "shutil", "tempfile", "__future__", "re",
+                 "fnmatch", "glob", "json", "shlex", "urllib.parse", "html", "textwrap", "string", "math",
+                 "datetime", "time", "hashlib", "base64", "collections", "itertools", "functools", "difflib",
+                 "unicodedata", "operator", "statistics", "decimal", "fractions", "uuid", "typing",
+                 "dataclasses", "enum", "copy", "pprint", "csv")
+#: The path functions of `os.path`, which _canonical names `posixpath`.
+_PATH_FUNCTIONS = ("join", "basename", "dirname", "exists", "isfile", "isdir", "islink", "isabs", "abspath",
+                   "realpath", "relpath", "normpath", "expanduser", "expandvars", "splitext", "split", "getsize",
+                   "getmtime", "commonpath", "commonprefix", "samefile")
+#: The functions of the standard modules that write no file they are handed a path for and run no
+#: command or code, by module. No name that starts with `_` is listed.
+_MODULE_FUNCTIONS = {
+    "re": ("compile", "match", "search", "fullmatch", "sub", "subn", "split", "findall", "finditer", "escape"),
+    "fnmatch": ("fnmatch", "fnmatchcase", "filter", "translate"),
+    "glob": ("glob", "iglob", "escape"),
+    "json": ("dumps", "loads", "dump", "load"),
+    "shlex": ("split", "quote", "join"),
+    "urllib.parse": ("quote", "quote_plus", "unquote", "unquote_plus", "urlparse", "urlsplit", "urlunparse",
+                     "urlunsplit", "urlencode", "urljoin", "urldefrag", "parse_qs", "parse_qsl"),
+    "html": ("escape", "unescape"),
+    "textwrap": ("dedent", "indent", "wrap", "fill", "shorten"),
+    "string": ("capwords", "Template"),
+    "math": ("floor", "ceil", "sqrt", "log", "log2", "log10", "exp", "fabs", "isclose", "isnan", "isinf", "gcd",
+             "prod", "fsum"),
+    "datetime": ("datetime", "date", "time", "timedelta", "timezone", "datetime.now", "datetime.utcnow",
+                 "datetime.fromisoformat", "datetime.fromtimestamp", "datetime.strptime", "date.today",
+                 "date.fromisoformat"),
+    "time": ("time", "monotonic", "perf_counter", "strftime", "localtime", "gmtime", "sleep"),
+    "hashlib": ("sha256", "sha1", "sha512", "md5"),
+    "base64": ("b64encode", "b64decode", "urlsafe_b64encode", "urlsafe_b64decode"),
+    "collections": ("Counter", "OrderedDict", "defaultdict", "deque"),
+    "itertools": ("chain", "chain.from_iterable", "islice", "groupby", "product", "permutations", "combinations",
+                  "count", "repeat", "zip_longest", "accumulate"),
+    "functools": ("reduce", "cmp_to_key"),
+    "operator": ("itemgetter",),
+    "difflib": ("unified_diff", "ndiff", "SequenceMatcher", "get_close_matches"),
+    "unicodedata": ("normalize", "category", "east_asian_width"),
+    "statistics": ("mean", "median", "stdev", "pstdev", "variance"),
+    "decimal": ("Decimal",),
+    "fractions": ("Fraction",),
+    "uuid": ("uuid4", "UUID"),
+    "copy": ("copy", "deepcopy"),
+    "pprint": ("pprint", "pformat"),
+    "csv": ("reader", "writer", "DictReader", "DictWriter"),
+    "io": ("StringIO", "BytesIO"),
+}
+#: Functions that write no file they are handed a path for and run no command or code, by the name
+#: _canonical gives them.
 PURE_FUNCTIONS = frozenset({
+    *(f"{module}.{function}" for module in ("os.path", "posixpath") for function in _PATH_FUNCTIONS),
+    *(f"{module}.{function}" for module, functions in _MODULE_FUNCTIONS.items() for function in functions),
     "print", "len", "str", "repr", "format", "int", "float", "bool", "list", "tuple", "dict", "set",
     "frozenset", "sorted", "reversed", "enumerate", "zip", "min", "max", "sum", "any", "all", "isinstance",
     "issubclass", "abs", "round", "range", "chr", "ord", "hex", "oct", "bin", "id", "hash", "type", "iter",
@@ -46,9 +94,16 @@ PURE_FUNCTIONS = frozenset({
 })
 #: Values of `os` and `sys` the code may use: data and the standard streams, whose pure methods are pure
 #: (`sys.stdout.write`, `sys.path.insert`). The rest of `sys` is the interpreter's machinery.
-MODULE_VALUES = frozenset({"os.environ", "os.sep", "os.linesep", "os.pathsep", "os.curdir", "os.pardir",
-                           "os.name", "sys.argv", "sys.stdin", "sys.stdout", "sys.stderr", "sys.platform",
-                           "sys.version", "sys.version_info", "sys.maxsize", "sys.byteorder", "sys.path"})
+MODULE_VALUES = frozenset({
+    "os.environ", "os.sep", "os.linesep", "os.pathsep", "os.curdir", "os.pardir", "os.name",
+    "sys.argv", "sys.stdin", "sys.stdout", "sys.stderr", "sys.platform", "sys.version", "sys.version_info",
+    "sys.maxsize", "sys.byteorder", "sys.path",
+    "math.pi", "math.e", "math.tau", "math.inf", "math.nan", "datetime.timezone.utc",
+    *(f"string.{name}" for name in ("ascii_letters", "ascii_lowercase", "ascii_uppercase", "digits", "hexdigits",
+                                    "octdigits", "punctuation", "whitespace", "printable")),
+    *(f"typing.{name}" for name in ("Any", "Optional", "Union", "List", "Dict", "Tuple", "Set", "FrozenSet",
+                                    "Iterable", "Iterator", "Callable", "Sequence", "Mapping", "Literal")),
+})
 #: Methods that write no file: a string's, a mapping's or a sequence's, a path's that read, a match's,
 #: an open file's (what it writes was opened for writing, which the `open` already gives).
 PURE_METHODS = frozenset({
@@ -74,11 +129,6 @@ MOVES = frozenset({"rename", "replace"})
 #: The calls that open a file, and the letters of a mode that writes it.
 OPENS = frozenset({"open", "io.open", "codecs.open"})
 WRITING_MODE = re.compile(r"[wax+]")
-#: Modules whose import runs nothing but the module itself: the pure ones and those that work on this
-#: machine's files. A call into them that is not pure is still a call this module does not know.
-LOCAL_MODULES = (*PURE_MODULES, "__future__", "pathlib", "os", "sys", "io", "codecs", "shutil", "tempfile")
-#: Builtins that run, or reach, code or objects the tree does not show: named anywhere (a call, or a
-#: value handed on, `sorted(xs, key=eval)`), they make the code one this module does not know.
 #: Attributes of the values known calls give (a path, a match, a date, a stat, an open file, a number)
 #: that hold data and run nothing: handed on as a value, they are not a method a known call may call.
 VALUE_ATTRIBUTES = frozenset({
@@ -88,6 +138,8 @@ VALUE_ATTRIBUTES = frozenset({
     "st_size", "st_mtime", "st_atime", "st_ctime", "st_mode", "mode", "closed", "encoding",
     "real", "imag", "numerator", "denominator",
 })
+#: Builtins that run, or reach, code or objects the tree does not show: named anywhere (a call, or a
+#: value handed on, `sorted(xs, key=eval)`), they make the code one this module does not know.
 DYNAMIC = frozenset({"eval", "exec", "compile", "getattr", "setattr", "delattr", "globals", "locals", "vars",
                      "breakpoint", "help"})
 
@@ -124,6 +176,7 @@ class _Reader:
         self._functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
         self._rebound: set[str] = set()          # names something other than one def or one import binds
         self._read_bindings()
+        self._called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
 
     def written(self) -> str:
         if self._hands_on_unknown():
@@ -301,7 +354,9 @@ class _Reader:
         return args
 
     def _sources(self, node: ast.AST, seen: set[int], parts: list[str]) -> None:
-        """Add the source of `node`, and of every value its names were given, to `parts`."""
+        """Add the source of `node`, and of every value its names were given, to `parts`. A function the
+        code defines, handed on without being called, adds its whole definition: what it is handed to may
+        read its annotations and defaults or run its body (`typing.get_type_hints(f)`)."""
         if id(node) in seen:
             return
         seen.add(id(node))
@@ -312,6 +367,10 @@ class _Reader:
             key = self._key(inner) if isinstance(inner, (ast.Name, ast.Attribute)) else None
             for value in self._values.get(key, []) if key else []:
                 self._sources(value, seen, parts)
+            if isinstance(inner, ast.Name) and inner.id in self._functions and id(inner) not in self._called:
+                function = self._functions[inner.id]
+                self._sources(function, seen, parts)
+                parts += _string_annotations(function)
             if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name) and inner.func.id in self._functions:
                 for sub in ast.walk(self._functions[inner.func.id]):
                     if isinstance(sub, ast.Return) and sub.value is not None:
@@ -322,7 +381,7 @@ class _Reader:
 def _canonical(name: str) -> str:
     """The dotted name as the modules it passes through name themselves: each step that lands on a
     module starts the name again at that module's own name (`glob.os.system` is `os.system`,
-    `os.path.join` is `posixpath.join`), so a pure module's prefix does not cover a module it holds.
+    `os.path.join` is `posixpath.join`), the name PURE_FUNCTIONS is read by.
     Only LOCAL_MODULES are imported, all of the standard library; a name under none of them is kept.
     A step this Python does not have is unknown (`?.` in front), since the code's Python may have it."""
     parts = name.split(".")
@@ -358,7 +417,7 @@ def _canonical(name: str) -> str:
 def _pure(name: str) -> bool:
     """Whether the dotted name is a function or a method of a known value that writes no file."""
     owner, _, method = name.rpartition(".")
-    return (name in PURE_FUNCTIONS or name.startswith(tuple(f"{m}." for m in PURE_MODULES))
+    return (name in PURE_FUNCTIONS
             or (owner in MODULE_VALUES and (method in PURE_METHODS or method in GROWS)))
 
 
@@ -395,6 +454,17 @@ def _rebound_names(tree: ast.Module) -> set[str]:
     names.update(name for name, count in defined.items() if count > 1 or name in imported)
     names.update(name for name, sources in imported.items() if len(sources) > 1)
     return names
+
+
+def _string_annotations(function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """The text of the function's annotations written as strings, which `typing.get_type_hints` and the
+    like evaluate as code: a path quoted inside one is a path that code names, not a word of a string."""
+    arguments = function.args
+    annotations = [a.annotation for a in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
+                                          *([arguments.vararg] if arguments.vararg else []),
+                                          *([arguments.kwarg] if arguments.kwarg else []))]
+    return [a.value for a in (*annotations, function.returns)
+            if isinstance(a, ast.Constant) and isinstance(a.value, str)]
 
 
 def _local_module(name: str) -> bool:
