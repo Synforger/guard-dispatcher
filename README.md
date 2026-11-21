@@ -94,6 +94,15 @@ Scanners read one PCRE fragment per line from the first of:
    (recommended location; `<root>/config/guard/exit/words/master.txt` under a platform root)
 4. a repo-local `.tooling/local-ci/anon-words.txt` (legacy)
 
+A `gh` send is scanned with the list of the repository it sends to, as a push
+is: `gh-shim/_internal/words_folder.py` reads the git settings of that
+repository's clone. A call that names its repository (`-R`, `--repo`,
+`GH_REPO`, the path of `gh api`) takes the list of that repository's clone
+inside an area, wherever the call is typed; one that names none, or names
+only the remotes of the folder it is typed in, takes that folder's list. A
+named repository with no clone inside an area, or with clones that disagree,
+is scanned with the operator master.
+
 The word list is private operator data — it is never committed
 anywhere. See `configs/anon-words.example.txt` for the format.
 
@@ -1435,7 +1444,9 @@ contract:
   `GET` through `api`, …) pass through untouched, because those
   legitimately name accounts and repositories. An unrecognised subcommand
   is scanned rather than assumed harmless, and an unresolvable scanner
-  refuses the command. Pinned in `tests/gh-shim/gh-guard.bats`.
+  refuses the command. The word list is the one of the repository the call
+  sends to (see *Word list*), not of the folder it is typed in. Pinned in
+  `tests/gh-shim/gh-guard.bats`.
 - **A Claude Code session with the agent entry guard registered** does not
   write a repository outside the areas it read, and does not commit, push or
   send through `gh` outside them; with or without areas, it does not run a
