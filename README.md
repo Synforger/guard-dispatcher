@@ -294,7 +294,7 @@ inside the area only:
 | file | read | not read |
 |---|---|---|
 | `areas.txt` | a sub-area whose folders lie inside the area's; a `_carries` line between areas within it | `_exempt` / `_outside`, an area of the machine's own file outside it, a folder outside it |
-| `destinations.txt` | a destination placed in the area or an area within it, or `block`ed; `order` as in the machine's file | `outside`, a pattern that catches every destination (`*`), an area outside it |
+| `destinations.txt` | a destination placed in the area or an area within it, or `block`ed; `order` as in the machine's file (on a `repo:` line it holds a forced push) | `outside`, a pattern that catches every destination (`*`), an area outside it |
 | `allow.txt` | a phrase fine to send of the text of the areas within it | — |
 | `patterns/<name>.txt` | a shape of the identifiers of an area within it | a shape that does not compile |
 | `ignore.txt` | a folder inside it that holds none of its documents; with a wildcard in a name, when the names before it lead to the area or a folder inside it | a folder outside it |
@@ -768,6 +768,38 @@ step earlier, before each tool call, from the same `areas.txt`:
   no yes but one the operator gave in the sending tab, see *A message relayed with
   the operator's answer*), and a block shown for a send is no block for a change. With no
   `orders.txt`, nothing is approved.
+- **A forced push is the operator's to approve, to a repository whose `repo:`
+  line ends with `order`.** Two checks keep it, one for what the command line
+  shows and one for what it hides:
+
+  1. *Before the command runs* (area-guard.py): the pushes of a command are read
+     as git reads them (`push_options.py`), wherever they stand (after `cd` or
+     `git -C`, in a shell's `-c` string, in a script the command runs from a
+     file). One that forces its ref is held: `-f`, `--force`,
+     `--force-with-lease` (with or without `=<value>`), `--force-if-includes`,
+     `--mirror`, a short option bundled with others (`-uf`), a refspec that
+     starts with `+` (`+main`, `+HEAD:refs/heads/x`), and a shortened long option
+     (`--force-w`). The value of an option (`-o -f`, `--push-option=-f`,
+     `--repo <name>`) and what follows `--` are not read as options. It passes on the
+     operator's yes to that very call, shown in a `guard` block, as above, and
+     the one yes covers every forced push of the call. A refusal names the form
+     that forces and the destination.
+  2. *As git pushes* (`git-hooks/pre-push`): a push made from the agent's shell
+     (`CLAUDECODE=1`) to such a repository is read by what it does to each ref.
+     A ref the push overwrites with a commit that does not descend from the
+     one the remote holds (or a remote commit this repository does not hold) is a
+     rewrite; a new branch, a fast-forward and a deletion are not. A force set in
+     a config, an alias or code never shows on the command line, so only this
+     check sees it. A rewrite passes only while the grant of the yes in 1 stands.
+     A push the operator makes by hand is not read.
+
+  The yes in 1 leaves a grant for the repository, in `force-grants/` beside the
+  folder of the marks (`<state folder>/force-grants/<hash of the repository's top
+  folder>.json`): the URLs it covers and the time it ends, ten minutes after the
+  yes. The first push that rewrites a ref to a covered URL uses it up. A push that
+  rewrites nothing leaves it. The agent writes that folder through neither Edit /
+  Write nor the shell, as it writes none of the marks. When the hook stops a push, it
+  says to write `--force-with-lease` on the command line and show it.
 - **The operator may hand the upkeep of some settings to the agent**, when the
   settings grow with every area and every false alarm: `agent-writes.txt` names
   them, one per line (`destinations.txt`, `patterns/`, `*` for all). A session
@@ -1022,8 +1054,21 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   naming a `tabId`) whose tab this session opened at a page there; a tab it did
   not open stays named by the tool, and one opened at a page keeps that host
   after a click takes it elsewhere. A line naming an unknown area stops every
-  send until it is fixed, and so does a third word other than `order`,
-  `block order`, or `order` on a `repo:` line (a push is not held to one).
+  send until it is fixed, and so does a third word other than `order`, or
+  `block order`.
+
+  On a `repo:` line the third word `order` holds a push that **rewrites that
+  repository's history** to the operator's approval (*A change the operator
+  approves*, below); every other push goes as before:
+
+  ```
+  repo:my-company/*         company order   # a forced push there needs the operator's yes
+  ```
+
+  The first `repo:` line that fits the repository decides, the machine's lines
+  before an area's own. Two checks hold it: area-guard.py, which reads the
+  command line before it runs (see below), and the pre-push hook, which sees what
+  the command line did not show.
 
   **A destination no line names is undeclared and passes, unscanned**: the
   guard stops what it knows leaves an area, and a build machine or an internal
@@ -1571,11 +1616,13 @@ What the guard is for is in *What it watches*; these lie outside it.
 
 ```
 git-hooks/          entry points git calls: pre-commit / commit-msg / pre-push
-  _internal/        the dispatcher library they share (dispatcher-common.sh)
+  _internal/        the dispatcher library they share (dispatcher-common.sh) and
+                    force_push.py, the grant of a forced push
 gh-shim/            entry point PATH resolves as `gh`: gh-guard.sh
 agent-hooks/        entry points an AI agent calls before each tool:
                     claude-code/area-guard.py (with outgoing.py, the send guard,
-                    order.py, the operator's order for a send, peers.py,
+                    order.py, the operator's order for a send, push_options.py,
+                    how a `git push` is read for a force, peers.py,
                     another session as a destination, and children/, the
                     register of a session's children and what each may do)
 scanners/           the judgement the entry points call, one folder per role:

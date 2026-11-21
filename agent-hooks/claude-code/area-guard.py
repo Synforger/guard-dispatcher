@@ -109,12 +109,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "git-hooks" / "_internal"))
 import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
 import commit_options  # noqa: E402
 import commit_scope  # noqa: E402
+import force_push  # noqa: E402
 import guard_places  # noqa: E402
+import push_options  # noqa: E402
 import records  # noqa: E402
 import script_files  # noqa: E402
 from path_forms import resolved  # noqa: E402
@@ -128,6 +131,9 @@ CONFIG = guard_places.settings_folder()
 AREAS = guard_places.setting("areas.txt")
 HANDOFF = guard_places.setting("handoff.txt")
 STATE = guard_places.marks_folder()
+# The operator's approvals of forced pushes (git-hooks' force_push.py): what lets a push that rewrites
+# history through the pre-push hook. Kept like the marks: an agent that wrote it would approve its own push.
+GRANTS = force_push.grants_folder()
 # The operator's switch: while this file exists the entry guard passes every call. Installing or
 # updating the guard leaves it as it is, so switching off holds until the operator removes it.
 OFF = guard_places.setting("agent-off")
@@ -1299,11 +1305,14 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
     return send_places(command, cwd)[0]
 
 
-def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path, list[str]]], list[str], list[str]]:
+def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path, list[str]]], list[str], list[str],
+                                                                list[tuple[Path, str, str]]]:
     """(every send in a command -- git commit / push, a sending gh call -- as (repository it runs
     in, arguments naming its destination for corpus-scan), the words that leave a send's folder
     to be known only as the command runs, the commits whose options switch their hooks off
-    (commit_options), wherever they stand). A commit stays local, so its arguments are empty.
+    (commit_options), the pushes that force their refs (push_options) as (repository it runs in,
+    the URL it sends to, the form that forces it), wherever they stand). A commit stays local, so
+    its arguments are empty.
 
     The command is read in order, following where it stands: `cd`, `pushd` / `popd` and a
     `( ... )` subshell move it, and each git runs where the command stands at that point, moved
@@ -1318,18 +1327,20 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
     try:
         words = shell_words(command)
     except ValueError:
-        return [], [], []
+        return [], [], [], []
     breaks = outgoing_module().SHELL_BREAK
     found: list[tuple[Path, list[str]]] = []
     unread: list[str] = []
     skipping: list[str] = []
+    forcing: list[tuple[Path, str, str]] = []
     # A shell script read from standard input (`bash < run.sh`): the words below drop redirections.
     for program, code, here in ran_scripts(command, cwd, fed_only=True) if depth < NESTED else []:
         if SHELL_CODE.fullmatch(program):
-            sends, unreadable, skips = send_places(code, here, depth + 1)
+            sends, unreadable, skips, forces = send_places(code, here, depth + 1)
             found += sends
             unread += unreadable
             skipping += skips
+            forcing += forces
     standing = Standing(cwd, unknown_stays=False)
     values: dict[str, str] = {}
     lost: str | None = None            # the word that took the command where it cannot be read
@@ -1386,11 +1397,12 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
         def inner(code: str) -> None:
             if depth >= NESTED:
                 return
-            sends, unreadable, skips = send_places(code, str(here), depth + 1)
+            sends, unreadable, skips, forces = send_places(code, str(here), depth + 1)
             found.extend([] if lost else sends)
             unread.extend([lost] * len(sends) if lost else [])
             unread.extend(unreadable)
             skipping.extend(skips)
+            forcing.extend([] if lost else forces)
 
         script = script_files.ran(argv, str(here))
         if script is not None and SHELL_CODE.fullmatch(script[0]):
@@ -1418,8 +1430,10 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
             elif sub == "commit":
                 found.append((repo, []))
             elif sub == "push":
-                named = next((a for a in rest if not a.startswith("-")), None)
-                found.append((repo, ["--dest", push_url(repo, named)]))
+                url = push_url(repo, push_options.remote(rest))
+                found.append((repo, ["--dest", url]))
+                if form := push_options.forces(rest):
+                    forcing.append((repo, url, form))
         elif name == "gh":
             rest = [a for a in args if not a.startswith("-")]
             if rest[:1] == ["api"]:   # GET by default; it sends only with a body or a method
@@ -1453,7 +1467,7 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
             standing.open(lost)
         elif w == ")" and standing.inside():
             lost = standing.close()
-    return found, unread, skipping
+    return found, unread, skipping, forcing
 
 
 def push_url(repo: Path, named: str | None) -> str:
@@ -1905,8 +1919,11 @@ def has_remote(repo: Path) -> bool:
 
 
 def marks_names() -> set[str]:
-    """How a path to the folder of marks may be spelled: the usual tails, and this machine's folder itself."""
-    return {".cache/area-guard", "state/guard/marks", str(STATE), str(real(STATE))}
+    """How a path to the folder of marks, or to the one of forced-push grants beside it, may be spelled:
+    the usual tails, and this machine's folders themselves."""
+    return {".cache/area-guard", "state/guard/marks", str(STATE), str(real(STATE)),
+            f".cache/{force_push.GRANTS_FOLDER}", f"state/guard/{force_push.GRANTS_FOLDER}",
+            str(GRANTS), str(real(GRANTS))}
 
 
 MARKS_REWRITE = "removes or rewrites the entry guard's marks"
@@ -1951,7 +1968,7 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
         return "removes the guards' installed hooks"
     if config_writes_guard_key(command) and not writes_derived_scope(command, cwd):
         return "a git config that switches the hooks off"
-    sends, _, skipping = send_places(command, cwd)
+    sends, _, skipping, _ = send_places(command, cwd)
     if not sends and not skipping:
         return None
     if m := BYPASS_ENV.search(command):
@@ -1972,6 +1989,38 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
             continue
         if reason := unguarded(target, scope=bool(areas)):
             return f"{repo_root(target)}: {reason}"
+    return None
+
+
+def forced_push_needs_order(url: str) -> bool:
+    """Whether the repository a push goes to is one whose forced pushes wait for the operator
+    (`repo:` line ending `order`, corpus-scan.py --force-order). A scan that cannot answer holds
+    the push: a forced push is let through only on a clear answer."""
+    import subprocess
+    try:
+        r = subprocess.run(["python3", str(CORPUS), "--force-order", "--dest", url],
+                           capture_output=True, text=True, timeout=60, env=dict(os.environ))
+    except (subprocess.TimeoutExpired, OSError):
+        return True
+    return r.returncode != 0 or r.stdout.strip() == corpus_module().ORDER
+
+
+def forced_push_refusal(tool: str, args: dict, event: dict, cwd: str, areas, approved: bool) -> str | None:
+    """Why a command's forced push does not pass, or None. A push that forces its refs
+    (push_options) to a repository marked `order` passes on the operator's yes to this very call,
+    shown in a ```guard block (`approval`, which `approved` says the call has had already), and
+    that yes is kept for the pre-push hook as a grant of each such repository (force_push.give):
+    the hook stops a rewrite the command line did not show."""
+    held = [(repo, url, form) for repo, url, form in send_places(args.get("command", ""), cwd)[3]
+            if forced_push_needs_order(url)]
+    if not held:
+        return None
+    if not approved and (why := approval(tool, args, event, [repo for repo, _, _ in held], areas)):
+        named = ", ".join(f"{form} to {url}" for _, url, form in held)
+        return (f"area-guard: an agent does not push with {named}: the destination's history is held to the "
+                f"operator's approval (`order` on its repo: line in destinations.txt): {why}")
+    for repo, url, _ in held:
+        force_push.give(repo_root(repo) or repo, url)
     return None
 
 
@@ -2134,6 +2183,7 @@ def main() -> int:
         return 0
     # Switching the guards off or around is refused even on a machine with no areas, but on the
     # operator's yes to this very call: the marks, which keep areas apart, never.
+    approved = False
     if tool == "Bash" and (reason := bypass(args.get("command", ""), cwd, areas)):
         command = args.get("command", "")
         places = [real(cwd), *mentioned_paths(command, areas, cwd), *(t for t, _ in sends_of(command, cwd))]
@@ -2141,6 +2191,12 @@ def main() -> int:
             deny(f"area-guard: an agent does not switch the guards off or around ({reason})"
                  + ("" if reason == MARKS_REWRITE else f": {why}"))
             return 0
+        approved = True
+    # A push that rewrites the history of a repository whose destination line says `order` is the
+    # operator's to approve, on every machine, as a change of the guards is.
+    if tool == "Bash" and (why := forced_push_refusal(tool, args, event, cwd, areas, approved)):
+        deny(why)
+        return 0
     if tool == "Bash" and children.rules.runs_registration(args.get("command", "")):
         deny("area-guard: an agent does not register a child: the client does, once it has opened the child's tab")
         return 0
