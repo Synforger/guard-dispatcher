@@ -96,7 +96,7 @@ import curl_options  # noqa: E402
 import script_files  # noqa: E402
 from service_reads import rclone_reads  # noqa: E402
 from path_forms import resolved  # noqa: E402
-from shell_commands import expands, globs, simple_commands  # noqa: E402
+from shell_commands import NESTED, expands, globs, simple_commands  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
 
 # The words of a tool's own name (`mcp__server__slack_read_channel` -> slack, read, channel), however
@@ -968,6 +968,18 @@ def local_commands(tool: str, args: list[str]) -> list[str]:
     return [m.group(1) for o, v in options if o == "-o" and v and (m := LOCAL_COMMAND.match(v))]
 
 
+def fed_files(stdin, previous) -> list[str]:
+    """The files a command's standard input comes from, where the line names them: a `<` redirection,
+    or the files of a plain `cat` piped into it (`previous` is the command before, as simple_commands
+    gives it)."""
+    if stdin and stdin[0] == "file":
+        return [stdin[1]]
+    if stdin == ("unknown", "a pipe") and previous is not None and previous[0] \
+            and os.path.basename(str(previous[0][0])) == "cat":
+        return [str(word) for word in previous[0][1:] if not str(word).startswith("-")]
+    return []
+
+
 def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[Send]:
     """Code written into the command line: a shell's `-c` string is a command line of its own; an
     interpreter's `-c` / `-e` code, or a heredoc fed to one, sends to each host a URL in it names,
@@ -983,12 +995,13 @@ def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[
     bodies = [m.group(3) for m in HEREDOC.finditer(command)]
     out = []
     here = cwd
-    for words, stdin in commands:
+    for index, (words, stdin) in enumerate(commands):
         tool = os.path.basename(words[0])
         if tool == "cd" and len(words) > 1 and not UNREAD_FOLDER.search(words[1]):
             here = str(resolved(Path(os.path.join(here, os.path.expanduser(words[1])))))
             continue
-        script = script_files.ran(list(words), here) if depth < 3 else None
+        script = script_files.ran(list(words), here, fed_files(stdin, commands[index - 1] if index else None)) \
+            if depth < NESTED else None
         if script is not None:
             program, text = script
             if program in SHELLS:
@@ -999,11 +1012,11 @@ def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[
                 continue
             tool, words = program, [program, "-c", text]
         codes = [words[i + 1] for i, w in enumerate(words[:-1]) if w in CODE_FLAGS]
-        if tool in SHELLS and depth < 3:
+        if tool in SHELLS and depth < NESTED:
             for code in codes:
                 out += sends("Bash", {"command": code}, cwd, send_scan, depth=depth + 1)
             continue
-        if tool in ("ssh", "scp", "sftp", "rsync") and depth < 3:
+        if tool in ("ssh", "scp", "sftp", "rsync") and depth < NESTED:
             for code in local_commands(tool, words[1:]):
                 out += sends("Bash", {"command": code}, cwd, send_scan, depth=depth + 1)
             continue

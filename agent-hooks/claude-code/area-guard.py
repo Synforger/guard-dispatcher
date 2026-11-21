@@ -355,12 +355,22 @@ PATH_JOINS = re.compile(r"(?:\bos\.path\.join|\bposixpath\.join|\bPure(?:Posix)?
 # and `HOME` from the environment, Node's `os.homedir()` and `process.env.HOME`, Ruby's `Dir.home` and
 # `ENV["HOME"]`, Perl's `$ENV{HOME}`. A path glued to it (`Path.home() / "a"`, `HOME + "/a"`,
 # `os.path.join(Path.home(), "a")`) is a path under the home folder.
-HOME_SAID = re.compile(r"""(?:\b(?:pathlib\.)?Path\.home\(\s*\)"""
-                       r"""|\b(?:os\.path|posixpath)\.expanduser\(\s*(['"])~\1\s*\)"""
-                       r"""|\b(?:pathlib\.)?Path\(\s*(['"])~\2\s*\)\.expanduser\(\s*\)"""
-                       r"""|\bos\.environ\[\s*(['"])HOME\3\s*\]|\bos\.environ\.get\(\s*(['"])HOME\4\s*\)"""
-                       r"""|\bos\.getenv\(\s*(['"])HOME\5\s*\)|\bos\.homedir\(\s*\)|\bprocess\.env\.HOME\b"""
-                       r"""|\bDir\.home\b|\bENV\[\s*(['"])HOME\6\s*\]|\$ENV\{HOME\})""")
+# A name imported out of its module (`from os import environ`, `const {homedir} = require("os")`) says
+# it as well, so the module before it is optional, and a call wrapped in `str(...)` is the same folder.
+HOME_SAID = re.compile(r"""(?P<wrap>\b(?:str|String|os\.fspath)\(\s*)?"""
+                       r"""(?:\b(?:pathlib\.)?Path\.home\(\s*\)"""
+                       r"""|\b(?:(?:os\.path|posixpath)\.)?expanduser\(\s*(?P<q1>['"])~(?P=q1)\s*\)"""
+                       r"""|\b(?:pathlib\.)?Path\(\s*(?P<q2>['"])~(?P=q2)\s*\)\.expanduser\(\s*\)"""
+                       r"""|\b(?:os\.)?environ\[\s*(?P<q3>['"])HOME(?P=q3)\s*\]"""
+                       r"""|\b(?:os\.)?environ\.get\(\s*(?P<q4>['"])HOME(?P=q4)\s*\)"""
+                       r"""|\b(?:os\.)?getenv\(\s*(?P<q5>['"])HOME(?P=q5)\s*\)|\bhomedir\(\s*\)|\bprocess\.env\.HOME\b"""
+                       r"""|\bDir\.home\b|\bENV\[\s*(?P<q6>['"])HOME(?P=q6)\s*\]|\$ENV\{HOME\})"""
+                       r"""(?(wrap)\s*\))""")
+# A word that tells code speaks of the home folder in a way the spellings above may miss (an f-string,
+# a name it was given): a path in such code that lies under a folder of the home folder is that path.
+HOME_HINT = re.compile(r"home|HOME|homedir|expanduser")
+# A run of path pieces inside a string, after its start, a `}` or a separator: at least two pieces.
+PATH_PIECES = re.compile(r"""(?:^|(?<=[}\s=:'"]))/?([A-Za-z0-9_.][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_.\-]+)+)""")
 # What glues a piece onto a path: `/` (pathlib), `+` and `.` (strings), and a `joinpath` call.
 GLUE = re.compile(r"\s*[/+.]\s*")
 JOINPATH = re.compile(r"\s*\.joinpath\s*\(")
@@ -406,8 +416,8 @@ def _joins(code: str) -> tuple[list[str], list[tuple[int, int]]]:
         parts = _string_pieces(pieces[at_home:])
         if parts and not m.group(0).startswith(".joinpath"):
             told.append(os.path.join(home, *(p.strip("/") for p in parts)) if at_home else os.path.join(*parts))
-    for m in HOME_SAID.finditer(code):
-        parts, pos = [], m.end()
+    for pos in _home_ends(code):
+        parts = []
         while True:
             if joined := JOINPATH.match(code, pos):
                 end = _closing(code, joined.end() - 1)
@@ -430,6 +440,16 @@ def _joins(code: str) -> tuple[list[str], list[tuple[int, int]]]:
         if parts:
             told.append(os.path.join(home, *parts))
     return told, spans
+
+
+def _home_ends(code: str) -> list[int]:
+    """Where each saying of the home folder in `code` ends: a spelling of HOME_SAID, or a name one of
+    them was given (`h = Path.home()` and later `h / "a"`)."""
+    ends = [m.end() for m in HOME_SAID.finditer(code)]
+    given = {m.group(1) for m in re.finditer(rf"\b([A-Za-z_]\w*)\s*=\s*(?:{HOME_SAID.pattern})", code)}
+    for name in given:
+        ends += [m.end() for m in re.finditer(rf"(?<![\w.]){re.escape(name)}\b(?!\s*[(=])", code)]
+    return sorted(ends)
 
 
 def _string_pieces(pieces: list[str]) -> list[str]:
@@ -728,8 +748,12 @@ def code_paths(code: str, cwd: str) -> list[str]:
     reads or writes it cannot be told. A word quoted inside a longer string is that string's text,
     and a media type is a path only when its first name is a folder of the command's folder."""
     found = []
+    hinted = bool(HOME_HINT.search(code))
     for text, whole in literals(code):
         found += standing(text)
+        if hinted:
+            found += [path for m in PATH_PIECES.finditer(text)
+                      if (path := os.path.join(str(Path.home()), m.group(1))) and Path(path).parent.is_dir()]
         if not whole or text.startswith("/") or "://" in text or not text.strip(".") or not CODE_WORD.fullmatch(text):
             continue
         if MEDIA_TYPE.fullmatch(text) and not (Path(cwd) / text.split("/")[0]).is_dir():
@@ -837,7 +861,7 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
                 code = code_writes.python.written_code(code)
             written.extend((path, base) for path in code_paths(code, base))
 
-    def one(words: list[str], stdin: str | None) -> None:
+    def one(words: list[str], stdin: str | None, fed: list[str]) -> None:
         if words and all(ASSIGNMENT.fullmatch(w) for w in words[words[0] in DECLARES:]):
             # `D=/a/b` alone on its command (or after export / local): later words may spell it $D.
             # A value this line cannot know (a substitution, a variable set elsewhere) is forgotten.
@@ -881,7 +905,8 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
                 run(tool, code, here)
         if stdin is not None:
             run(tool, stdin, here)
-        if depth < NESTED and (script := script_files.ran([filled(words[0]), *args], here)) is not None:
+        if depth < NESTED and (script := script_files.ran([filled(words[0]), *args], here,
+                                                          [filled(f) for f in fed])) is not None:
             run(*script, here)
 
     # The command line is read in order, following where it stands, as sends_of does for a send:
@@ -891,9 +916,9 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
     # runs the body in /a), in the order the heredocs open. One the line could not be read for is
     # read from where the command started.
     waiting = list(fed)
-    for words, redirects, stdin, ended_by in commands:
+    for index, (words, redirects, stdin, ended_by) in enumerate(commands):
         written.extend((filled(target), standing.here) for operator, target in redirects if ">" in operator)
-        one(words, stdin)
+        one(words, stdin, fed_files(redirects, commands[index - 1] if index else None))
         for operator, _ in redirects:
             if operator in ("<<", "<<-") and waiting:
                 run(*waiting.pop(0), standing.here)
@@ -919,10 +944,22 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
     return spelled(written) + found[0], spelled(removed) + found[1]
 
 
-def ran_scripts(command: str, cwd: str, depth: int = 0) -> list[tuple[str, str, str]]:
+def fed_files(redirects: list[tuple[str, str]], previous: tuple | None) -> list[str]:
+    """The files a command's standard input comes from, where the line names them: a `<` redirection,
+    or the files of a plain `cat` piped into it (`previous` is the step before, as stepped_commands
+    gives it)."""
+    files = [target for operator, target in redirects if operator in ("<", "<>")]
+    if not files and previous is not None and previous[3] in ("|", "|&") and previous[0] \
+            and os.path.basename(previous[0][0]) == "cat":
+        files = [word for word in previous[0][1:] if not word.startswith("-")]
+    return files
+
+
+def ran_scripts(command: str, cwd: str, depth: int = 0, *, fed_only: bool = False) -> list[tuple[str, str, str]]:
     """(the program the code is read as, the code, the folder it runs in) for each file of code the
     command hands to a program (script_files), in order, following where the command stands (Standing),
-    a shell's `-c` string and `eval` included."""
+    a shell's `-c` string and `eval` included. With `fed_only`, only the code a program reads from the
+    files on its standard input (`bash < run.sh`, `cat run.sh | bash`)."""
     line, _ = split_heredocs(spell_home(command))
     try:
         steps = list(stepped_commands(line))
@@ -930,19 +967,21 @@ def ran_scripts(command: str, cwd: str, depth: int = 0) -> list[tuple[str, str, 
         return []
     found: list[tuple[str, str, str]] = []
     standing = Standing(cwd)
-    for words, _, _, ended_by in steps:
+    for index, (words, redirects, _, ended_by) in enumerate(steps):
         rest = words
         while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT):
             rest = rest[1:]
         if rest and not standing.move(os.path.basename(rest[0]), rest[1:]):
             tool, here = os.path.basename(rest[0]), standing.here
-            if (script := script_files.ran(rest, here)) is not None:
-                found.append((*script, here))
+            fed = fed_files(redirects, steps[index - 1] if index else None)
+            if (script := script_files.ran(rest, here, fed)) is not None:
+                if not fed_only or script_files.ran(rest, here) is None:
+                    found.append((*script, here))
             elif depth < NESTED and (tool == "eval" or SHELL_CODE.fullmatch(tool)):
                 codes = [" ".join(rest[1:])] if tool == "eval" else \
                     [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
                 for code in codes:
-                    found += ran_scripts(code, here, depth + 1)
+                    found += ran_scripts(code, here, depth + 1, fed_only=fed_only)
         if ended_by == "(":
             standing.open()
         elif ended_by == ")":
@@ -1176,7 +1215,8 @@ def _walked(words: list[str], steps: list, index: int, standing: Standing, depth
     cwd = standing.here
     ended_by = steps[index][3]
     found: list[tuple[Path, list[str]]] = []
-    script = script_files.ran(rest, cwd) if depth < NESTED else None
+    script = script_files.ran(rest, cwd, fed_files(steps[index][1], steps[index - 1] if index else None)) \
+        if depth < NESTED else None
     if script is not None and SHELL_CODE.fullmatch(script[0]):
         return recursive_reads(script[1], cwd, depth + 1)
     if SHELL_CODE.fullmatch(tool) and depth < NESTED:
@@ -1283,6 +1323,13 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
     found: list[tuple[Path, list[str]]] = []
     unread: list[str] = []
     skipping: list[str] = []
+    # A shell script read from standard input (`bash < run.sh`): the words below drop redirections.
+    for program, code, here in ran_scripts(command, cwd, fed_only=True) if depth < NESTED else []:
+        if SHELL_CODE.fullmatch(program):
+            sends, unreadable, skips = send_places(code, here, depth + 1)
+            found += sends
+            unread += unreadable
+            skipping += skips
     standing = Standing(cwd, unknown_stays=False)
     values: dict[str, str] = {}
     lost: str | None = None            # the word that took the command where it cannot be read

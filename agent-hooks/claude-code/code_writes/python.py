@@ -401,20 +401,22 @@ class _Reader:
             return []
         return args
 
-    def _sources(self, node: ast.AST, seen: set[int], parts: list[str]) -> None:
-        """Add the source of `node`, and of every value its names were given, to `parts`. A function the
-        code defines, handed on without being called, adds its whole definition: what it is handed to may
-        read its annotations and defaults or run its body (`typing.get_type_hints(f)`)."""
+    def _sources(self, node: ast.AST, seen: set[int], parts: list[str], name: str | None = None) -> None:
+        """Add the source of `node`, and of every value its names were given, to `parts`. A value is
+        given as `name = value`, so a reader of the parts still sees which name stands for it (`h =
+        Path.home()` and `h / "a"`). A function the code defines, handed on without being called, adds
+        its whole definition: what it is handed to may read its annotations and defaults or run its body
+        (`typing.get_type_hints(f)`)."""
         if id(node) in seen:
             return
         seen.add(id(node))
         source = ast.get_source_segment(self._code, node)
         if source:
-            parts.append(source)
+            parts.append(f"{name} = {source}" if name else source)
         for inner in ast.walk(node):
             key = self._key(inner) if isinstance(inner, (ast.Name, ast.Attribute)) else None
             for value in self._values.get(key, []) if key else []:
-                self._sources(value, seen, parts)
+                self._sources(value, seen, parts, key)
             if id(inner) not in self._called and (function := self._function(inner)) is not None:
                 self._sources(function, seen, parts)
                 parts += _string_annotations(function)
