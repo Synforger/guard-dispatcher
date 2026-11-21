@@ -137,6 +137,9 @@ RECEIVER_WRITES = frozenset({"write_text", "write_bytes", "touch", "mkdir", "unl
 MOVES = frozenset({"rename", "replace"})
 #: The calls that open a file, and the letters of a mode that writes it.
 OPENS = frozenset({"open", "io.open", "codecs.open"})
+#: The calls that make a path of the one string they are given (`Path("out.json")`).
+PATH_MAKERS = frozenset({"pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath", "pathlib.PurePosixPath",
+                         "Path", "PurePath", "PosixPath", "PurePosixPath"})
 #: Functions that write, make, move or remove only the files and folders of this machine they are handed:
 #: what they write is every argument (as for a call this module does not know), but they reach nothing
 #: past this machine, so code calling them stays here.
@@ -161,14 +164,21 @@ DYNAMIC = frozenset({"eval", "exec", "compile", "getattr", "setattr", "delattr",
                      "breakpoint", "help"})
 
 
-def written_code(code: str) -> str:
+def written_code(code: str, *, known_writes_only: bool = False) -> str:
     """The source of every part of `code` that can name a file it writes, one part a line, or the
-    whole code when it does not parse."""
+    whole code when it does not parse. With `known_writes_only`, only the names a call known to
+    write the file it is given (an `open` in a writing mode, a path's method that writes, one of
+    LOCAL_WRITES) is handed as they stand: a string (`open("out.json", "w")`), a path made of one
+    string (`Path("out.json").write_text(...)`), such a path with strings joined on (`Path("d") / "a"`),
+    or a name given such values, each as a string
+    literal on a line of its own. What a call this module does not know is handed, that call places
+    itself (`setting("areas.txt")` may join it to a folder of its own), and a string glued onto
+    another value (`base / "areas.txt"`) is a piece of a path the code puts together."""
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError):
         return code
-    return _Reader(code, tree).written()
+    return _Reader(code, tree).written(known_writes_only=known_writes_only)
 
 
 def stays_here(code: str) -> bool:
@@ -204,10 +214,16 @@ class _Reader:
         self._read_bindings()
         self._called = {id(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
 
-    def written(self) -> str:
-        if self._hands_on_unknown() is not None:
+    def written(self, *, known_writes_only: bool = False) -> str:
+        if not known_writes_only and self._hands_on_unknown() is not None:
             return self._code
-        targets = [t for node in ast.walk(self._tree) if isinstance(node, ast.Call) for t in self._targets(node)]
+        targets = [t for node in ast.walk(self._tree) if isinstance(node, ast.Call)
+                   for t in self._targets(node, known_writes_only=known_writes_only)]
+        if known_writes_only:
+            names: list[str] = []
+            for target in targets:
+                self._as_written(target, set(), names)
+            return "\n".join(repr(name) for name in dict.fromkeys(names))
         seen: set[int] = set()
         parts: list[str] = []
         for target in targets:
@@ -382,7 +398,9 @@ class _Reader:
                 return _canonical(f"{self._dotted(node.value)}.{node.attr}")
         return None
 
-    def _targets(self, call: ast.Call) -> list[ast.AST]:
+    def _targets(self, call: ast.Call, *, known_writes_only: bool = False) -> list[ast.AST]:
+        """What `call` writes (see the module's docstring); with `known_writes_only`, nothing for a
+        call this module does not know as one that writes."""
         args = [*call.args, *(k.value for k in call.keywords)]
         name = self._dotted(call.func)
         if name is None and isinstance(call.func, ast.Attribute):
@@ -392,14 +410,35 @@ class _Reader:
                 return [receiver, *(call.args[:1] if method in MOVES else [])]
             if method == "open":
                 return [receiver] if _writes(call, 0) else []
-            if method in PURE_METHODS or method in GROWS or method.startswith("is_"):
+            if method in PURE_METHODS or method in GROWS or method.startswith("is_") or known_writes_only:
                 return []
             return args
         if name in OPENS:
             return [*call.args[:1], *(k.value for k in call.keywords if k.arg == "file")] if _writes(call, 1) else []
         if name is not None and (name in self._functions or _pure(name)):
             return []
-        return args
+        return [] if known_writes_only and name not in LOCAL_WRITES else args
+
+    def _as_written(self, node: ast.AST, seen: set[int], names: list[str]) -> None:
+        """Add to `names` each string `node` stands for as it is: a string constant, a path made of one
+        string constant (`Path("a")`), such a path with strings joined on by `/`, or what a name is
+        given of those."""
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            names.append(node.value)
+        elif (isinstance(node, ast.Call) and len(node.args) == 1 and not node.keywords
+              and self._dotted(node.func) in PATH_MAKERS):
+            self._as_written(node.args[0], seen, names)
+        elif (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)
+              and isinstance(node.right, ast.Constant) and isinstance(node.right.value, str)):
+            left: list[str] = []
+            self._as_written(node.left, seen, left)
+            names += [f"{base.rstrip('/')}/{node.right.value}" for base in left]
+        elif isinstance(node, ast.Name):
+            for value in self._values.get(node.id, []):
+                self._as_written(value, seen, names)
 
     def _sources(self, node: ast.AST, seen: set[int], parts: list[str], name: str | None = None) -> None:
         """Add the source of `node`, and of every value its names were given, to `parts`. A value is

@@ -741,20 +741,22 @@ def code_flags(tool: str) -> set[str]:
     return CODE_FLAGS.get(name, set())
 
 
-def code_paths(code: str, cwd: str) -> list[str]:
+def code_paths(code: str, cwd: str, *, relative: bool = True) -> list[str]:
     """Every path inline code names (literals): an absolute or home path that stands by itself
-    (standing), and a whole string that reads as a relative path (one word that holds a `/`, ends
-    in an extension, or names something that exists in the command's folder). Whether the code
-    reads or writes it cannot be told. A word quoted inside a longer string is that string's text,
-    and a media type is a path only when its first name is a folder of the command's folder."""
+    (standing), and, unless `relative` is False, a whole string that reads as a relative path (one
+    word that holds a `/`, ends in an extension, or names something that exists in the command's
+    folder). Whether the code reads or writes it cannot be told. A word quoted inside a longer
+    string is that string's text, and a media type is a path only when its first name is a folder
+    of the command's folder. A string with no name in it (`/`, `./`) names no file."""
     found = []
     hinted = bool(HOME_HINT.search(code))
     for text, whole in literals(code):
-        found += standing(text)
+        found += [path for path in standing(text) if path.strip("/.")]
         if hinted:
             found += [path for m in PATH_PIECES.finditer(text)
                       if (path := os.path.join(str(Path.home()), m.group(1))) and Path(path).parent.is_dir()]
-        if not whole or text.startswith("/") or "://" in text or not text.strip(".") or not CODE_WORD.fullmatch(text):
+        if not relative or not whole or text.startswith("/") or "://" in text or not text.strip("/.") \
+                or not CODE_WORD.fullmatch(text):
             continue
         if MEDIA_TYPE.fullmatch(text) and not (Path(cwd) / text.split("/")[0]).is_dir():
             continue
@@ -848,8 +850,12 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
         """The word with the variables this command line set to a literal written out."""
         return VARIABLE.sub(lambda m: values.get(m.group(1) or m.group(2), m.group(0)), word)
 
-    def run(tool: str, code: str, base: str) -> None:
-        """Code handed to a program that runs it."""
+    def run(tool: str, code: str, base: str, *, from_file: bool = False) -> None:
+        """Code handed to a program that runs it. Code read from a file (`python3 fix.py`) is a
+        program the command only starts: a relative path in it is a file of the command's folder
+        only where it reaches a call known to write it (`open(name, "w")`); handed to a call the
+        guard does not know, that call places it (`setting("areas.txt")`). Its absolute and home
+        paths count as in code written into the command."""
         if SHELL_CODE.fullmatch(tool):
             if depth >= NESTED:
                 return
@@ -857,9 +863,11 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
             found[0].extend(inner[0])
             found[1].extend(inner[1])
         elif code_flags(tool):
-            if tool.startswith("python"):
-                code = code_writes.python.written_code(code)
-            written.extend((path, base) for path in code_paths(code, base))
+            parts = code_writes.python.written_code(code) if tool.startswith("python") else code
+            written.extend((path, base) for path in code_paths(parts, base, relative=not from_file))
+            if from_file and tool.startswith("python"):
+                known = code_writes.python.written_code(code, known_writes_only=True)
+                written.extend((path, base) for path in code_paths(known, base))
 
     def one(words: list[str], stdin: str | None, fed: list[str]) -> None:
         if words and all(ASSIGNMENT.fullmatch(w) for w in words[words[0] in DECLARES:]):
@@ -907,7 +915,7 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
             run(tool, stdin, here)
         if depth < NESTED and (script := script_files.ran([filled(words[0]), *args], here,
                                                           [filled(f) for f in fed])) is not None:
-            run(*script, here)
+            run(*script, here, from_file=True)
 
     # The command line is read in order, following where it stands, as sends_of does for a send:
     # `cd`, `pushd` / `popd` move it and a `( ... )` subshell gives the place back, so
