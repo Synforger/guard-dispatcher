@@ -17,9 +17,13 @@ point that sees the call decides whether it was ordered (agent-hooks' order.py).
 and drafting in it need no order. What reaches people there passes the operator's eyes first (the
 shown call, or the draft the operator sends), so its payload gets the word list and not the
 private-document scan: the operator reads the text that goes, and the words the agent may write
-without knowing (a handle, a name) are still stopped. `block order`, an
-`order` on a `repo:` line (a push is not a call the operator can be shown) and any other third
+without knowing (a handle, a name) are still stopped. `block order` and any other third
 word stop every send until the line is fixed.
+
+On a `repo:` line `order` means something else: a push that rewrites that repository's history
+(`--force`, `--force-with-lease`, `+<refspec>`, a force set in a config) passes only on the
+operator's approval, shown in a ```guard block; every other push goes as before. Both entry points
+see it: area-guard.py before the command runs, and the pre-push hook for a force it did not see.
 
 A destination no line names is undeclared and passes unscanned: the guard stops what it knows
 leaves an area, and a server or a service at work (a build machine, an internal API) is not
@@ -178,8 +182,6 @@ def rules() -> list[tuple[str, str, bool]]:
             raise Broken(f"{DESTINATIONS}:{n} ends with `{words[2]}`: the only third word is `order`")
         if ordered and words[1] == BLOCK:
             raise Broken(f"{DESTINATIONS}:{n} is `block order`: a blocked destination takes no send to order")
-        if ordered and words[0].lower().startswith("repo:"):
-            raise Broken(f"{DESTINATIONS}:{n} puts `order` on a repository: a push is not held to an order")
         out.append((words[0], words[1], ordered))
     # Then the lines each area keeps for itself (areas/<area>/destinations.txt): a destination it
     # places inside itself or blocks, ahead of the defaults. A line reaching outside is not read.

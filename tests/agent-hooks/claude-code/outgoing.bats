@@ -1852,7 +1852,7 @@ relays() { printf '%s\n' ">${RELAYED}" >> "${GUARD_CONFIG_DIR}/orders.txt"; }
 
 @test "order: a destinations line that cannot hold an order sends nothing" {
     local line
-    for line in '*slack* block order' '*slack* company ordered' '*slack* company order now' 'repo:me/* outside order'; do
+    for line in '*slack* block order' '*slack* company ordered' '*slack* company order now' 'repo:me/* outside now' 'repo:me/* block order'; do
         destinations "${line}"
         send "${SLACK}" "hello"
         denied || { echo "accepted: ${line}"; return 1; }

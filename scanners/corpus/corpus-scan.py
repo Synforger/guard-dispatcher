@@ -111,6 +111,10 @@ a public repository leaves the client all the same:
                                           `_carries` line lets that repository hold are not checked
     corpus-scan.py --where [--dest <url> | --gh-argv <file>]
                                           print where the destination lives, or OUTSIDE
+    corpus-scan.py --force-order --dest <url>
+                                          print `order` when a push that rewrites history to <url> needs
+                                          the operator's approval (the first `repo:` line that fits it
+                                          ends with `order`), and nothing otherwise
     corpus-scan.py --refresh              rebuild the fingerprints now
     corpus-scan.py --refresh-public       rebuild the table of public text if it is not current, unless
                                           another process is at it (what a scan starts when it finds
@@ -281,6 +285,8 @@ MAX_FILE = 5_000_000
 VISIBILITY_TTL = int(os.environ.get("GUARD_VISIBILITY_TTL", "600"))
 CLONES_TTL = 3600
 OUTSIDE = "OUTSIDE"
+#: The third word of a destination line that holds a send (a forced push, for a `repo:` line) to the operator's order.
+ORDER = "order"
 GITHUB_URL = [
     re.compile(r"^(?:[a-z+]+://)?(?:[^@/]+@)?github\.com[:/]([\w.-]+)/([\w.-]+?)(?:\.git)?/?$", re.I),
     # an ssh host alias (`git@github-work:owner/repo`) still lands on github.com
@@ -591,7 +597,7 @@ def kept_destinations(areas: dict[str, list[Path]]) -> list[tuple[str, str, bool
     out = []
     for owner, path, line in kept_lines("destinations.txt", areas):
         words = line.split("#", 1)[0].split()
-        if len(words) not in (2, 3) or (len(words) == 3 and words[2] != "order"):
+        if len(words) not in (2, 3) or (len(words) == 3 and words[2] != ORDER):
             skip(path, line, "is not `<pattern> <area|block> [order]`")
             continue
         pattern, target, ordered = words[0], words[1], len(words) == 3
@@ -605,7 +611,7 @@ def kept_destinations(areas: dict[str, list[Path]]) -> list[tuple[str, str, bool
             skip(path, line, f"{target} is no area within {owner}")
         elif len(literal) < 3:
             skip(path, line, "catches every destination: name the service or the host")
-        elif ordered and (target == "block" or pattern.lower().startswith("repo:")):
+        elif ordered and target == "block":
             skip(path, line, "takes `order` only for a send that can be ordered")
         else:
             out.append((pattern, target, ordered))
@@ -2144,22 +2150,32 @@ def holding(place: Path, areas: dict[str, list[Path]]) -> frozenset[str]:
                      and any(len(r.parts) > cut and contains([r], place) for r in roots))
 
 
-def repo_rules() -> list[tuple[str, str]]:
-    """`repo:<owner>/<name>` lines of destinations.txt: where a GitHub repository sits whatever its
-    visibility and wherever it is cloned (`repo:my-account/* outside`: a personal account is outside
-    every area even for a private repository, which its owner may publish tomorrow). A line with
-    a third word keeps the place it declares here: send-scan.py refuses the line as written, and a
-    push is not let through meanwhile."""
+def repo_rules() -> list[tuple[str, str, bool]]:
+    """(`<owner>/<name>` pattern, where it sits, whether a push that rewrites its history needs the
+    operator's approval) of the `repo:` lines of destinations.txt: where a GitHub repository sits
+    whatever its visibility and wherever it is cloned (`repo:my-account/* outside`: a personal account
+    is outside every area even for a private repository, which its owner may publish tomorrow). A
+    third word other than `order` keeps the place the line declares here: send-scan.py refuses the
+    line as written, and a push is not let through meanwhile."""
     path = guard_places.setting("destinations.txt")
     out = []
     for line in read_lines(path):
         words = line.split("#", 1)[0].split()
         if len(words) >= 2 and words[0].lower().startswith("repo:"):
-            out.append((words[0][5:].lower(), words[1]))
+            out.append((words[0][5:].lower(), words[1], words[2:3] == [ORDER]))
     if area_folders():
-        out += [(pattern[5:].lower(), target) for pattern, target, _ in kept_destinations(load_areas())
+        out += [(pattern[5:].lower(), target, ordered) for pattern, target, ordered in kept_destinations(load_areas())
                 if pattern.lower().startswith("repo:")]
     return out
+
+
+def forced_push_needs_order(dest: str) -> bool:
+    """Whether the first `repo:` line that fits the GitHub repository a push goes to is marked
+    `order`: a push that rewrites its history waits for the operator's approval."""
+    slug = github_repo(dest)
+    rule = next(((target, ordered) for pattern, target, ordered in repo_rules()
+                 if slug and fnmatch.fnmatchcase(slug, pattern)), None)
+    return bool(rule and rule[1])
 
 
 #: The areas a `repo:` line of destinations.txt names as the owner of the repository a push goes
@@ -2179,7 +2195,7 @@ def destination(slugs: set[str], sender: Path, areas: dict[str, list[Path]]) -> 
         return None
     declared = repo_rules()
     for slug in sorted(slugs):
-        target = next((t for pattern, t in declared if fnmatch.fnmatchcase(slug.lower(), pattern)), None)
+        target = next((t for pattern, t, _ in declared if fnmatch.fnmatchcase(slug.lower(), pattern)), None)
         if target == "outside":
             say(f"destination {slug} is declared outside every area -- checked against every area")
             return None
@@ -2396,6 +2412,9 @@ def main(argv: list[str] | None = None) -> int:
                         "joined by commas are a session that has read in all: a place inside each when "
                         "they nest into one, and the text of each when they do not")
     parser.add_argument("--where", action="store_true", help=f"print where the destination lives, or {OUTSIDE}")
+    parser.add_argument("--force-order", action="store_true",
+                        help=f"print `{ORDER}` when a push that rewrites history to --dest needs the "
+                             "operator's approval (its `repo:` line says so), and nothing otherwise")
     parser.add_argument("--checked", action="store_true",
                         help=f"print the areas a send to the destination is checked against, comma-joined "
                              f"(empty: none; {EXEMPT}: never scanned)")
@@ -2433,6 +2452,11 @@ def main(argv: list[str] | None = None) -> int:
                 with lock_file(wait=True):
                     publish_public(table, ident, heads)
                     _build_locked(areas, full=True)
+        return 0
+    if args.force_order:
+        # Only the `repo:` lines are read, so a machine with no area still holds its forced pushes.
+        if forced_push_needs_order(args.dest or ""):
+            print(ORDER)
         return 0
     if args.walk:
         # Started by a scan that found a full walk due or no tables that fit (build_apart), or by
@@ -2496,9 +2520,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             say("fingerprints not built yet")
         return 0
-    if not (args.span or args.text or args.diff or args.where or args.checked):
-        parser.error("give --range, --text, --diff, --where, --checked, --refresh, --refresh-public, --status "
-                     "or --summary")
+    if not (args.span or args.text or args.diff or args.where or args.checked or args.force_order):
+        parser.error("give --range, --text, --diff, --where, --checked, --force-order, --refresh, "
+                     "--refresh-public, --status or --summary")
 
     sender = expand(str(args.repo or (sending_repo() if args.span else os.getcwd())))
     here: Path | None = sender

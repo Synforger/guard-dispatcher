@@ -618,3 +618,142 @@ mk_lines() {
     [[ "$output" == *"(ref refs/heads/side)"* ]]
     [ -z "$(git for-each-ref refs/guard-dest)" ]
 }
+
+# --- pre-push: a push that rewrites history, from the agent's shell, to a repository held to `order` ---
+
+# held_repo — the fixture remote's `repo:` line ends with `order`; the grants sit beside the marks.
+held_repo() {
+    export AREA_GUARD_STATE="${BATS_TEST_TMPDIR}/state"
+    mkdir -p "${GUARD_CONFIG_DIR}"
+    printf 'repo:synforger/fixture-repo company order\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+}
+
+# rewrite — in the fixture repository, a commit that does not descend from the seed: the seed is
+# `${old}` and the commit that replaces it `${new}`.
+rewrite() {
+    old="$(git rev-parse HEAD)"
+    echo "again" > again.txt && git add again.txt
+    new="$(git commit-tree "$(git write-tree)" -m "feat: another root")"
+}
+
+# give_grant <url> [now] — the operator's approval of a forced push of this repository to <url>.
+give_grant() {
+    python3 -I -c 'import sys; from pathlib import Path
+sys.path.insert(0, sys.argv[1]); import force_push
+force_push.give(Path(sys.argv[2]), sys.argv[3], float(sys.argv[4]) if len(sys.argv) > 4 else None)' \
+        "${GUARD_ROOT}/git-hooks/_internal" "$(git rev-parse --show-toplevel)" "$1" ${2:+"$2"}
+}
+
+grants_left() { find "${BATS_TEST_TMPDIR}/force-grants" -name '*.json' 2>/dev/null | wc -l | tr -d ' '; }
+
+@test "force-push hook: a push of the operator's own shell is not held, whatever it rewrites" {
+    unset CLAUDECODE
+    held_repo
+    mk_repo synforger
+    rewrite
+    run_pre_push "refs/heads/feature/x ${new} refs/heads/feature/x ${old}"
+    [ "$status" -eq 0 ]
+}
+
+@test "force-push hook: a repository without order is not held, from the agent's shell too" {
+    export CLAUDECODE=1
+    mk_repo synforger
+    rewrite
+    run_pre_push "refs/heads/feature/x ${new} refs/heads/feature/x ${old}"
+    [ "$status" -eq 0 ]
+    mkdir -p "${GUARD_CONFIG_DIR}"
+    printf 'repo:synforger/fixture-repo company\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    run_pre_push "refs/heads/feature/x ${new} refs/heads/feature/x ${old}"
+    [ "$status" -eq 0 ]
+}
+
+@test "force-push hook: a fast-forward, a new branch and a deletion pass from the agent's shell" {
+    export CLAUDECODE=1
+    held_repo
+    mk_repo synforger
+    base="$(git rev-parse HEAD)"
+    echo "more" > more.txt && git add more.txt && commit_bypassing_hooks "feat: clean"
+    head="$(git rev-parse HEAD)"
+    run_pre_push "refs/heads/feature/x ${head} refs/heads/feature/x ${base}"
+    [ "$status" -eq 0 ]
+    run_pre_push "refs/heads/feature/y ${head} refs/heads/feature/y ${ZERO_SHA}"
+    [ "$status" -eq 0 ]
+    run_pre_push "(delete) ${ZERO_SHA} refs/heads/feature/x ${base}"
+    [ "$status" -eq 0 ]
+}
+
+@test "force-push hook: a rewrite from the agent's shell stops without a grant and says how to ask" {
+    export CLAUDECODE=1
+    held_repo
+    mk_repo synforger
+    rewrite
+    run_pre_push "refs/heads/feature/x ${new} refs/heads/feature/x ${old}"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"rewrites refs/heads/feature/x on ${SYNFORGER_URL}"* ]]
+    [[ "$output" == *"--force-with-lease"* ]]
+    [[ "$output" == *'```guard'* ]]
+}
+
+@test "force-push hook: a remote commit this repository does not hold counts as a rewrite" {
+    export CLAUDECODE=1
+    held_repo
+    mk_repo synforger
+    echo "more" > more.txt && git add more.txt && commit_bypassing_hooks "feat: clean"
+    run_pre_push "refs/heads/feature/x $(git rev-parse HEAD) refs/heads/feature/x 1111111111111111111111111111111111111111"
+    [ "$status" -eq 1 ]
+}
+
+@test "force-push hook: a grant lets one rewrite through and is used up" {
+    export CLAUDECODE=1
+    held_repo
+    mk_repo synforger
+    rewrite
+    give_grant "${SYNFORGER_URL}"
+    [ "$(grants_left)" -eq 1 ]
+    run_pre_push "refs/heads/feature/x ${new} refs/heads/feature/x ${old}"
+    [ "$status" -eq 0 ]
+    [ "$(grants_left)" -eq 0 ]
+    run_pre_push "refs/heads/feature/x ${new} refs/heads/feature/x ${old}"
+    [ "$status" -eq 1 ]
+}
+
+@test "force-push hook: one grant covers every rewritten ref of one push" {
+    export CLAUDECODE=1
+    held_repo
+    mk_repo synforger
+    rewrite
+    give_grant "${SYNFORGER_URL}"
+    run_pre_push "refs/heads/feature/x ${new} refs/heads/feature/x ${old}" "refs/heads/feature/y ${new} refs/heads/feature/y ${old}"
+    [ "$status" -eq 0 ]
+    [ "$(grants_left)" -eq 0 ]
+}
+
+@test "force-push hook: a grant that ended, or one for another URL or repository, lets nothing through" {
+    export CLAUDECODE=1
+    held_repo
+    mk_repo synforger
+    rewrite
+    give_grant "${SYNFORGER_URL}" 1000
+    run_pre_push "refs/heads/feature/x ${new} refs/heads/feature/x ${old}"
+    [ "$status" -eq 1 ]
+    give_grant "git@github.com:Synforger/other-repo.git"
+    run_pre_push "refs/heads/feature/x ${new} refs/heads/feature/x ${old}"
+    [ "$status" -eq 1 ]
+    other="${BATS_TEST_TMPDIR}/another-clone"
+    git clone -q . "${other}"
+    ( cd "${other}" && give_grant "${SYNFORGER_URL}" )
+    run_pre_push "refs/heads/feature/x ${new} refs/heads/feature/x ${old}"
+    [ "$status" -eq 1 ]
+}
+
+@test "force-push hook: a push that rewrites nothing leaves the grant for the push it was given for" {
+    export CLAUDECODE=1
+    held_repo
+    mk_repo synforger
+    base="$(git rev-parse HEAD)"
+    echo "more" > more.txt && git add more.txt && commit_bypassing_hooks "feat: clean"
+    give_grant "${SYNFORGER_URL}"
+    run_pre_push "refs/heads/feature/x $(git rev-parse HEAD) refs/heads/feature/x ${base}"
+    [ "$status" -eq 0 ]
+    [ "$(grants_left)" -eq 1 ]
+}
