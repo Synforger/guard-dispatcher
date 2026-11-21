@@ -20,6 +20,7 @@ write that folder (area-guard.py keeps it like the marks).
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -32,7 +33,8 @@ from path_forms import resolved  # noqa: E402
 GRANT_SECONDS = 10 * 60
 GRANTS_FOLDER = "force-grants"
 KEY_LENGTH = 16
-ZERO_SHA = "0" * 40
+# A ref that does not exist on one side is named by a sha of zeros, 40 of them or 64 in a SHA-256 repository.
+ZERO_SHA = re.compile(r"0+")
 REFUSAL = (
     "[pre-push] this push rewrites {refs} on {url}, which destinations.txt holds to the operator's "
     "approval (`order`), and no approval stands for it. A force set in a config, an alias or code is "
@@ -98,7 +100,7 @@ def rewrites(ref_lines: str) -> list[str]:
         if len(fields) != 4:
             continue
         _, local_sha, remote_ref, remote_sha = fields
-        if ZERO_SHA in (local_sha, remote_sha):
+        if ZERO_SHA.fullmatch(local_sha) or ZERO_SHA.fullmatch(remote_sha):
             continue
         ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", remote_sha, local_sha],
                                   capture_output=True)
