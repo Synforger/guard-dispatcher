@@ -2150,7 +2150,7 @@ commit_scan() {
 
 teardown() {
     [ -n "${LOCK_PID:-}" ] && kill "${LOCK_PID}" 2>/dev/null
-    true
+    record_test_duration
 }
 
 # update_prints — bring the fingerprints up to date through an ordinary clean scan
