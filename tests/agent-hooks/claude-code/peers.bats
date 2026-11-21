@@ -592,6 +592,28 @@ tickets_setup() {
     [ "${status}" -eq 0 ]; [ "${output}" = "${OUTSIDE_PLACE}" ]
 }
 
+@test "peers.py --place-for: two areas side by side inside a third sit in the place of the innermost one around them" {
+    tickets_setup
+    printf '%s\n' 'beta ~/org/clients/beta' 'deep ~/org/clients/beta/sub' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mkdir -p "${H}/org/clients/beta/sub"
+    session .claude-work sides "88888888-8888-4888-8888-888888888888" client beta
+    run python3 "${PEERS}" --place-for "88888888-8888-4888-8888-888888888888"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${COMPANY_PLACE}" ]
+    # the company read as well changes nothing; a deeper area of one side neither
+    session .claude-work all "99999999-9999-4999-8999-999999999999" company client beta deep
+    run python3 "${PEERS}" --place-for "99999999-9999-4999-8999-999999999999"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${COMPANY_PLACE}" ]
+    # two areas inside one client sit in that client's place, not the company's
+    printf '%s\n' 'left ~/org/clients/acme/l' 'right ~/org/clients/acme/r' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mkdir -p "${H}/org/clients/acme/l" "${H}/org/clients/acme/r"
+    session .claude-work pair "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" left right
+    run python3 "${PEERS}" --place-for "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${CLIENT_PLACE}" ]
+    # the session that opened it reads every boundary of that place, so it may add to it and pass it
+    run python3 "${PEERS}" --to "88888888-8888-4888-8888-888888888888" --covers-place "${COMPANY_PLACE}"
+    [ "${status}" -eq 0 ]
+}
+
 @test "peers.py --place-for: areas that do not lie one inside the next fit in no place, and exit 1 says so" {
     tickets_setup
     printf '%s\n' 'other ~/other' >> "${GUARD_CONFIG_DIR}/areas.txt"
