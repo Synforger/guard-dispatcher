@@ -116,6 +116,8 @@ unheld() {
     held "bash -c 'git push --force origin main'"
     printf '#!/bin/sh\ngit push origin +main\n' > "${HELD}/ship.sh"
     held "bash ship.sh"
+    held "bash < ship.sh"
+    held "cat ship.sh | sh"
     printf 'echo hello\n' > "${HELD}/hello.sh"
     unheld "bash hello.sh"
 }
