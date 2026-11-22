@@ -116,9 +116,11 @@ import code_writes  # noqa: E402
 import commit_options  # noqa: E402
 import commit_scope  # noqa: E402
 import guard_places  # noqa: E402
+import monitor_calls  # noqa: E402
 import records  # noqa: E402
 import script_arguments  # noqa: E402
 import script_files  # noqa: E402
+import search_call  # noqa: E402
 from path_forms import resolved  # noqa: E402
 import orders_edit  # noqa: E402
 import service_reads  # noqa: E402
@@ -1156,6 +1158,8 @@ def write_targets(command: str, cwd: str) -> list[Path]:
 # agent that could write them on its own would draw an area around what it wants to send, call a
 # phrase fine to send, or make an order itself.
 SETTINGS_WHY = "what the guard lets through is judged from it"
+OPENINGS_NAME = "openings.txt"
+ADDS_ONLY = "an agent only adds openings to it, with an Edit or a Write"
 TRANSCRIPT_WHY = "an order for a send is judged from it"
 TRANSCRIPT = re.compile(r"\.claude[^/]*/projects/.+\.jsonl", re.I)
 
@@ -1218,11 +1222,30 @@ def granted(path: Path, marks: set[str]) -> bool:
     return False
 
 
+@functools.lru_cache(maxsize=None)
+def openings_files() -> tuple[Path, ...]:
+    """openings.txt and the files it includes: what tells a relayed message from the operator's."""
+    return (guard_places.setting(OPENINGS_NAME), *map(real, order_module().included_files()))
+
+
+def only_takes_openings(path: Path) -> bool:
+    """Whether a path is one of `openings_files`: an agent adds a line to those and takes none away."""
+    return any(same_file(path, kept_file) for kept_file in openings_files())
+
+
+def holds_openings(path: Path) -> bool:
+    """Whether a folder holds one of `openings_files`, so taking it away takes their lines away."""
+    above = {str(folder).casefold() for f in openings_files() for folder in (*f.parents, *real(f).parents)}
+    return str(path).casefold() in above
+
+
 def kept(path: Path, transcript: str | None, marks: set[str] | None = None) -> tuple[str, str] | None:
     """(what a path is, why the agent may not write it), or None. `marks` = the areas the session
     has read inside, this call included (None: not known, and no grant applies)."""
     if in_settings(path):
         if marks is not None and granted(path, marks):
+            if only_takes_openings(path):
+                return f"the guard's settings ({path.name})", f"{SETTINGS_WHY}, and {ADDS_ONLY}"
             return None
         if marks and settings_name(path) and granted(path, set()):
             return (f"the guard's settings ({path.name})",
@@ -1234,6 +1257,9 @@ def kept(path: Path, transcript: str | None, marks: set[str] | None = None) -> t
     for home in {Path.home(), real(Path.home())}:
         if home in path.parents and TRANSCRIPT.fullmatch(path.relative_to(home).as_posix()):
             return "a session's transcript", TRANSCRIPT_WHY
+    # Last: an agent adds include lines itself, so one only ever holds a file that nothing else holds.
+    if only_takes_openings(path):
+        return f"a file openings.txt includes ({path.name})", f"{SETTINGS_WHY}, and {ADDS_ONLY}"
     return None
 
 
@@ -1249,6 +1275,20 @@ def adds_relay_lines(path: Path, tool: str, args: dict) -> bool:
         return False
     after = orders_edit.text_after(tool, args, before)
     return after is not None and orders_edit.only_adds_relay_lines(before, after)
+
+
+def adds_openings(path: Path, tool: str, args: dict, marks: set[str]) -> bool:
+    """Whether an Edit or a Write only adds to openings.txt, under the operator's grant, or to a file it
+    includes (orders_edit)."""
+    if not only_takes_openings(path) or (in_settings(path) and not granted(path, marks)):
+        return False
+    try:
+        before = path.read_text(encoding="utf-8") if path.exists() else ""
+    except (OSError, UnicodeDecodeError):
+        return False
+    after = orders_edit.text_after(tool, args, before)
+    return after is not None and orders_edit.only_adds_relay_lines(
+        before, after, may_include=settings_name(path) == OPENINGS_NAME)
 
 
 def holds_transcripts(path: Path, reach: str) -> bool:
@@ -1344,10 +1384,14 @@ def kept_by(command: str, cwd: str, transcript: str | None,
             return "the folder holding a session's transcripts", TRANSCRIPT_WHY
     for path in [*written, *removed, *script_paths]:
         if what := kept(path, transcript, marks):
+            if what[1].endswith(ADDS_ONLY) and search_call.searches_only(command):
+                continue
             return what
     for path in removed:
         if path in real(CONFIG).parents or path in CONFIG.parents:
             return "the folder holding the guard's settings", SETTINGS_WHY
+        if holds_openings(path):
+            return "a folder holding openings of relayed messages", f"{SETTINGS_WHY}, and {ADDS_ONLY}"
     return None
 
 
@@ -2363,6 +2407,7 @@ def main() -> int:
     if tool not in HELD_RUNS and order_module().held(event.get("transcript_path")):
         deny(HELD)
         return 0
+    tool, args = monitor_calls.as_shell(tool, args)
     tab = os.environ.get("PWA_SID")
     if areas:
         children.registry.save_session(tab, session)
@@ -2414,7 +2459,8 @@ def main() -> int:
         writer |= remote_marks(command, cwd)
     what = kept(Path(written), transcript, writer) if tool in WRITES else \
         kept_by(args.get("command", ""), cwd, transcript, writer) if tool == "Bash" else None
-    if what and tool in WRITES and not writer and adds_relay_lines(Path(written), tool, args):
+    if what and tool in WRITES and ((what[1].endswith(ADDS_ONLY) and adds_openings(Path(written), tool, args, writer))
+                                    or (not writer and adds_relay_lines(Path(written), tool, args))):
         what = None
     # The guard's settings change on the operator's yes; a transcript, which judges that yes, never.
     if what:
