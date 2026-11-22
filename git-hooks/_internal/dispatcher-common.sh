@@ -138,21 +138,39 @@ dispatcher::detect_repo_kind() {
     echo "other"
 }
 
-# Run the repo-local hook if it exists, then RETURN (AND-composition).
+# Does the machine trust this repository's own hooks? Judged from the machine's git settings and
+# the repository's remote, never from a file the repository's tree carries (hook_trust.py):
+#   guard.localHooks  true — this repository (its .git/config) or a whole folder of them (an
+#                     includeIf file of the machine's config) is allowed
+#   guard.hookOwners  comma-separated GitHub owners whose repositories are allowed, added to the
+#                     built-in Synforger org
+# The fetch address of `origin` is the one git itself uses (url.<base>.insteadOf applied).
+dispatcher::local_hooks_trusted() {
+    local allowed owners url
+    allowed="$(git config --type=bool --get guard.localHooks 2>/dev/null || true)"
+    owners="$(git config --get-all guard.hookOwners 2>/dev/null | tr '\n' ',' || true)"
+    url="$(git remote get-url origin 2>/dev/null || true)"
+    python3 "$(dispatcher::guard_root)/git-hooks/_internal/hook_trust.py" \
+        --local-hooks "${allowed:-unset}" --owners "${owners}" --url "${url}"
+}
+
+# Run the repo-local hook if it exists and the repository is trusted, then RETURN
+# (AND-composition).
 #
 # Usage:  dispatcher::run_local_hook <hook-name> "$@"
 #
-# Looks for `<repo-root>/.githooks/<hook-name>` and, when present and
-# executable, runs it with the original arguments and propagates its exit
-# code. Unlike an exec-style delegation, control returns to the caller so
-# the dispatcher's own baseline checks still run afterwards — a repo-local
-# hook adds rules on top of the baseline, it can never replace it.
+# Looks for `<repo-root>/.githooks/<hook-name>` and, when present, executable and the repository
+# is one the machine trusts (dispatcher::local_hooks_trusted), runs it with the original arguments
+# and propagates its exit code. Unlike an exec-style delegation, control returns to the caller so
+# the dispatcher's own baseline checks still run afterwards — a repo-local hook adds rules on top
+# of the baseline, it can never replace it. A hook that is not run costs the operation nothing:
+# one line on stderr names the hook and the settings that allow it.
 #
 # stdin is inherited; hooks that consume ref lines (pre-push) must capture
 # stdin themselves before calling this and re-feed it (see pre-push).
 #
 # Returns:
-#   0 — no local hook, or the local hook passed
+#   0 — no local hook, a local hook that was not run, or the local hook passed
 #   N — the local hook's non-zero exit code
 dispatcher::run_local_hook() {
     local hook_name="$1"
@@ -163,12 +181,15 @@ dispatcher::run_local_hook() {
     [ -n "${repo_root}" ] || return 0
 
     local local_hook="${repo_root}/.githooks/${hook_name}"
-    if [ -x "${local_hook}" ]; then
-        "${local_hook}" "$@"
-        return $?
+    [ -x "${local_hook}" ] || return 0
+
+    if ! dispatcher::local_hooks_trusted; then
+        printf 'guard: .githooks/%s of this repository was not run (its origin is not a trusted owner). Allow it with `git config guard.localHooks true` (this repository) or `git config guard.hookOwners <owner>` (that owner'"'"'s repositories).\n' \
+            "${hook_name}" >&2
+        return 0
     fi
 
-    return 0
+    "${local_hook}" "$@"
 }
 
 # Root of the guard-dispatcher checkout this library lives in. Hooks are
