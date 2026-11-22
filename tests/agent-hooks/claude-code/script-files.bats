@@ -321,7 +321,6 @@ functools.reduce(open, [sys.argv[1], "w"])'
     script put.sh 'echo x >> "$1"'
     script tee.sh 'tee -a "$@" < /dev/null'
     script copy.sh 'cp /etc/hosts $2'
-    script nested.sh 'python3 put.py "$1"'
     local target reason command
     for target in "${SETTING}" "${TRANSCRIPT}"; do
         reason="${SETTINGS_REASON}"; [ "${target}" = "${TRANSCRIPT}" ] && reason="${TRANSCRIPT_REASON}"
