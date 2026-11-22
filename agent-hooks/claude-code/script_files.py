@@ -16,6 +16,14 @@ keeps:
   `cat run.sh | bash`, `python3 - < fix.py` (the caller says which files feed the command: `fed`).
 
 A relative file is the one in the folder the command stands in when it reaches it (the caller says).
+
+What the command line itself writes is read as well (`judging`; written_files): a file it writes from
+text it holds, or copies from a source it can name, and then runs, is read as what the disk holds
+and what the command writes there, both, since a write may fail and the old file then runs. A
+shell given its code on standard input by a heredoc, a here-string or a pipe from `cat`, `echo` or
+`printf` runs that text. A file the command writes in a way that holds no text in the line (a
+download, `sed -i`) is read as the disk holds it.
+
 What is not read: a module run by name (`python3 -m pkg`), a program found on PATH by its bare name,
 a file named only as the command runs (`xargs bash`, `find -exec bash {} +`, a variable the line
 does not set), what the code imports or starts in turn, a file larger than MAX_BYTES, and one that
@@ -29,6 +37,8 @@ import os
 import re
 import shlex
 from pathlib import Path
+
+import written_files
 
 #: The largest file read: a script larger than this is not one an agent wrote for a call.
 MAX_BYTES = 512 * 1024
@@ -63,6 +73,9 @@ CODE_GIVEN = {
     "osascript": {"-e"},
     "shell": set(),
 }
+#: How many copies of copies are followed to the content they put in a file.
+COPY_DEPTH = 4
+
 # env's options that take the next word as their value (in a `#!` line through `env -S`).
 ENV_VALUED = {"-u", "--unset", "-P", "-C", "--chdir"}
 # The program name the readers know each kind by (area-guard's code_flags and SHELL_CODE, outgoing's
@@ -77,6 +90,18 @@ UV_VALUED = {"--with", "--with-editable", "--with-requirements", "--python", "-p
              "--index-strategy", "--keyring-provider", "--link-mode", "--refresh-package",
              "--reinstall-package", "--upgrade-package", "-P", "--no-binary-package", "--no-build-package",
              "--config-setting", "-C", "--color"}
+
+
+_command: tuple[str, str] | None = None
+_writes: written_files.Writes | None = None
+
+
+def judging(command: str, here: str) -> None:
+    """Judge the command line `command`, which stands in `here`: what it writes and feeds is read
+    with the files it runs (see the module's docstring). One call of a hook judges one command line;
+    the writes are read the first time a file is."""
+    global _command, _writes
+    _command, _writes = (command, here), None
 
 
 def ran(words: list[str], here: str, fed: list[str] | None = None) -> tuple[str, str] | None:
@@ -95,8 +120,8 @@ def ran_with_arguments(words: list[str], here: str, fed: list[str] | None = None
     if found is None:
         return None
     kind, name, arguments = found
-    if name == STDIN:
-        texts = [_text(file, here) for file in fed or []]
+    if name == STDIN or _closes_heredoc(name, here):
+        texts = [_text(file, here) for file in fed or []] if fed else _fed_texts(kind)
         text = None if not texts or None in texts else "\n".join(texts)
     else:
         text = _text(name, here)
@@ -182,10 +207,8 @@ def _uv_run(args: list[str], here: str) -> tuple[str, str, list[str]] | None:
 def _by_its_line(program: str, arguments: list[str], here: str) -> tuple[str, str, list[str]] | None:
     """A file run by its path: the program its `#!` line names (through `env`, `env -S`, `uv run`), or
     the shell for a file with no `#!` line (the shell runs such a file itself)."""
-    try:
-        with open(_resolved(program, here), "rb") as file:
-            head = file.readline(SHEBANG_BYTES)
-    except OSError:
+    head = _head(program, here)
+    if head is None:
         return None
     if not head.startswith(b"#!"):
         return "shell", program, arguments
@@ -208,9 +231,29 @@ def _resolved(name: str, here: str) -> Path:
     return Path(name if os.path.isabs(name) else os.path.join(here, name))
 
 
-def _text(name: str, here: str) -> str | None:
-    """The file's text, or None when it is not there, not a file, too large or not text."""
+def _head(name: str, here: str) -> bytes | None:
+    """The first line of the file a command runs by its path: the one the command writes there, or
+    the disk's, or None when there is none."""
     path = _resolved(name, here)
+    if texts := _written_at(os.path.realpath(path), COPY_DEPTH):
+        return texts[0].encode("utf-8", "replace").split(b"\n", 1)[0][:SHEBANG_BYTES]
+    try:
+        with open(path, "rb") as file:
+            return file.readline(SHEBANG_BYTES)
+    except OSError:
+        return None
+
+
+def _text(name: str, here: str) -> str | None:
+    """The file's text: what the disk holds, then what the command line writes there. None when it
+    is not there, not a file, too large or not text, and the command writes nothing there."""
+    path = _resolved(name, here)
+    texts = [text for text in (_disk_text(path), *_written_at(os.path.realpath(path), COPY_DEPTH)) if text is not None]
+    return "\n".join(texts) if texts else None
+
+
+def _disk_text(path: Path) -> str | None:
+    """The file's text on the disk, or None when it is not there, not a file, too large or not text."""
     try:
         if not path.is_file() or path.stat().st_size > MAX_BYTES:
             return None
@@ -220,3 +263,35 @@ def _text(name: str, here: str) -> str | None:
     if b"\0" in data[:SNIFF_BYTES]:
         return None
     return data.decode("utf-8", "replace")
+
+
+def _command_writes() -> written_files.Writes | None:
+    """What the command being judged writes (None when none is being judged), read once."""
+    global _writes
+    if _writes is None and _command is not None:
+        _writes = written_files.of(*_command)
+    return _writes
+
+
+def _written_at(path: str, depth: int) -> list[str]:
+    """The texts the command writes at a real path: the text it holds, and the content of each file
+    it copies there (what that file holds on the disk, and what the command writes there)."""
+    if (writes := _command_writes()) is None:
+        return []
+    texts = list(writes.texts.get(path, []))
+    for source in writes.copies.get(path, []) if depth else []:
+        texts += [text for text in (_disk_text(Path(source)), *_written_at(source, depth - 1)) if text is not None]
+    return texts
+
+
+def _closes_heredoc(name: str, here: str) -> bool:
+    """Whether a word handed as the file is the word that closes a heredoc of the command, which some
+    readers leave after the command the heredoc feeds (`bash <<'EOF'` as `bash EOF`), and no file is."""
+    return (writes := _command_writes()) is not None and name in writes.delimiters and _text(name, here) is None
+
+
+def _fed_texts(kind: str) -> list[str | None]:
+    """The texts the command feeds a shell on standard input, for a shell that is handed no file."""
+    if kind != "shell" or (writes := _command_writes()) is None:
+        return []
+    return [text for program, text in writes.fed if kind_of(program) == "shell"]

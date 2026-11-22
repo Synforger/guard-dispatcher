@@ -3105,6 +3105,8 @@ def main() -> int:
         deny(HELD)
         return 0
     tool, args = monitor_calls.as_shell(tool, args)
+    if tool == "Bash":
+        script_files.judging(args.get("command", ""), cwd)
     tab = os.environ.get("PWA_SID")
     if areas:
         children.registry.save_session(tab, session)
