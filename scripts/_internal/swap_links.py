@@ -45,9 +45,14 @@ def make_folder(folder: Path) -> None:
 
 
 def prune(folder: Path, kept: set[Path]) -> None:
-    """Remove the links directly in `folder` that are not among `kept`."""
-    for entry in folder.iterdir():
-        if entry.is_symlink() and entry not in kept:
+    """Remove the links directly in `folder` that are none of `kept`, however their names are spelled."""
+    others = [entry for entry in folder.iterdir() if entry.is_symlink() and entry not in kept]
+    if not others:
+        return
+    # A file system that does not tell case apart lists a renamed-over link under the name it had.
+    laid = {link.lstat().st_ino for link in kept}
+    for entry in others:
+        if entry.lstat().st_ino not in laid:
             entry.unlink()
 
 
