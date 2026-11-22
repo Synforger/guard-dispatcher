@@ -846,6 +846,12 @@ step earlier, before each tool call, from the same `areas.txt`:
   relative path resolves from the caller's working directory. It only
   answers: it adds no mark and changes nothing.
 
+  One case needs no `may-write`: when a word handed to a Python file or a
+  shell script names the guard's settings or a session's transcript, the guard
+  reads the script with its arguments in place (`sys.argv[1]`, `$1`, `$@`) and
+  refuses it if it writes there, with the reason the same write gets from a
+  command. A script that only reads the word, or writes somewhere else, passes.
+
 - **A session may hand work to a child of its own.** The client that opens a child's
   tab registers it with the guard (`area-guard.py child add --child TAB --parent TAB
   [--writes FILE]`; `child check --parent TAB --text FILE` judges the task text first). The

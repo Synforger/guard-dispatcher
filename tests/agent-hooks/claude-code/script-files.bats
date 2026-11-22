@@ -270,3 +270,128 @@ print(os.path.expanduser('~'))
 open('out/report.md', 'w').write('x')"
     bash_call "python3 note.py"; passed
 }
+
+# --- a script that writes where its arguments say ------------------------------------------------
+
+# What the guard judges from, and what it keeps for the operator: its settings and a session's transcript.
+# The file is read as code, and a word handed to it is no path that code names, unless it names one of them.
+SETTINGS_REASON="what the guard lets through is judged from it"
+TRANSCRIPT_REASON="an order for a send is judged from it"
+
+keep_files() {
+    SETTING="${GUARD_CONFIG_DIR}/orders.txt"
+    TRANSCRIPT="${H}/.claude/projects/-w/abc.jsonl"
+    mkdir -p "$(dirname "${TRANSCRIPT}")"
+    printf 'send it\n' > "${SETTING}"
+    : > "${TRANSCRIPT}"
+    : > "${H}/notes.txt"
+}
+
+@test "script files: a script that writes where its argument says is refused when the argument names the settings or a transcript" {
+    keep_files
+    script put.py 'import sys
+open(sys.argv[1], "a").write("x")'
+    script copy.py 'import sys, shutil
+shutil.copy("/etc/hosts", sys.argv[1])'
+    script held.py 'import sys
+out = sys.argv[1]
+with open(out, "a") as f:
+    f.write("x")'
+    script second.py 'import sys
+from pathlib import Path
+Path(sys.argv[2]).write_text("x")'
+    script imported.py 'from sys import argv
+open(argv[1], "w")'
+    script each.py 'import sys
+for path in sys.argv[1:]:
+    open(path, "a").write("x")'
+    script parsed.py 'import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("target")
+args = parser.parse_args()
+open(args.target, "a").write("x")'
+    script whole.py 'import sys
+for path in sys.argv:
+    open(path, "a").write("x")'
+    script chosen.py 'import sys
+n = len(sys.argv) - 1
+open(sys.argv[n], "a").write("x")'
+    script handed.py 'import sys, functools
+functools.reduce(open, [sys.argv[1], "w"])'
+    script put.sh 'echo x >> "$1"'
+    script tee.sh 'tee -a "$@" < /dev/null'
+    script copy.sh 'cp /etc/hosts $2'
+    local target reason command
+    for target in "${SETTING}" "${TRANSCRIPT}"; do
+        reason="${SETTINGS_REASON}"; [ "${target}" = "${TRANSCRIPT}" ] && reason="${TRANSCRIPT_REASON}"
+        for command in "python3 put.py ${target}" "python3 copy.py ${target}" "python3 held.py ${target}" \
+                       "python3 second.py -o ${target}" "python3 imported.py ${target}" "python3 each.py a ${target}" \
+                       "python3 parsed.py ${target}" "python3 whole.py ${target}" "python3 chosen.py a ${target}" \
+                       "python3 handed.py ${target}" "uv run put.py ${target}" \
+                       "sh put.sh ${target}" "bash tee.sh ${target}" "bash copy.sh -f ${target}" \
+                       "cd ${H} && python3 ${TOOL}/put.py ${target}" "bash -c 'python3 put.py ${target}'" \
+                       "python3 put.py --out=${target}"; do
+            bash_call "${command}"
+            denied || { echo "not refused: ${command}"; return 1; }
+            says "${reason}" || { echo "reason: ${command}"; return 1; }
+        done
+    done
+}
+
+@test "script files: a relative argument names the file where the command stands" {
+    keep_files
+    script put.py 'import sys
+open(sys.argv[1], "a").write("x")'
+    script put.sh 'echo x >> "$1"'
+    bash_in "${GUARD_CONFIG_DIR}" "python3 ${TOOL}/put.py orders.txt"; denied
+    bash_in "${GUARD_CONFIG_DIR}" "bash ${TOOL}/put.sh orders.txt"; denied
+    bash_in "$(dirname "${TRANSCRIPT}")" "python3 ${TOOL}/put.py abc.jsonl"; denied
+    bash_in "${H}" "python3 ${TOOL}/put.py orders.txt"; passed
+}
+
+@test "script files: a script that reads what its argument names, or writes elsewhere, passes" {
+    keep_files
+    script read.py 'import sys
+print(open(sys.argv[1]).read())'
+    script parsed.py 'import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("source")
+args = parser.parse_args()
+print(open(args.source).read())'
+    script elsewhere.py 'import sys
+data = open(sys.argv[1]).read()
+open("/tmp/copy.txt", "w").write(data)'
+    script stat.py 'import os, sys
+print(os.path.getsize(sys.argv[1]), os.stat(sys.argv[1]).st_mtime)'
+    script second.py 'import sys
+open(sys.argv[2], "a").write("x")'
+    script read.sh 'cat "$1"'
+    script elsewhere.sh 'echo x >> /tmp/log.txt
+wc -l "$1" > ${HOME}/notes.txt'
+    script put.py 'import sys
+open(sys.argv[1], "a").write("x")'
+    local target command
+    for target in "${SETTING}" "${TRANSCRIPT}"; do
+        for command in "python3 read.py ${target}" "python3 parsed.py ${target}" "python3 elsewhere.py ${target}" \
+                       "python3 stat.py ${target}" "python3 second.py ${target} ${H}/notes.txt" \
+                       "bash read.sh ${target}" "bash elsewhere.sh ${target}"; do
+            bash_call "${command}"
+            passed || { echo "refused: ${command}"; return 1; }
+        done
+    done
+    # a script handed nothing that the agent may not write is read as it was: what it writes is its own
+    bash_call "python3 put.py ${H}/notes.txt"; passed
+    bash_call "python3 put.py"; passed
+}
+
+@test "script files: the reason is the one the same write gets from the command" {
+    keep_files
+    script put.py 'import sys
+open(sys.argv[1], "a").write("x")'
+    bash_call "python3 put.py ${SETTING}"; denied
+    says "an agent does not write or remove the guard's settings (orders.txt)"
+    bash_call "python3 put.py ${TRANSCRIPT}"; denied
+    says "an agent does not write or remove a session's transcript"
+    bash_call "python3 -c \"open('${SETTING}', 'a').write('x')\""; denied
+    says "an agent does not write or remove the guard's settings (orders.txt)"
+}
