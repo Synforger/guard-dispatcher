@@ -538,3 +538,58 @@ print(os.listdir(sys.argv[1]))'
     bash_call "for f in a; do bash put.sh ${SETTING}; done"; denied
     bash_call "for f in a; do rm ${H}/notes.txt; done"; passed
 }
+
+# --- a case statement, and a script that moves to the folder it is given ---------------------------
+
+@test "script files: the commands in the branches of a case are read, a label's ) closing no subshell" {
+    keep_files
+    local folder
+    folder="$(dirname "${SETTING}")"
+    local command
+    for command in "case \"\$x\" in a) rm ${SETTING};; esac" \
+                   "case \"\$x\" in
+  a) echo hi ;;
+  b|c) rm ${SETTING} ;;
+esac" \
+                   "case \"\$x\" in (a) rm ${SETTING};; esac" \
+                   "(cd ${folder}; case \"\$x\" in a) rm orders.txt;; esac)" \
+                   "(cd ${folder} && case \"\$x\" in (a) rm orders.txt;; esac)" \
+                   "(cd ${folder}; case \"\$x\" in a) true;; b) rm orders.txt;; esac)" \
+                   "(cd ${folder}; for f in a; do case \"\$f\" in a) rm orders.txt;; esac; done)"; do
+        bash_call "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    bash_call "(cd ${H}; case \"\$x\" in a) rm orders.txt;; esac)"; passed
+    bash_call "case \"\$x\" in a) rm ${H}/notes.txt;; *) cat ${SETTING};; esac"; passed
+    # a send in a branch is read from where the command stands there
+    bash_call "(cd \$ELSEWHERE; case \"\$x\" in a) git commit -m x;; esac)"; denied
+    says "only known as it runs"
+    bash_call "case \"\$x\" in a) cd \$ELSEWHERE && git push;; esac"; denied
+    says "only known as it runs"
+    bash_call "(cd ${TOOL}; case \"\$x\" in a) git commit -m x;; esac)"; passed
+}
+
+@test "script files: a script that moves to the folder it is given writes its relative names there" {
+    keep_files
+    local settings records
+    settings="$(dirname "${SETTING}")"
+    records="$(dirname "${TRANSCRIPT}")"
+    script cdwrite.sh 'cd "$1" && echo x >> orders.txt'
+    script cdrm.sh 'cd "$1"
+rm abc.jsonl'
+    script cdcase.sh 'cd "$1"
+case "$2" in a) rm orders.txt;; esac'
+    script chdir.py 'import os, sys
+os.chdir(sys.argv[1])
+open("orders.txt", "a").write("x")'
+    script cdlist.sh 'cd "$1" && ls && cat orders.txt'
+    local command
+    for command in "bash cdwrite.sh ${settings}" "bash cdrm.sh ${records}" "bash cdcase.sh ${settings} a" \
+                   "python3 chdir.py ${settings}" "bash -c 'bash cdwrite.sh ${settings}'"; do
+        bash_call "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    bash_call "bash cdlist.sh ${settings}"; passed
+    bash_call "bash cdwrite.sh ${H}"; passed
+    bash_call "python3 chdir.py ${H}"; passed
+}

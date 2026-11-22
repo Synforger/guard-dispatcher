@@ -508,6 +508,36 @@ def glued(token: str) -> list[str]:
     return out
 
 
+class CaseLabels:
+    """Where the labels of a `case` statement stand as a command line is stepped, so that the `)` that
+    ends a label (and the `(` that may open it) is no subshell closing or opening: `(cd d; case $x in
+    a) rm f ;; esac)` runs `rm f` in `d`."""
+
+    def __init__(self) -> None:
+        self._depth = 0
+        self._expecting = False
+
+    def step(self, words: list[str], ended_by: str) -> str:
+        """What ends the command `words`: `ended_by`, or `;` when it ends a label."""
+        lead = list(words)
+        while lead and lead[0] in KEYWORDS:
+            lead = lead[1:]
+        if lead[:1] == ["case"] and "in" in lead:
+            self._depth += 1
+            self._expecting = True
+        elif lead[:1] == ["esac"]:
+            self._depth = max(self._depth - 1, 0)
+            self._expecting = False
+        if self._expecting and ended_by == ")":
+            self._expecting = False
+            return ";"
+        if self._expecting and ended_by == "(" and (not words or words[-1] == "in"):
+            return ";"
+        if self._depth and ended_by in (";;", ";&", ";;&"):
+            self._expecting = True
+        return ended_by
+
+
 def stepped_commands(line: str):
     """The simple commands of a command line whose heredoc bodies are taken out, in order:
     (its words, its redirections as (operator, word), its here-string or None, the control operator
@@ -520,6 +550,7 @@ def stepped_commands(line: str):
     words: list[str] = []
     redirects: list[tuple[str, str]] = []
     here = operator = None
+    labels = CaseLabels()
     for token in list(lexer):
         if operator is not None:
             if operator == "<<<":
@@ -529,7 +560,7 @@ def stepped_commands(line: str):
             operator = None
         elif token in breaks or (token and set(token) <= set(";&|()")):
             for ended_by in glued(token):
-                yield words, redirects, here, ended_by
+                yield words, redirects, here, labels.step(words, ended_by)
                 words, redirects, here = [], [], None
         elif token and set(token) <= set("<>&|") and set(token) & set("<>"):
             if words and words[-1].isdigit():   # the fd of `2>`
@@ -838,6 +869,53 @@ class FolderOrder(NamedTuple):
     reach: str
 
 
+def target_directory(args: list[str]) -> str | None:
+    """The folder `-t` / `--target-directory` gives cp, mv and install as where they put what they copy."""
+    for at, word in enumerate(args):
+        if word in ("-t", "--target-directory") and at + 1 < len(args):
+            return args[at + 1]
+        if word.startswith("--target-directory="):
+            return word.partition("=")[2]
+        if re.fullmatch(r"-t.+", word):
+            return word[2:]
+    return None
+
+
+def find_deletes(args: list[str]) -> list[str]:
+    """The folders a `find` takes away what it finds in (`-delete`, or `-exec rm ...`), else nothing."""
+    roots = list(itertools.takewhile(lambda w: not w.startswith(("-", "(", "!")) or w in ("-H", "-L", "-P"), args))
+    roots = [root for root in roots if root not in ("-H", "-L", "-P")] or ["."]
+    deletes = "-delete" in args or any(
+        word in FIND_RUNS and at + 1 < len(args) and os.path.basename(args[at + 1]) in REMOVES
+        for at, word in enumerate(args))
+    return roots if deletes else []
+
+
+def unpacks_into(tool: str, args: list[str]) -> str | None:
+    """The folder `tar -x` or `unzip` puts the files of an archive in (`-C`, `-d`; the folder the
+    command stands in without), or None when the command does not unpack."""
+    if tool == "tar":
+        mode = args[0] if args and not args[0].startswith("-") else ""
+        if not (re.search(r"x", mode) or any(re.fullmatch(r"-[A-Za-z]*x[A-Za-z]*|--extract|--get", a) for a in args)):
+            return None
+        for at, word in enumerate(args):
+            if word in ("-C", "--directory") and at + 1 < len(args):
+                return args[at + 1]
+            if word.startswith("--directory="):
+                return word.partition("=")[2]
+            if re.fullmatch(r"-C.+", word):
+                return word[2:]
+        return "."
+    if any(re.fullmatch(r"-[A-Za-z]*[lptvZz][A-Za-z]*", a) for a in args):
+        return None
+    for at, word in enumerate(args):
+        if word == "-d" and at + 1 < len(args):
+            return args[at + 1]
+        if re.fullmatch(r"-d.+", word):
+            return word[2:]
+    return "."
+
+
 def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path]]:
     """(paths a Bash command names as a place it writes, paths it names as removed): see
     named_with_folders, which also tells what each order does to a folder."""
@@ -926,17 +1004,32 @@ def named_with_folders(command: str, cwd: str, depth: int = 0) -> tuple[list[Pat
         operands = _operands(args, set())       # what follows `--` is a name too, `-home-tool` included
         if tool in CREATES:
             written.extend((p, here) for p in paths)
-        elif tool in COPIES and len(paths) >= 2:
-            written.append((paths[-1], here))
+        elif tool in COPIES and (target_directory(args) is not None or len(paths) >= 2):
+            target = target_directory(args)
+            sources = [o for o in operands if o != target] if target is not None else operands[:-1]
+            destination = target if target is not None else operands[-1]
+            written.append((destination, here))
             if tool in MOVES:
-                removed.extend((p, here) for p in paths[:-1])
-                folder_orders.extend((p, here, ABOVE_HOME) for p in operands[:-1])
+                removed.extend((p, here) for p in sources)
+                folder_orders.extend((p, here, ABOVE_HOME) for p in sources)
             if tool == "ln":
-                folder_orders.append((operands[-1], here, RECORDS if operands[-1].endswith("/") else ABOVE_HOME))
+                folder_orders.append((destination, here, RECORDS if destination.endswith("/") else ABOVE_HOME))
             else:
-                folder_orders.append((operands[-1], here, CONFIG_HOMES if _copy_recursive(tool, args) else RECORDS))
-        elif tool in FOLDER_COPIES and len(operands) >= 2 and not REMOTE.match(operands[-1]):
-            folder_orders.append((operands[-1], here, CONFIG_HOMES))
+                folder_orders.append((destination, here, CONFIG_HOMES if _copy_recursive(tool, args) else RECORDS))
+        elif tool in FOLDER_COPIES and len(operands) >= 2:
+            if not REMOTE.match(operands[-1]):
+                written.append((operands[-1], here))
+                folder_orders.append((operands[-1], here, CONFIG_HOMES))
+            if tool == "rsync" and "--remove-source-files" in args:
+                gone = [o for o in operands[:-1] if not REMOTE.match(o)]
+                removed.extend((o, here) for o in gone)
+                folder_orders.extend((o, here, ABOVE_HOME) for o in gone)
+        elif tool == "find" and (roots := find_deletes(args)):
+            removed.extend((root, here) for root in roots)
+            folder_orders.extend((root, here, ABOVE_HOME) for root in roots)
+        elif tool in ("tar", "unzip") and (unpacked := unpacks_into(tool, args)) is not None:
+            written.append((unpacked, here))
+            folder_orders.append((unpacked, here, CONFIG_HOMES))
         elif tool in REMOVES:
             removed.extend((p, here) for p in paths)
             folder_orders.extend((p, here, ABOVE_HOME) for p in operands)
@@ -1583,11 +1676,13 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
         return out
 
     current: list[str] = []
+    labels = CaseLabels()
     for w in [p for word in words for p in pieces(word)] + [";"]:
         if w not in breaks:
             current.append(w)
             continue
         run(current)
+        w = labels.step(current, w)
         current = []
         if w == "(":
             standing.open(lost)
