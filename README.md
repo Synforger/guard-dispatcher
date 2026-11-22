@@ -738,8 +738,12 @@ step earlier, before each tool call, from the same `areas.txt`:
   guard lets through is judged from the settings, and an order for a send from
   the transcript (see *A send the operator orders* below). An agent that could
   write them would draw an area around what it wants to send, call a phrase fine
-  to send, or make an order itself. Reading them and copying them out pass; a
-  change of the settings passes on the operator's yes, a change of a transcript never.
+  to send, or make an order itself. The same goes for the folders that hold the
+  transcripts: the guard refuses a command that removes, moves, links over or empties
+  `~/.claude*/projects`, a folder in it, or a folder that holds it (`~/.claude-work`), and one
+  that copies into them (`cp`, `rsync`), whether the path is written directly or reached
+  through a link. A project's `memory` folder stays writable. Reading them and copying them
+  out pass; a change of the settings passes on the operator's yes, a change of a transcript never.
 - **A transcript holds what its session read.** Every session's transcript sits under the
   same folders, wherever the session worked, and holds the words of each file it read. A
   call that reads one (`Read`, `Grep`, a command that names it, or a recursive read of a

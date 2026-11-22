@@ -106,6 +106,7 @@ import re
 import shlex
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -812,8 +813,36 @@ class Standing:
         return carried
 
 
+# How far an order that takes a folder away, replaces it or fills it reaches into the folders that hold
+# a session's transcripts (holds_transcripts): into the folders of transcripts alone, also the config folders
+# (`~/.claude-work`) that hold them, or also the home and every folder above it.
+RECORDS = "records"
+CONFIG_HOMES = "config homes"
+ABOVE_HOME = "above home"
+# Programs that fill the folder they are given as their last word with what they copy (cp, mv and ln are COPIES).
+FOLDER_COPIES = {"rsync", "ditto", "scp"}
+REMOTE = re.compile(r"[^/]*:")
+
+
+class FolderOrder(NamedTuple):
+    """One place a command takes away, replaces or fills, spelled two ways: followed through its
+    links (`resolved`) and as written (`spelled`, `~/linked/projects` stays that), with how far
+    the order reaches (RECORDS, CONFIG_HOMES, ABOVE_HOME)."""
+
+    resolved: Path
+    spelled: Path
+    reach: str
+
+
 def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path]]:
-    """(paths a Bash command names as a place it writes, paths it names as removed).
+    """(paths a Bash command names as a place it writes, paths it names as removed): see
+    named_with_folders, which also tells what each order does to a folder."""
+    return named_with_folders(command, cwd, depth)[:2]
+
+
+def named_with_folders(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path], list[FolderOrder]]:
+    """(paths a Bash command names as a place it writes, paths it names as removed, the orders that
+    replace, empty or fill a folder: see FolderOrder).
 
     Written: a redirection's target (`>`, `>>`), the files of tee / touch / truncate, the
     destination of cp / mv / install / ln, the existing files sed -i edits, dd's of=, and the
@@ -840,7 +869,8 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
         commands = []
     written: list[tuple[str, str]] = []     # (the name as written, the folder the command stood in)
     removed: list[tuple[str, str]] = []
-    found: tuple[list[Path], list[Path]] = ([], [])
+    folder_orders: list[tuple[str, str, str]] = []     # (the name as written, the folder the command stood in, reach)
+    found: tuple[list[Path], list[Path], list[FolderOrder]] = ([], [], [])
     standing = Standing(cwd)
     values: dict[str, str] = {}
 
@@ -853,13 +883,17 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
         if SHELL_CODE.fullmatch(tool):
             if depth >= NESTED:
                 return
-            inner = named(code, base, depth + 1)
+            inner = named_with_folders(code, base, depth + 1)
             found[0].extend(inner[0])
             found[1].extend(inner[1])
+            found[2].extend(inner[2])
         elif code_flags(tool):
             if tool.startswith("python"):
                 code = code_writes.python.written_code(code)
-            written.extend((path, base) for path in code_paths(code, base))
+            for path in code_paths(code, base):
+                written.append((path, base))
+                # code that only looks the config folders up (`glob(home / ".claude*")`) changes none of them
+                folder_orders.append((path, base, RECORDS))
 
     def one(words: list[str], stdin: str | None, fed: list[str]) -> None:
         if words and all(ASSIGNMENT.fullmatch(w) for w in words[words[0] in DECLARES:]):
@@ -885,14 +919,23 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
             return
         here = standing.here
         paths = [a for a in args if not a.startswith("-")]
+        operands = _operands(args, set())       # what follows `--` is a name too, `-home-tool` included
         if tool in CREATES:
             written.extend((p, here) for p in paths)
         elif tool in COPIES and len(paths) >= 2:
             written.append((paths[-1], here))
             if tool in MOVES:
                 removed.extend((p, here) for p in paths[:-1])
+                folder_orders.extend((p, here, ABOVE_HOME) for p in operands[:-1])
+            if tool == "ln":
+                folder_orders.append((operands[-1], here, RECORDS if operands[-1].endswith("/") else ABOVE_HOME))
+            else:
+                folder_orders.append((operands[-1], here, CONFIG_HOMES if _copy_recursive(tool, args) else RECORDS))
+        elif tool in FOLDER_COPIES and len(operands) >= 2 and not REMOTE.match(operands[-1]):
+            folder_orders.append((operands[-1], here, CONFIG_HOMES))
         elif tool in REMOVES:
             removed.extend((p, here) for p in paths)
+            folder_orders.extend((p, here, ABOVE_HOME) for p in operands)
         elif tool in IN_PLACE and any(a.startswith(("-i", "--in-place")) for a in args):
             written.extend((p, here) for p in paths if Path(real(p, here)).is_file())
         elif tool == "dd":
@@ -931,17 +974,20 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
     for program, body in waiting:
         run(program, body, str(real(cwd)))
 
-    def spelled(names: list[tuple[str, str]]) -> list[Path]:
-        out = []
-        for name, stood in names:
-            if not name or name in ("-", "/dev/null"):
-                continue
-            base = os.path.expanduser(name)
-            base = base if os.path.isabs(base) else os.path.join(stood, base)
-            out.extend(real(m) for m in (glob.glob(base) if GLOB.search(name) else []) or [base])
-        return out
+    def matched(name: str, stood: str) -> list[str]:
+        """The names a word stands for, written out from the folder the command stood in (a glob: its matches)."""
+        if not name or name in ("-", "/dev/null"):
+            return []
+        base = os.path.expanduser(name)
+        base = base if os.path.isabs(base) else os.path.join(stood, base)
+        return (glob.glob(base) if GLOB.search(name) else []) or [base]
 
-    return spelled(written) + found[0], spelled(removed) + found[1]
+    def spelled(names: list[tuple[str, str]]) -> list[Path]:
+        return [real(m) for name, stood in names for m in matched(name, stood)]
+
+    ordered = [FolderOrder(real(m), Path(os.path.normpath(m)), reach)
+               for name, stood, reach in folder_orders for m in matched(name, stood)]
+    return spelled(written) + found[0], spelled(removed) + found[1], ordered + found[2]
 
 
 def fed_files(redirects: list[tuple[str, str]], previous: tuple | None) -> list[str]:
@@ -1094,12 +1140,40 @@ def adds_relay_lines(path: Path, tool: str, args: dict) -> bool:
     return after is not None and orders_edit.only_adds_relay_lines(before, after)
 
 
+def holds_transcripts(path: Path, reach: str) -> bool:
+    """Whether an order that takes `path` away, replaces it or fills it (FolderOrder) touches the
+    transcripts: the folder of transcripts (`~/.claude*/projects`, a folder in it, but for a
+    project's `memory`), and as far as `reach` goes the config folder (`~/.claude-work`) and the
+    home with every folder above it, which hold them too."""
+    for home in {Path.home(), real(Path.home())}:
+        if path == home or path in home.parents:
+            if reach == ABOVE_HOME:
+                return True
+            continue
+        if home not in path.parents:
+            continue
+        parts = path.relative_to(home).parts
+        if not parts[0].startswith(".claude"):
+            continue
+        if len(parts) == 1:
+            if reach != RECORDS and not path.is_file():
+                return True
+        elif parts[1] == "projects" and parts[3:4] != ("memory",) and (len(parts) == 2 or not path.is_file()):
+            return True
+    return False
+
+
 def kept_by(command: str, cwd: str, transcript: str | None,
             marks: set[str] | None = None) -> tuple[str, str] | None:
     """What a Bash command writes or removes that the agent may not (and why), or None. Removing
     a setting counts: with no destinations.txt a destination held to an order is undeclared, and
-    with no areas.txt nothing is an area."""
-    written, removed = named(command, cwd)
+    with no areas.txt nothing is an area. So does taking away, replacing or filling the folder of
+    transcripts, or one that holds it, as writing a transcript does (each path is judged as it is
+    written and as its links lead)."""
+    written, removed, orders = named_with_folders(command, cwd)
+    for order in orders:
+        if holds_transcripts(order.resolved, order.reach) or holds_transcripts(order.spelled, order.reach):
+            return "the folder holding a session's transcripts", TRANSCRIPT_WHY
     for path in written + removed:
         if what := kept(path, transcript, marks):
             return what
