@@ -94,6 +94,10 @@ Scanners read one PCRE fragment per line from the first of:
    (recommended location; `<root>/config/guard/exit/words/master.txt` under a platform root)
 4. a repo-local `.tooling/local-ci/anon-words.txt` (legacy)
 
+A send of a tool or a network command to a destination outside every area
+skips step 2: it takes the operator master, whatever list the folder the
+call is typed in names.
+
 The word list is private operator data — it is never committed
 anywhere. See `configs/anon-words.example.txt` for the format.
 
@@ -1040,7 +1044,8 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   app:calendar              personal    # an osascript script that writes to the Calendar app
   ```
 
-  A `repo:` line naming an area says who owns the repositories. A private one
+  A `repo:` line naming an area says who owns the repositories; one GitHub answers
+  is public is outside every area whatever the line says. A private one
   cloned inside that area sits where its clone is, and the owner's text is its
   own too: a client's repository in the company's organization, cloned in the
   client's folder, takes the client's text and the company's, and still not
