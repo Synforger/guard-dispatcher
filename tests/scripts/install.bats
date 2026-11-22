@@ -94,6 +94,48 @@ JSON
     [ -z "$(find "${H}/.git-hooks" -maxdepth 2 -name '.*.new-*')" ]
 }
 
+# installed_links <folder>: the inode and path of every link the install laid there.
+installed_links() {
+    find "$1" -type l -exec ls -di {} + | sort
+}
+
+@test "install: a reinstall keeps the inode of a link that already points at its place, and moves the others" {
+    clone_to "${H}/src"
+    bash "${H}/src/scripts/install.sh" > /dev/null
+    local before
+    before="$(installed_links "${H}/.git-hooks")"
+    [ -n "${before}" ]
+    bash "${H}/src/scripts/install.sh" > /dev/null
+    [ "$(installed_links "${H}/.git-hooks")" = "${before}" ]
+
+    # installing from another clone still points every link at that clone
+    clone_to "${H}/moved"
+    bash "${H}/moved/scripts/install.sh" > /dev/null
+    [ "$(readlink "${H}/.git-hooks/agent-hooks")" = "${H}/moved/agent-hooks" ]
+    [ "$(readlink "${H}/.git-hooks/pre-push")" = "${H}/moved/git-hooks/pre-push" ]
+    [ "$(readlink "${H}/.git-hooks/scanners/anon-scan.sh")" = "${H}/moved/scanners/words/anon-scan.sh" ]
+}
+
+@test "install: a file or a link standing where the scanners folder goes gives way to the folder" {
+    clone_to "${H}/src"
+    local place="${H}/.git-hooks/scanners"
+    mkdir -p "${H}/.git-hooks" "${H}/elsewhere"
+    printf 'x\n' > "${place}"
+    run bash "${H}/src/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    [ -d "${place}" ]
+    [ -f "${place}/send-scan.py" ]
+
+    rm -r "${place}"
+    ln -s "${H}/elsewhere" "${place}"
+    run bash "${H}/src/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    [ ! -L "${place}" ]
+    [ -f "${place}/send-scan.py" ]
+    # what the link pointed at is left as it was
+    [ -z "$(ls -A "${H}/elsewhere")" ]
+}
+
 @test "install: a scanner called by its name alone finds the parts it uses, and a link to nothing is removed" {
     clone_to "${H}/src"
     mkdir -p "${H}/.git-hooks"
