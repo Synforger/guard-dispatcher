@@ -561,6 +561,23 @@ def split_heredocs(text: str) -> tuple[str, list[tuple[str, str]]]:
     return "".join(line), fed
 
 
+def shell_heredocs_as_code(command: str) -> str:
+    """The command with each heredoc that feeds a shell written as that shell's `-c` string
+    (`bash <<'SH' ... SH` is `bash -c '...'`), so what it runs is read where the command stands
+    when it reaches it, as a `-c` string is. The terminator line stays and reads as a word."""
+    out, kept_to, scanned = [], 0, 0
+    for line_end, body_end, program in heredocs(command):
+        opening = HEREDOC.search(command, scanned)
+        scanned = body_end
+        if opening and SHELL_CODE.fullmatch(os.path.basename(program)):
+            out.append(command[kept_to:opening.start()])
+            out.append("-c " + shlex.quote(command[line_end + 1:body_end]))
+            out.append(command[opening.end():line_end + 1])
+            kept_to = body_end
+    out.append(command[kept_to:])
+    return "".join(out)
+
+
 # Builtins that run their words, or the file they are handed, as shell.
 RUNS_SHELL = {"eval", "source", "."}
 # A command substitution written inside a word: `$( ... )` (one level of parentheses inside) or
@@ -1425,7 +1442,7 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
     try:
         # Python written into the command is no command line: a quote it leaves open turns the words
         # into plain spaces, and a shell line quoted inside it would be read as a send.
-        words = shell_words(command, shell_only=True)
+        words = shell_words(shell_heredocs_as_code(command), shell_only=True)
     except ValueError:
         return [], [], []
     breaks = outgoing_module().SHELL_BREAK

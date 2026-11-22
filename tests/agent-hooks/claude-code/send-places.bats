@@ -106,3 +106,22 @@ EDIT_STRINGS=$'python3 - <<\'PY\'\ns = open("t.sh").read()\ns = s.replace("A", \
     bash_in "${TOOL}" $'python3 - <<\'PY\' && cd $ELSEWHERE && git commit -m x\nprint(1)\nPY'; unread
     bash_in "${TOOL}" "python3 -c 'print(1)' && cd \$ELSEWHERE && git push"; unread
 }
+
+@test "send places: a shell fed a heredoc sends from where its lines say, as a line of the command does" {
+    bash_in "${TOOL}" $'bash <<\'SH\'\ncd $ELSEWHERE\ngit commit -m x\nSH'; unread
+    bash_in "${TOOL}" $'sh <<\'SH\'\ngit -C "$(pwd)" push\nSH'; unread
+    bash_in "${TOOL}" $'zsh -e <<SH\nsleep 1\ncd $ELSEWHERE && gh pr create --title t --body b\nSH'; unread
+    bash_in "${TOOL}" $'cd $ELSEWHERE && bash <<\'SH\'\ngit commit -m x\nSH'; unread
+    bash_in "${TOOL}" $'bash <<\'SH\'\ncd '"${AGENT}"$'\ngit commit -m x\nSH'; denied
+    [[ "${output}" == *"guard.scope = exempt"* ]]
+    bash_in "${TOOL}" $'bash <<\'SH\'\ncd '"${HUSKY}"$'\ngit commit -m x\nSH'; denied
+    [[ "${output}" == *"overrides core.hooksPath"* ]]
+}
+
+@test "send places: a shell heredoc that sends nothing, or one written out, passes" {
+    bash_in "${TOOL}" $'bash <<\'SH\'\ncd $ELSEWHERE\nls\nSH'; passed
+    bash_in "${TOOL}" $'bash <<\'SH\'\ncd '"${TOOL}"$'\ngit commit -m x\nSH'; passed
+    bash_in "${TOOL}" $'bash -e <<\'SH\' && git commit -m y\nls\nSH'; passed
+    bash_in "${TOOL}" $'cat <<\'NOTE\'\ncd $ELSEWHERE\ngit commit -m x\nNOTE'; passed
+    bash_in "${TOOL}" $'bash <<\'SH\'\ncd $ELSEWHERE\nSH\ngit commit -m x'; passed
+}
