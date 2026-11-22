@@ -55,13 +55,6 @@ fi
 
 mkdir -p "${TARGET_DIR}"
 
-# A link whose target is gone names a part this checkout no longer has; it would only mislead.
-for link in "${TARGET_DIR}"/*; do
-    if [ -L "${link}" ] && [ ! -e "${link}" ]; then
-        rm "${link}"
-    fi
-done
-
 # Replace any prior entries — a plain overwrite is safer than trying to
 # preserve unknown state, since the target is a dispatcher owned by this
 # script. doctor.sh is not a git hook but symlinking it here lets it be
@@ -93,8 +86,9 @@ for entry in scripts agent-hooks; do
     LINKS+=("${GUARD_ROOT}/${entry}" "${TARGET_DIR}/${entry}")
 done
 # Every agent session's hooks run through these links: one that already points at its place is left
-# untouched, and one that moves is renamed over the old one.
-python3 "${SCRIPT_DIR}/_internal/swap_links.py" "${LINKS[@]}"
+# untouched, and one that moves is renamed over the old one. A link whose target is gone names a part
+# this checkout no longer has; it would only mislead, so it is dropped.
+python3 "${SCRIPT_DIR}/_internal/swap_links.py" --drop-gone "${TARGET_DIR}" "${LINKS[@]}"
 
 # Other repositories call a scanner by its name alone (`~/.git-hooks/scanners/anon-scan.sh`), while
 # this checkout keeps each one in the folder of its role. One link per scanner, and one for the
@@ -109,7 +103,17 @@ for src in "${GUARD_ROOT}"/scanners/*/*.sh "${GUARD_ROOT}"/scanners/*/*.py "${GU
 done
 python3 "${SCRIPT_DIR}/_internal/swap_links.py" --only "${dst}" "${SCANNERS[@]}"
 
-git config --global core.hooksPath "${TARGET_DIR}"
+# Another install running at the same time holds git's config lock while it writes, and a value
+# that is already set needs no write.
+hooks_path_is_set() {
+    [ "$(git config --global --get core.hooksPath 2>/dev/null || true)" = "${TARGET_DIR}" ]
+}
+for _ in $(seq 1 20); do
+    hooks_path_is_set && break
+    git config --global core.hooksPath "${TARGET_DIR}" 2>/dev/null && break
+    sleep 0.1
+done
+hooks_path_is_set || git config --global core.hooksPath "${TARGET_DIR}"
 
 cat <<MSG
 [global-hooks] installed
@@ -135,6 +139,8 @@ AFTER_CALL_COMMAND='f="$HOME/.git-hooks/agent-hooks/claude-code/handed.py"; [ -f
 for settings in ${claude_settings[@]+"${claude_settings[@]}"}; do
     python3 - "${settings}" "${AGENT_HOOK_COMMAND}" "${AFTER_CALL_COMMAND}" <<'PY'
 import json
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -154,8 +160,20 @@ for event in ("PostToolUse", "PostToolUseFailure"):
         group["hooks"] = [h for h in group.get("hooks", []) if "handed.py" not in h.get("command", "")]
     post[:] = [g for g in post if g["hooks"]]
     post.append({"matcher": "*", "hooks": [{"type": "command", "command": after}]})
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
+rendered = json.dumps(settings, indent=2, ensure_ascii=False) + "\n"
+# A file that already reads as it should is left as it is, and a changed one is replaced whole, so
+# the agent never reads it half written. A link to the file is written through, not replaced.
+target = path.resolve()
+if not target.is_file() or target.read_text() != rendered:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    passing = target.with_name(f".{target.name}.new-{os.getpid()}")
+    try:
+        passing.write_text(rendered)
+        if target.is_file():
+            shutil.copymode(target, passing)
+        os.replace(passing, target)
+    finally:
+        passing.unlink(missing_ok=True)
 PY
     echo "[global-hooks] agent entry guard and after-call check registered in ${settings}"
 done

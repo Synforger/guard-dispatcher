@@ -153,11 +153,13 @@ if case == "moving":
         raise OSError(errno.EINVAL, "the link is being moved")
 
     os.readlink = unreadable
-    swap_links.swap(source, link)
+    swap_links.swap(source, link, [])
     os.readlink = readlink
     assert os.readlink(link) == str(source)
 else:
     class Gone:
+        name = "part"
+
         def is_symlink(self) -> bool:
             return True
 
