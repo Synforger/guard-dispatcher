@@ -471,7 +471,7 @@ word (`~/notes`), every such message holding that word is refused.
 area be said to any session. It shows only the names it gives: the area's text,
 its other names, and the same name of another area are judged as before, and a
 name marked `outside` in `roles.txt` still may not hold it. A line that gives
-no name of an area refuses every such message until it is fixed.
+no name of an area refuses every message to another session until it is fixed.
 
 An area's documents are everything under it that holds its words:
 
