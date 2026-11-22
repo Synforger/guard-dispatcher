@@ -1164,7 +1164,10 @@ may read, not ones it has read), though `--covers-place` counts them. When that 
 the folder is inside a git work tree, the area names the folder in its own
 settings (`areas/<area>/tickets.txt`: one line, `~` allowed, `#` starts a
 comment), which must lie in that area alone and outside every git work tree.
-Areas that do not lie one inside the next fit in no place (exit 1), and a
+Areas that do not lie one inside the next (two clients of one company) take
+the place of the innermost area around them all (the company's): what is
+written there is judged for a reader of that area, so one client's text does
+not go in. With no area around them all they fit in no place (exit 1), and a
 place that cannot be named is exit 2 with the missing declaration in the line.
 
 A folder stands for a reader who has read inside the areas it lies in most
