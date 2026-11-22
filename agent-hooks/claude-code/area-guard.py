@@ -892,7 +892,8 @@ def named_with_folders(command: str, cwd: str, depth: int = 0) -> tuple[list[Pat
                 code = code_writes.python.written_code(code)
             for path in code_paths(code, base):
                 written.append((path, base))
-                folder_orders.append((path, base, CONFIG_HOMES))
+                # code that only looks the config folders up (`glob(home / ".claude*")`) changes none of them
+                folder_orders.append((path, base, RECORDS))
 
     def one(words: list[str], stdin: str | None, fed: list[str]) -> None:
         if words and all(ASSIGNMENT.fullmatch(w) for w in words[words[0] in DECLARES:]):

@@ -1268,7 +1268,8 @@ session_files() {
              "rsync -a ~/.claude/projects/ ~/scratch/" "ls ~/.claude/projects" "mv ~/scratch ~/scratch-old" \
              "cp ~/fake/s1.jsonl ~/.claude/projects/-home-tool/memory/" "cp -R ~/fake ~/.claude/projects/-home-tool/memory/" \
              "rm -rf ~/.claude/projects/-home-tool/memory" "cp ~/fake/s1.jsonl ~/scratch/" "cp -R ~/fake ~/.claude/skills" \
-             "ln -s ~/fake ~/scratch/fake-link" "rm ~/.claude.json"; do
+             "ln -s ~/fake ~/scratch/fake-link" "rm ~/.claude.json" \
+             "python3 -c \"import glob, pathlib; print(glob.glob(str(pathlib.Path.home() / '.claude*')))\""; do
         bash_in "${H}" "${c}"
         passed || { echo "refused: ${c}"; return 1; }
     done
