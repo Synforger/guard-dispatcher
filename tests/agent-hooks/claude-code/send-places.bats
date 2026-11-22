@@ -86,3 +86,23 @@ unread() { denied && [[ "${output}" == *"sends from a folder only known as it ru
     bash_in "${TOOL}" "pushd \$ELSEWHERE && popd && git commit -m x"; passed
     bash_in "${TOOL}" "cd \$ELSEWHERE && ls && cat notes.md"; passed
 }
+
+# --- code written into the command is not a command line ---------------------------------------
+
+# A python (or node) heredoc that rewrites a test script holds shell lines as strings. A quote it
+# leaves open for the shell (`\'` in a single-quoted python string) turned the whole body into words
+# split on spaces, and the ` && git commit` in the string was read as a send from `$WORK`.
+EDIT_STRINGS=$'python3 - <<\'PY\'\ns = open("t.sh").read()\ns = s.replace("A", \'it\\\'s \' + \'x && cd "${WORK}/repo" && git commit -m z\')\nPY'
+
+@test "send places: shell lines held in a python heredoc's strings are no send" {
+    bash_in "${TOOL}" "${EDIT_STRINGS}"; passed
+    bash_in "${TOOL}" $'node - <<\'JS\'\nconst s = \'it\\\'s \' + \'x && cd $WORK && git push\';\nJS'; passed
+    bash_in "${TOOL}" $'python3 - <<\'PY\'\nt = """\ncd $WORK\ngit commit -m x\n"""\nPY'; passed
+}
+
+@test "send places: a send written around such a heredoc still stops" {
+    bash_in "${TOOL}" "${EDIT_STRINGS}"$'\ncd $ELSEWHERE && git commit -m x'; unread
+    bash_in "${TOOL}" $'cd $ELSEWHERE && python3 - <<\'PY\'\nprint(1)\nPY\ngit commit -m x'; unread
+    bash_in "${TOOL}" $'python3 - <<\'PY\' && cd $ELSEWHERE && git commit -m x\nprint(1)\nPY'; unread
+    bash_in "${TOOL}" "python3 -c 'print(1)' && cd \$ELSEWHERE && git push"; unread
+}
