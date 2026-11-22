@@ -1212,6 +1212,10 @@ local:8766/stream/unified*      block      # the stream the operator's screen re
 tmux:agents-*                   block      # typing into the sessions the client runs
 ```
 
+A blocked `local:` name holds for the endpoint, however its address is
+written: the host and the path are both read as what they reach, with no
+lookup on the network. An address no line blocks is judged as it is written.
+
 A blocked `local:` name is closed to reads as well as sends: a fetch with no
 body, a WebSocket client that only listens, a WebFetch of the address. A
 blocked service out of this machine still takes reads.
