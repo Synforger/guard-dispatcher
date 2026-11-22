@@ -66,6 +66,7 @@ done
 # preserve unknown state, since the target is a dispatcher owned by this
 # script. doctor.sh is not a git hook but symlinking it here lets it be
 # invoked as `~/.git-hooks/doctor.sh` from anywhere.
+LINKS=()
 for entry in pre-commit commit-msg pre-push _internal doctor.sh; do
     src="${HOOKS_SRC}/${entry}"
     [ "${entry}" = "doctor.sh" ] && src="${SCRIPT_DIR}/${entry}"
@@ -76,11 +77,7 @@ for entry in pre-commit commit-msg pre-push _internal doctor.sh; do
         exit 1
     fi
 
-    if [ -e "${dst}" ] || [ -L "${dst}" ]; then
-        rm -rf "${dst}"
-    fi
-
-    ln -s "${src}" "${dst}"
+    LINKS+=("${src}" "${dst}")
 done
 
 # Ensure hook executables are, in fact, executable in the source tree —
@@ -93,27 +90,24 @@ chmod +x "${HOOKS_SRC}/pre-commit" "${HOOKS_SRC}/commit-msg" "${HOOKS_SRC}/pre-p
 # only executes known hook names, so extra entries here are inert to git
 # itself).
 for entry in scripts agent-hooks; do
-    dst="${TARGET_DIR}/${entry}"
-    if [ -e "${dst}" ] || [ -L "${dst}" ]; then
-        rm -rf "${dst}"
-    fi
-    ln -s "${GUARD_ROOT}/${entry}" "${dst}"
+    LINKS+=("${GUARD_ROOT}/${entry}" "${TARGET_DIR}/${entry}")
 done
+# Every agent session's hooks run through these links: each is renamed over the old one, never removed first.
+python3 "${SCRIPT_DIR}/_internal/swap_links.py" "${LINKS[@]}"
 
 # Other repositories call a scanner by its name alone (`~/.git-hooks/scanners/anon-scan.sh`), while
 # this checkout keeps each one in the folder of its role. One link per scanner, and one for the
 # table of places they ask, keeps that name whichever folder holds it.
 dst="${TARGET_DIR}/scanners"
-if [ -e "${dst}" ] || [ -L "${dst}" ]; then
-    rm -rf "${dst}"
-fi
-mkdir "${dst}"
+[ -L "${dst}" ] && rm -f "${dst}"
+SCANNERS=()
 for src in "${GUARD_ROOT}"/scanners/*/*.sh "${GUARD_ROOT}"/scanners/*/*.py "${GUARD_ROOT}/_common/guard_places.py"; do
     case "${src}" in
         */_internal/*) continue ;;
     esac
-    ln -s "${src}" "${dst}/$(basename "${src}")"
+    SCANNERS+=("${src}" "${dst}/$(basename "${src}")")
 done
+python3 "${SCRIPT_DIR}/_internal/swap_links.py" --only "${dst}" "${SCANNERS[@]}"
 
 git config --global core.hooksPath "${TARGET_DIR}"
 

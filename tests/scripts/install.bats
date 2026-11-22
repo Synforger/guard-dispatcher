@@ -71,6 +71,29 @@ JSON
     grep -q '# edited' "${H}/.git-hooks/scanners/anon-scan.sh"
 }
 
+@test "install: a reinstall never leaves a moment in which the hooks' links are missing" {
+    clone_to "${H}/src"
+    run bash "${H}/src/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    : > "${H}/missed"
+    (
+        while [ ! -e "${H}/done" ]; do
+            for f in agent-hooks/claude-code/area-guard.py scripts/install.sh pre-push scanners/send-scan.py; do
+                [ -e "${H}/.git-hooks/${f}" ] || echo "${f}" >> "${H}/missed"
+            done
+        done
+    ) &
+    local watcher=$! n
+    for n in 1 2 3 4 5 6; do
+        bash "${H}/src/scripts/install.sh" > /dev/null 2>&1
+    done
+    : > "${H}/done"
+    wait "${watcher}"
+    [ ! -s "${H}/missed" ] || { sort "${H}/missed" | uniq -c; return 1; }
+    # nothing is left under a passing name
+    [ -z "$(find "${H}/.git-hooks" -maxdepth 2 -name '.*.new-*')" ]
+}
+
 @test "install: a scanner called by its name alone finds the parts it uses, and a link to nothing is removed" {
     clone_to "${H}/src"
     mkdir -p "${H}/.git-hooks"
