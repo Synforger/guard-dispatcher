@@ -183,6 +183,23 @@ PY_YES
     denied
 }
 
+@test "approval: a transcript stays the transcript when openings.txt names it" {
+    local other="${H}/.claude/projects/org/other.jsonl"
+    : > "${other}"
+    printf '*\n' > "${GUARD_CONFIG_DIR}/agent-writes.txt"
+    printf 'include %s\n' "${T}" "${other}" > "${GUARD_CONFIG_DIR}/openings.txt"
+    said "keep the notes"
+    write_to "${other}" ">an added opening"
+    denied
+    write_to "${T}" "$(cat "${T}")"$'\n'">an added opening"
+    denied
+    shown "rm ${other}"
+    said "はい"
+    bash_in "${H}" "rm ${other}"
+    denied
+    [[ "${output}" == *"an order for a send is judged from it"* ]]
+}
+
 @test "approval: taking a repository's own hooksPath away needs no yes" {
     git -C "${COMPANY_REPO}" config core.hooksPath .husky
     said "put it back"
