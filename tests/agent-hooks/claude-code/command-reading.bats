@@ -89,3 +89,20 @@ line = "cd /a && cat <<E\n$(x)\nE\nnext"
 print(with_inner_first(line) == "cd /a &&  ( x\n); cat <<E\n$(x)\nE\nnext")' "${GUARD_ROOT}/_common"
     [ "${output}" = "True" ]
 }
+
+@test "command reading: the line breaks of a long line are read in one pass" {
+    run python3 -c 'import sys
+sys.path.insert(0, sys.argv[1]); sys.dont_write_bytecode = True
+from shell_lines import with_line_breaks
+def joins(lines):
+    seen = []
+    command = "echo a\n" * lines
+    sys.setprofile(lambda _, event, called: seen.append(1) if event == "c_call" and getattr(called, "__name__", "") == "join" else None)
+    try:
+        with_line_breaks(command)
+    finally:
+        sys.setprofile(None)
+    return len(seen)
+print(joins(10) == joins(1000))' "${GUARD_ROOT}/_common"
+    [ "${output}" = "True" ]
+}
