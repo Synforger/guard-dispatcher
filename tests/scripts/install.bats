@@ -71,7 +71,7 @@ JSON
     grep -q '# edited' "${H}/.git-hooks/scanners/anon-scan.sh"
 }
 
-@test "install: a reinstall never leaves a moment in which the hooks' links are missing" {
+@test "install: a watcher finds the hooks' links in place through reinstalls from the same clone" {
     clone_to "${H}/src"
     run bash "${H}/src/scripts/install.sh"
     [ "${status}" -eq 0 ]
@@ -114,6 +114,19 @@ installed_links() {
     [ "$(readlink "${H}/.git-hooks/agent-hooks")" = "${H}/moved/agent-hooks" ]
     [ "$(readlink "${H}/.git-hooks/pre-push")" = "${H}/moved/git-hooks/pre-push" ]
     [ "$(readlink "${H}/.git-hooks/scanners/anon-scan.sh")" = "${H}/moved/scanners/words/anon-scan.sh" ]
+}
+
+@test "install: a scanner renamed only in case keeps one link, to the file under its new name" {
+    clone_to "${H}/src"
+    bash "${H}/src/scripts/install.sh" > /dev/null
+    mv "${H}/src/scanners/words/anon-fix.sh" "${H}/src/scanners/words/Anon-Fix.sh"
+    local folder="${H}/.git-hooks/scanners" turn
+    for turn in 1 2; do
+        bash "${H}/src/scripts/install.sh" > /dev/null
+        [ "$(readlink "${folder}/Anon-Fix.sh")" = "${H}/src/scanners/words/Anon-Fix.sh" ]
+        # a file system that tells case apart holds no second link under the old name
+        [ "$(ls "${folder}" | grep -ic '^anon-fix[.]sh$')" -eq 1 ]
+    done
 }
 
 @test "install: a file or a link standing where the scanners folder goes gives way to the folder" {
