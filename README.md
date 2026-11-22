@@ -94,6 +94,10 @@ Scanners read one PCRE fragment per line from the first of:
    (recommended location; `<root>/config/guard/exit/words/master.txt` under a platform root)
 4. a repo-local `.tooling/local-ci/anon-words.txt` (legacy)
 
+A send of a tool or a network command to a destination outside every area
+skips step 2: it takes the operator master, whatever list the folder the
+call is typed in names.
+
 The word list is private operator data — it is never committed
 anywhere. See `configs/anon-words.example.txt` for the format.
 
@@ -766,8 +770,10 @@ step earlier, before each tool call, from the same `areas.txt`:
   ```
   ````
 
-  The call passes once when the operator's next message says yes (`はい`, `お願い`,
-  `OK`, ...; the `+` lines of `orders.txt` replace that list), in a sentence that
+  The call passes once when the operator's next message opens with a yes (`はい`,
+  `お願い`, `OK`, ...; the `+` lines of `orders.txt` replace that list) as a word
+  that ends there: `はい、お願いします` and `OKです` are yes, `look`, `はいらない` and
+  a yes further into the message are not. Its first sentence
   does not ask and does not go on with one of the file's cancelling tails, and
   when the session may read where the call acts: a repository or a folder inside
   an area, or a setting of `areas/<area>/`, only from a session that reads inside
@@ -776,6 +782,11 @@ step earlier, before each tool call, from the same `areas.txt`:
   no yes but one the operator gave in the sending tab, see *A message relayed with
   the operator's answer*), and a block shown for a send is no block for a change. With no
   `orders.txt`, nothing is approved.
+- **A watch the Monitor tool starts** is judged as the Bash call of its
+  command: what it reads, writes, sends and needs the operator for. A socket it
+  listens to is judged as a client listening at that address, and subprotocols
+  as a message sent there. A block shown with `tool: Bash` and that command
+  passes the watch that runs it.
 - **The operator may hand the upkeep of some settings to the agent**, when the
   settings grow with every area and every false alarm: `agent-writes.txt` names
   them, one per line (`destinations.txt`, `patterns/`, `*` for all). A session
@@ -1045,7 +1056,8 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   app:calendar              personal    # an osascript script that writes to the Calendar app
   ```
 
-  A `repo:` line naming an area says who owns the repositories. A private one
+  A `repo:` line naming an area says who owns the repositories; one GitHub answers
+  is public is outside every area whatever the line says. A private one
   cloned inside that area sits where its clone is, and the owner's text is its
   own too: a client's repository in the company's organization, cloned in the
   client's folder, takes the client's text and the company's, and still not
@@ -1158,7 +1170,10 @@ may read, not ones it has read), though `--covers-place` counts them. When that 
 the folder is inside a git work tree, the area names the folder in its own
 settings (`areas/<area>/tickets.txt`: one line, `~` allowed, `#` starts a
 comment), which must lie in that area alone and outside every git work tree.
-Areas that do not lie one inside the next fit in no place (exit 1), and a
+Areas that do not lie one inside the next (two clients of one company) take
+the place of the innermost area around them all (the company's): what is
+written there is judged for a reader of that area, so one client's text does
+not go in. With no area around them all they fit in no place (exit 1), and a
 place that cannot be named is exit 2 with the missing declaration in the line.
 
 A folder stands for a reader who has read inside the areas it lies in most
@@ -1203,6 +1218,10 @@ local:8766/tickets/*            block      # a request, read or added to by nami
 local:8766/stream/unified*      block      # the stream the operator's screen reads them from
 tmux:agents-*                   block      # typing into the sessions the client runs
 ```
+
+A blocked `local:` name holds for the endpoint, however its address is
+written: the host and the path are both read as what they reach, with no
+lookup on the network. An address no line blocks is judged as it is written.
 
 A blocked `local:` name is closed to reads as well as sends: a fetch with no
 body, a WebSocket client that only listens, a WebFetch of the address. A
@@ -1296,10 +1315,13 @@ This holds as long as agents cannot reach the client's own way of typing as
 the operator: block it (see *What stays on this machine*).
 
 The `>` and `>>` lines may also sit in `openings.txt`, beside `orders.txt`. A
-line there only takes words out of what counts as the operator's, so an agent
-keeps that file under the operator's grant (`agent-writes.txt`) with no yes;
-anything but a `>` or `>>` line there is not read, so it never orders or
-approves. `include <file>` there reads the `>` and `>>` lines of another file,
+line added there only takes words out of what counts as the operator's, so an
+agent adds to that file under the operator's grant (`agent-writes.txt`) with
+no yes, with an Edit or a Write. Taking a line away, or writing the file
+through the shell, needs the yes, as does the same on a file an `include` line
+names (which takes added openings with no grant) and taking away a folder that
+holds one. Anything but a `>`, `>>` or `include` line there is not read, so it
+never orders or approves. `include <file>` there reads the `>` and `>>` lines of another file,
 one level deep: a client keeps the openings of everything it types in its own
 repository and adds one with no hand on the machine.
 

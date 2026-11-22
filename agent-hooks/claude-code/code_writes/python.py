@@ -46,7 +46,7 @@ LOCAL_MODULES = ("os", "posixpath", "sys", "io", "codecs", "pathlib", "shutil", 
                  "unicodedata", "operator", "statistics", "decimal", "fractions", "uuid", "typing",
                  "dataclasses", "enum", "copy", "pprint", "csv")
 #: The path functions of `os.path`, which _canonical names `posixpath`.
-_PATH_FUNCTIONS = ("join", "basename", "dirname", "exists", "isfile", "isdir", "islink", "isabs", "abspath",
+_PATH_FUNCTIONS = ("join", "basename", "dirname", "exists", "lexists", "isfile", "isdir", "islink", "isabs", "abspath",
                    "realpath", "relpath", "normpath", "expanduser", "expandvars", "splitext", "split", "getsize",
                    "getmtime", "commonpath", "commonprefix", "samefile")
 #: The functions of the standard modules that write no file they are handed a path for and run no
@@ -103,7 +103,7 @@ PURE_FUNCTIONS = frozenset({
     "issubclass", "abs", "round", "range", "chr", "ord", "hex", "oct", "bin", "id", "hash", "type", "iter",
     "next", "divmod", "pow", "callable", "bytes", "bytearray",
     "pathlib.Path", "pathlib.PurePath", "pathlib.PosixPath", "pathlib.PurePosixPath",
-    "os.getcwd", "os.listdir", "os.scandir", "os.walk", "os.stat", "os.lstat", "os.getenv", "os.fspath",
+    "os.getcwd", "os.listdir", "os.scandir", "os.walk", "os.stat", "os.lstat", "os.readlink", "os.getenv", "os.fspath",
     "os.fsdecode", "os.fsencode", "os.environ.get", "os.access", "os.cpu_count", "os.getpid", "sys.exit",
 })
 #: Values of `os` and `sys` the code may use: data and the standard streams, whose pure methods are pure

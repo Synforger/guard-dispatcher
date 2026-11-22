@@ -634,3 +634,10 @@ unchecked_scripts() {
     bash_call "bash -n ~/org/clients/acme/received/memo.md"; denied
     says "reads inside client"
 }
+
+@test "script files: code that only looks at a link or whether a path is there writes neither" {
+    bash_call "cat ~/org/clients/acme/received/memo.md"; passed
+    bash_call "python3 -c \"import os; p = os.path.join('${PLACE}', 'a.jsonl'); print(os.path.lexists(p))\""; passed
+    bash_call "python3 -c \"import os; p = os.path.join('${PLACE}', 'a.jsonl'); print(os.readlink(p))\""; passed
+    bash_call "python3 -c \"import os; p = os.path.join('${PLACE}', 'a.jsonl'); os.symlink('/tmp/x', p)\""; denied
+}

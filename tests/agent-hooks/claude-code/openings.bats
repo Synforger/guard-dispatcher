@@ -61,3 +61,84 @@ relayed() { run python3 -c "import sys; sys.path.insert(0, '${ORDER_DIR}'); impo
     run python3 "${HOOK}" <<< "${event}"
     [[ "${output}" == *'"permissionDecision": "deny"'* ]]
 }
+
+# hook <tool> <input json> — run the hook on one call of a session that has read inside no area.
+hook() {
+    local event
+    event="$(jq -n --arg t "$1" --argjson i "$2" --arg c "${H}" \
+        '{session_id: "s1", tool_name: $t, tool_input: $i, cwd: $c, hook_event_name: "PreToolUse"}')"
+    run python3 "${HOOK}" <<< "${event}"
+}
+writes() { hook Write "$(jq -n --arg f "$1" --arg c "$2" '{file_path: $f, content: $c}')"; }
+shell() { hook Bash "$(jq -n --arg c "$1" '{command: $c}')"; }
+# shells <passed|denied> <command>... — run the hook on each command, all at once: each is a call of its own.
+shells() {
+    local want="$1" n=0 out="${BATS_TEST_TMPDIR}/answers" command waited=()
+    shift
+    mkdir -p "${out}"
+    for command in "$@"; do
+        n=$((n + 1))
+        jq -n --arg m "${command}" --arg c "${H}" \
+            '{session_id: "s1", tool_name: "Bash", tool_input: {command: $m}, cwd: $c, hook_event_name: "PreToolUse"}' \
+            > "${out}/${n}.event"
+        python3 "${HOOK}" < "${out}/${n}.event" > "${out}/${n}.answer" &
+        waited+=($!)
+    done
+    for n in "${waited[@]}"; do wait "${n}" || return 1; done
+    n=0
+    for command in "$@"; do
+        n=$((n + 1))
+        status=0 output="$(cat "${out}/${n}.answer")"
+        "hook_${want}" || { echo "not ${want}: ${command}"; echo "${output}"; return 1; }
+    done
+}
+hook_passed() { [ "${status}" -eq 0 ] && [ -z "${output}" ]; }
+hook_denied() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"permissionDecision": "deny"'* ]]; }
+
+kept_openings() {
+    printf '*\n' > "${GUARD_CONFIG_DIR}/agent-writes.txt"
+    OWN="${GUARD_CONFIG_DIR}/openings.txt"
+    SHARED="${H}/tool/contracts/openings.txt"
+    printf '%s\n' '>Sent by the client' 'include ~/tool/contracts/openings.txt' > "${OWN}"
+    printf '%s\n' '>Tab opened by the client' '>>From the other machine' > "${SHARED}"
+}
+
+@test "openings: under the grant an agent adds lines to openings.txt and takes none away" {
+    kept_openings
+    writes "${OWN}" $'>Sent by the client\ninclude ~/tool/contracts/openings.txt\n# one more\n>A new opening\ninclude ~/tool/more.txt\n'
+    hook_passed
+    writes "${OWN}" $'include ~/tool/contracts/openings.txt\n'
+    hook_denied
+    writes "${OWN}" $'>Sent by the client\n'
+    hook_denied
+    shells denied "rm ${OWN}" "printf 'x\n' > ${OWN}" "mv ${OWN} ${H}/away"
+}
+
+@test "openings: a file an include line names takes added openings only" {
+    kept_openings
+    writes "${SHARED}" $'>Tab opened by the client\n>>From the other machine\n>A new opening\n'
+    hook_passed
+    writes "${SHARED}" $'>Tab opened by the client\n'
+    hook_denied
+    shells denied "rm ${SHARED}" "printf 'x\n' > ${SHARED}" "mv ${SHARED} ${H}/away" "rm -r ${H}/tool/contracts"
+}
+
+@test "openings: reading them, and writing beside them, stay free" {
+    kept_openings
+    mkdir -p "${H}/tool.worktrees/next/contracts"
+    shells passed "cat ${OWN} ${SHARED}" "grep -c '>' ${SHARED}" "cp ${SHARED} ${H}/copy.txt" \
+                   "python3 -c 'print(open(\"${SHARED}\").read())'" "touch ${H}/tool/contracts/other.txt" \
+                   "printf 'x\n' > ${H}/tool.worktrees/next/contracts/openings.txt" \
+                   "cp ${OWN} ${GUARD_CONFIG_DIR}/openings.txt.bak"
+    hook Read "$(jq -n --arg f "${SHARED}" '{file_path: $f}')"
+    hook_passed
+}
+
+@test "openings: a search with a quoted bracket is a read, and a redirection behind one is a write" {
+    kept_openings
+    shell "grep -n \">>\" ${SHARED}"
+    hook_passed
+    shells denied "grep -c '>' ${OWN} > ${SHARED}" "grep x ${H}/a >${SHARED}" "grep -c '>' ${SHARED}; rm ${SHARED}" \
+                   "grep ' '>${SHARED} x" "grep x \$(echo y > ${SHARED})" \
+                   "grep x # it's"$'\n'"printf y > ${SHARED} #'" "sh -c 'printf y > ${SHARED}'"
+}

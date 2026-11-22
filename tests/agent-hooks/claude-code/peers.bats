@@ -327,6 +327,63 @@ AREAS
     denied
 }
 
+@test "local: a blocked endpoint is blocked by every name it answers to" {
+    declare_also 'local:8766/pty/* block'
+    local url
+    for url in http://127.1:8766/pty/s/send http://2130706433:8766/pty/s/send http://0x7f.0.0.1:8766/pty/s/send \
+               http://127.0.0.2:8766/pty/s/send http://localhost.:8766/pty/s/send http://a.localhost:8766/pty/s/send \
+               http://0:8766/pty/s/send "http://$(hostname):8766/pty/s/send" http:/127.0.0.1:8766/pty/s/send \
+               'http://[::ffff:127.0.0.1]:8766/pty/s/send' 'http://[0:0:0:0:0:0:0:1]:8766/pty/s/send' \
+               http://127.0.0.1:8766/%70ty/s/send http://127.0.0.1:8766//pty/s/send http://127.0.0.1:8766/x/../pty/s/send; do
+        bash_call "curl -s -X POST '${url}'"
+        denied || { echo "not refused: ${url}"; return 1; }
+    done
+    bash_call "wget -q --post-data 'text=go' http://127.1:8766/pty/s/send"; denied
+    bash_call "websocat ws://127.1:8766/pty/s/send"; denied
+    bash_call "python3 -c 'import urllib.request as u; u.urlopen(\"http://[::1]:8766/pty/s/send\", b\"go\")'"; denied
+    call WebFetch "$(jq -n '{url: "http://127.1:8766/pty/s/send", prompt: "read"}')"; denied
+}
+
+@test "local: a blocked endpoint is blocked however a name or a number of it is prepared" {
+    declare_also 'local:8766/pty/* block' 'local:8766/tickets block'
+    local url
+    for url in $'http://local\u00adhost:8766/pty/s/send' $'http://local\u200bhost:8766/pty/s/send' \
+               http://0127.0.0.1:8766/pty/s/send http://127.0x.0.1:8766/pty/s/send $'http://local\u3164host:8766/pty/s/send' \
+               $'http://localho\ua7f1t:8766/pty/s/send' http://127.000.000.001:8766/pty/s/send http://127.0.0.1:8766/tickets/; do
+        bash_call "curl -s -X POST '${url}'"
+        denied || { echo "not refused: ${url}"; return 1; }
+    done
+    for url in $'http://127\u30020\u30020\u30021:8766/pty/s/send' 'http://127.0.0.1:8766\pty\s\send' \
+               'http:127.0.0.1:8766/pty/s/send' 'http://me@127.1:8766/pty/s/send' 'http://[::1%25lo0]:8766/pty/s/send' 'http://[::1]:8766/tickets'; do
+        bash_call "node -e 'fetch(\"${url}\")'"
+        denied || { echo "not refused in code: ${url}"; return 1; }
+    done
+}
+
+@test "local: an address no line blocks keeps the name it is written with" {
+    declare_also 'local:8766/pty/* block'
+    local url
+    bash_call "node -e 'fetch(\"http://me@127.1:8766/sessions\")'"
+    passed || { echo "refused in code"; echo "${output}"; return 1; }
+    bash_call "curl -s $'http://\u4f8b\u3048.jp/pty/s/send'"
+    passed || { echo "refused in code"; echo "${output}"; return 1; }
+    for url in http://127.0.0.1:8766/sessions http://localhost:9999/pty/s/send 'http://[::1]:8766/agent-messages'; do
+        bash_call "curl -s -X POST '${url}'"
+        passed || { echo "refused: ${url}"; echo "${output}"; return 1; }
+    done
+    python3 - "${GUARD_ROOT}" <<'PY'
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path.insert(0, str(root / "agent-hooks/claude-code"))
+import outgoing
+scan = root / "scanners/destinations/send-scan.py"
+for url, name in (("http://127.1:8766/sessions", "host:127.1"), ("https://example.com/pty/s", "host:example.com"),
+                  ("http://127.0.0.1:8766/a%20b", "local:8766/a%20b"), ("http://localhost.example.com/pty/s", "host:localhost.example.com")):
+    assert outgoing.place_of(url, scan) == name, (url, outgoing.place_of(url, scan))
+PY
+}
+
 @test "local: a blocked endpoint is closed to reads through curl, wget, HTTPie, a listening client and code" {
     declare_also 'local:8766/tickets block' 'local:8766/tickets/* block' 'local:8766/stream/unified* block'
     bash_call "curl -s http://127.0.0.1:8766/tickets"
@@ -590,6 +647,28 @@ tickets_setup() {
     [ "${status}" -eq 0 ]; [ "${output}" = "${CLIENT_PLACE}" ]
     run python3 "${PEERS}" --place-for "${ID_PLAIN}"
     [ "${status}" -eq 0 ]; [ "${output}" = "${OUTSIDE_PLACE}" ]
+}
+
+@test "peers.py --place-for: two areas side by side inside a third sit in the place of the innermost one around them" {
+    tickets_setup
+    printf '%s\n' 'beta ~/org/clients/beta' 'deep ~/org/clients/beta/sub' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mkdir -p "${H}/org/clients/beta/sub"
+    session .claude-work sides "88888888-8888-4888-8888-888888888888" client beta
+    run python3 "${PEERS}" --place-for "88888888-8888-4888-8888-888888888888"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${COMPANY_PLACE}" ]
+    # the company read as well changes nothing; a deeper area of one side neither
+    session .claude-work all "99999999-9999-4999-8999-999999999999" company client beta deep
+    run python3 "${PEERS}" --place-for "99999999-9999-4999-8999-999999999999"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${COMPANY_PLACE}" ]
+    # two areas inside one client sit in that client's place, not the company's
+    printf '%s\n' 'left ~/org/clients/acme/l' 'right ~/org/clients/acme/r' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    mkdir -p "${H}/org/clients/acme/l" "${H}/org/clients/acme/r"
+    session .claude-work pair "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" left right
+    run python3 "${PEERS}" --place-for "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    [ "${status}" -eq 0 ]; [ "${output}" = "${CLIENT_PLACE}" ]
+    # the session that opened it reads every boundary of that place, so it may add to it and pass it
+    run python3 "${PEERS}" --to "88888888-8888-4888-8888-888888888888" --covers-place "${COMPANY_PLACE}"
+    [ "${status}" -eq 0 ]
 }
 
 @test "peers.py --place-for: areas that do not lie one inside the next fit in no place, and exit 1 says so" {
