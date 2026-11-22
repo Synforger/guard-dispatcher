@@ -515,6 +515,7 @@ def stepped_commands(line: str):
     unclosed quote, as `shlex.split` does. A line break that ends a command is a `;`."""
     lexer = shlex.shlex(with_line_breaks(line), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    lexer.commenters = ""      # with_line_breaks left the comments out: a `#` inside a word (`$#`) is no comment
     breaks = outgoing_module().SHELL_BREAK
     words: list[str] = []
     redirects: list[tuple[str, str]] = []
@@ -601,7 +602,7 @@ def said(command: str, depth: int = 0):
     for words, redirects, here in commands:
         yield from (target for _, target in redirects)
         rest = words
-        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT):
+        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT or rest[0] in KEYWORDS):
             rest = rest[1:]
         tool = os.path.basename(rest[0]) if rest else ""
         shell, flags = bool(SHELL_CODE.fullmatch(tool)), code_flags(tool)
@@ -724,6 +725,8 @@ CODE_FLAGS = {"python": {"-c"}, "node": {"-e", "--eval", "-p", "--print"}, "perl
               "ruby": {"-e"}, "bun": {"-e", "--eval"}, "php": {"-r"}, "osascript": {"-e"}}
 # What stands before a command and runs it (`sudo tee f`), and a variable set for it (`A=1 cp a b`).
 RUNS_NEXT = {"sudo", "env", "command", "exec", "builtin", "nohup", "nice", "time", "caffeinate"}
+# Words of the shell that stand before a command and run it (`do rm x`, `then rm x`, `! rm x`, `{ rm x; }`).
+KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}", "time"}
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 # Builtins that set the variables written after them, a variable as a word spells it (`$D`, `${D}`),
 # and what makes a value one this command line cannot know.
@@ -908,7 +911,7 @@ def named_with_folders(command: str, cwd: str, depth: int = 0) -> tuple[list[Pat
                 else:
                     values[name] = value
             return
-        while words and (ASSIGNMENT.fullmatch(words[0]) or os.path.basename(words[0]) in RUNS_NEXT):
+        while words and (ASSIGNMENT.fullmatch(words[0]) or os.path.basename(words[0]) in RUNS_NEXT or words[0] in KEYWORDS):
             wrapper = not ASSIGNMENT.fullmatch(words[0])
             words = words[1:]
             while wrapper and words and (words[0].startswith("-") or ASSIGNMENT.fullmatch(words[0])):
@@ -1022,7 +1025,7 @@ def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
     standing = Standing(cwd)
     for index, (words, redirects, _, ended_by) in enumerate(steps):
         rest = words
-        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT):
+        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT or rest[0] in KEYWORDS):
             rest = rest[1:]
         if rest and not standing.move(os.path.basename(rest[0]), rest[1:]):
             tool, here = os.path.basename(rest[0]), standing.here
@@ -1170,25 +1173,60 @@ def holds_transcripts(path: Path, reach: str) -> bool:
     return False
 
 
-def script_argument_writes(command: str, cwd: str, transcript: str | None,
-                           marks: set[str] | None = None) -> list[Path]:
-    """The paths a file of code the command runs writes where its arguments say, when one of the
-    words handed to it names what the agent may not write (`kept`): a script that takes the path
-    from its arguments is read again with them in place (script_arguments). A command that hands
-    no such word is read as it always was. A Python file and a shell script are read; the code of
-    another interpreter is not."""
-    found: list[Path] = []
+def script_argument_orders(command: str, cwd: str, transcript: str | None, marks: set[str] | None = None,
+                           depth: int = 0) -> tuple[list[Path], list[FolderOrder]]:
+    """(the paths, the orders on a folder) a file of code the command runs writes where its arguments say,
+    when one of the words handed to it names what the agent may not write: a thing `kept` judges, or
+    the folder of transcripts or one in it (`holds_transcripts`). A script that takes the path from its
+    arguments is read again with them in place (script_arguments): a Python file by `sys.argv`, a shell
+    script by `$1`, `$@`, a loop over them, a `shift` and a default, and what it runs in turn by the words
+    it hands on. A script that uses its words where the text does not say, and writes, writes every one;
+    so does the code of another interpreter that uses its arguments and spells a call that writes. A
+    command that hands no such word is read as it always was."""
+    paths: list[Path] = []
+    orders: list[FolderOrder] = []
+
+    def spelled(word: str, here: str) -> tuple[Path, Path]:
+        target = os.path.join(here, os.path.expanduser(word))
+        return real(target), Path(os.path.normpath(target))
+
+    def guarded(word: str, here: str) -> bool:
+        resolved, written = spelled(word, here)
+        return bool(kept(resolved, transcript, marks) or holds_transcripts(resolved, RECORDS)
+                    or holds_transcripts(written, RECORDS))
+
+    def writes_all(words: list[str], here: str) -> None:
+        for word in script_arguments.candidates(words):
+            resolved, written = spelled(word, here)
+            paths.append(resolved)
+            orders.append(FolderOrder(resolved, written, RECORDS))
+
     for program, code, here, words in ran_scripts_with_arguments(command, cwd):
-        if not any(kept(real(os.path.expanduser(word), here), transcript, marks)
-                   for word in script_arguments.candidates(words)):
+        if not any(guarded(word, here) for word in script_arguments.candidates(words)):
             continue
         if SHELL_CODE.fullmatch(program):
-            found += [path for paths in named(script_arguments.shell_with_arguments(code, words), here)
-                      for path in paths]
+            texts, unreadable = script_arguments.shell_variants(code, words)
+            wrote = False
+            for text in texts:
+                written, removed, folders = named_with_folders(text, here)
+                paths += [*written, *removed]
+                orders += folders
+                wrote = wrote or bool(written or removed or folders)
+                if depth < NESTED:
+                    inner_paths, inner_orders = script_argument_orders(text, here, transcript, marks, depth + 1)
+                    paths += inner_paths
+                    orders += inner_orders
+            if unreadable and wrote:
+                writes_all(words, here)
         elif program.startswith("python"):
             parts = code_writes.python.written_with_arguments(code, words)
-            found += [real(os.path.expanduser(name), here) for name in code_paths(parts, here)]
-    return found
+            for name in code_paths(parts, here):
+                resolved, written = spelled(name, here)
+                paths.append(resolved)
+                orders.append(FolderOrder(resolved, written, RECORDS))
+        elif script_arguments.writes_where_told(program, code):
+            writes_all(words, here)
+    return paths, orders
 
 
 def kept_by(command: str, cwd: str, transcript: str | None,
@@ -1199,10 +1237,11 @@ def kept_by(command: str, cwd: str, transcript: str | None,
     transcripts, or one that holds it, as writing a transcript does (each path is judged as it is
     written and as its links lead)."""
     written, removed, orders = named_with_folders(command, cwd)
-    for order in orders:
+    script_paths, script_orders = script_argument_orders(command, cwd, transcript, marks)
+    for order in [*orders, *script_orders]:
         if holds_transcripts(order.resolved, order.reach) or holds_transcripts(order.spelled, order.reach):
             return "the folder holding a session's transcripts", TRANSCRIPT_WHY
-    for path in [*written, *removed, *script_argument_writes(command, cwd, transcript, marks)]:
+    for path in [*written, *removed, *script_paths]:
         if what := kept(path, transcript, marks):
             return what
     for path in removed:
@@ -1307,7 +1346,7 @@ def recursive_reads(command: str, cwd: str, depth: int = 0) -> list[tuple[Path, 
 def _walked(words: list[str], steps: list, index: int, standing: Standing, depth: int) -> list[tuple[Path, list[str]]]:
     """The folders one command of a command line reads every file under (see recursive_reads)."""
     rest = words
-    while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT):
+    while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT or rest[0] in KEYWORDS):
         rest = rest[1:]
     if not rest:
         return []
@@ -1392,7 +1431,6 @@ def upto_break(words: list[str]) -> list[str]:
 # git options that take a value before the subcommand (`git -C dir -c k=v push`).
 GIT_VALUED = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
 SHELLS = {"bash", "sh", "zsh", "dash"}
-KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}", "time"}
 WRAPPERS = {"sudo", "env", "command", "exec", "builtin", "nohup", "nice", "caffeinate", "xargs"}
 
 
