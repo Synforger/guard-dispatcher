@@ -846,11 +846,25 @@ step earlier, before each tool call, from the same `areas.txt`:
   relative path resolves from the caller's working directory. It only
   answers: it adds no mark and changes nothing.
 
-  One case needs no `may-write`: when a word handed to a Python file or a
-  shell script names the guard's settings or a session's transcript, the guard
-  reads the script with its arguments in place (`sys.argv[1]`, `$1`, `$@`) and
-  refuses it if it writes there, with the reason the same write gets from a
-  command. A script that only reads the word, or writes somewhere else, passes.
+  One case needs no `may-write`: when a word handed to a script names the
+  guard's settings, a session's transcript, or the folder that holds
+  transcripts (or one in it), the guard reads the script with its arguments
+  in place and refuses it if it writes, empties or fills there, with the
+  reason the same write gets from a command. This reaches:
+
+  - a Python file (`sys.argv[1]`, `sys.argv[1:]`, `from sys import argv`; with
+    `argparse` or a loop over `sys.argv`, any write whose target the code does
+    not say counts as writing every word);
+  - a shell script (`$1`..`$9`, `${1:-x}`, `$@`, `$*`, `${@:2}`, a `for` loop
+    over them, a `shift` at the top of the script; `getopts`, `eval` and a
+    `shift` inside a loop count as writing every word when the script writes);
+  - a script it runs in turn with those words (`python3 put.py "$1"`);
+  - a Node, Ruby, Perl or PHP file that takes its arguments (`process.argv`,
+    `ARGV`, `$ARGV`, `$argv`) and spells a call that writes or runs a program.
+
+  A script that only reads the word, or writes somewhere else, passes. What
+  stays outside: a script in another language, a word passed on through an
+  environment variable or a file, and a path the script builds from the word.
 
 - **A session may hand work to a child of its own.** The client that opens a child's
   tab registers it with the guard (`area-guard.py child add --child TAB --parent TAB
