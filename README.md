@@ -657,7 +657,12 @@ step earlier, before each tool call, from the same `areas.txt`:
   (`sudo`, `env`, a variable). A relative name is a file of the folder the
   command stands in when it reaches that word: `cd`, `pushd` / `popd` move it
   and a `( … )` subshell gives the place back, so `cd /a && echo x > out`
-  writes `/a/out`. A variable the command line set to a literal before
+  writes `/a/out`. A `cd` inside the branch of an `if`, `for`, `while`, `until`
+  or `case` reaches only to the end of that branch (`fi`, `done`, `esac`, the
+  next `elif` / `else` / `;;`), and what follows stands where the branch began;
+  a write or a send inside the branch is judged from where the branch went.
+  The patterns of a `case` (`'~/'*)`) are matched against a value, so they name
+  no path. A variable the command line set to a literal before
   (`D=/a/b; echo x > $D/out`) is written out. Where neither can be read
   (`cd $X`, a value that comes from a substitution), the name is judged as it
   was written, from where the command stood. A shell's `-c` string, and a heredoc fed to a
@@ -727,7 +732,14 @@ step earlier, before each tool call, from the same `areas.txt`:
 - On every machine, a `git` commit or push and a sending `gh` call are judged where they run:
   the command is followed through `cd`, `pushd` / `popd`, a subshell and `git -C`, with a
   variable set to a literal earlier in the command (`W=/a/b; cd $W`) or in the session's
-  environment (`$HOME`) written out. A folder still only known as the command runs
+  environment (`$HOME`) written out, and `${W:-d}` / `${W:+v}` filled in as the shell does. A
+  variable set in front of a program (`W=/a/b bash run.sh`, `env W=/a/b bash run.sh`) is known to
+  the script it runs, and to what that runs in turn. A `cd` inside the branch of an `if`, loop or
+  `case` reaches only to the end of that branch, so a send after `fi` is judged from where the
+  branch began. An `if` whose condition the guard can tell (`[ -n "$W" ]`, `[ -z … ]`,
+  `[ -d /a/b ]`, `=` / `!=` between two words, with `!` in front) runs one branch, and only that
+  one is read; for one it cannot tell, every branch is read and a variable such a branch sets is
+  no longer known after it. A folder still only known as the command runs
   (`cd $W` with `W` set elsewhere, `git -C "$(…)"`) is refused, with the reason asking for the
   folder written out: the guard cannot tell which repository's hooks and areas the send meets.
 - On every machine too, the agent writes nothing in the guard's settings folder

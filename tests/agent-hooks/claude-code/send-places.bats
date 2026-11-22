@@ -86,3 +86,129 @@ unread() { denied && [[ "${output}" == *"sends from a folder only known as it ru
     bash_in "${TOOL}" "pushd \$ELSEWHERE && popd && git commit -m x"; passed
     bash_in "${TOOL}" "cd \$ELSEWHERE && ls && cat notes.md"; passed
 }
+
+# The branch of an if / for / while / until / case is where a `cd` takes effect only until the branch ends:
+# what follows `fi`, `done` or `esac` stands where the branch began.
+
+@test "send places: a cd inside a branch does not carry past the branch" {
+    local command
+    for command in "if true; then cd \$ELSEWHERE; ls; fi; git commit -m x" \
+                   "if true; then cd \$ELSEWHERE; fi; git -C ${TOOL} push origin HEAD" \
+                   "if true; then ls; elif false; then cd \$ELSEWHERE; else cd \$ELSEWHERE; fi; git commit -m x" \
+                   "for d in a b; do cd \$ELSEWHERE; done; git commit -m x" \
+                   "while false; do cd \$ELSEWHERE; done; git commit -m x" \
+                   "until true; do cd \$ELSEWHERE; done; git commit -m x" \
+                   "case x in a) cd \$ELSEWHERE;; b|c) cd \$ELSEWHERE;; esac; git commit -m x" \
+                   "case x in (a) cd \$ELSEWHERE;; *) cd \$ELSEWHERE; esac; git commit -m x" \
+                   "if true; then (cd \$ELSEWHERE); cd \$ELSEWHERE; fi; git commit -m x" \
+                   "if true; then
+                        cd \$ELSEWHERE
+                        ls
+                    fi
+                    git commit -m x"; do
+        bash_in "${TOOL}" "${command}"
+        passed || { echo "refused: ${command}"; echo "${output}"; return 1; }
+    done
+}
+
+@test "send places: a send inside a branch stands where the branch cd'd to" {
+    local command
+    for command in "if true; then cd \$ELSEWHERE; git push; fi" \
+                   "if true; then ls; else cd \$ELSEWHERE; git commit -m x; fi" \
+                   "if true; then ls; elif false; then cd \$ELSEWHERE && git commit -m x; fi" \
+                   "for d in a; do cd \$ELSEWHERE; git commit -m x; done" \
+                   "case x in a) cd \$ELSEWHERE; git commit -m x;; esac" \
+                   "if true; then cd \$ELSEWHERE; if true; then git commit -m x; fi; fi"; do
+        bash_in "${TOOL}" "${command}"
+        unread || { echo "not refused: ${command}"; echo "${output}"; return 1; }
+    done
+}
+
+@test "send places: a cd outside a branch still carries past it" {
+    local command
+    for command in "cd \$ELSEWHERE; if true; then ls; fi; git commit -m x" \
+                   "cd \$ELSEWHERE; if true; then cd ${TOOL}; fi; git commit -m x" \
+                   "if true; then ls; fi; cd \$ELSEWHERE; git push" \
+                   "for d in a; do ls; done; cd \$ELSEWHERE && git commit -m x"; do
+        bash_in "${TOOL}" "${command}"
+        unread || { echo "not refused: ${command}"; echo "${output}"; return 1; }
+    done
+}
+
+@test "send places: a branch gives back the place it began at, a folder the hooks reach" {
+    bash_in "${TOOL}" "if true; then cd ${AGENT}; fi; git commit -m x"; passed
+    bash_in "${AGENT}" "if true; then cd ${TOOL}; fi; git commit -m x"; denied
+    [[ "${output}" == *"guard.scope = exempt"* ]]
+    bash_in "${AGENT}" "if true; then cd ${TOOL}; git commit -m x; fi"; passed
+}
+
+# The shape of a script that cleans up inside a branch and then commits and pushes where it started.
+@test "send places: a cleanup inside a branch is no reason to refuse the commit and push after it" {
+    bash_in "${TOOL}" "BASE_DIR=${TOOL}
+if [ -z \"\$(git status --porcelain)\" ]; then
+    if [ \"\$MADE\" -eq 1 ]; then
+        cd \"\$BASE_CLONE\"
+        git worktree remove \"\$BASE_DIR\"
+    fi
+    exit 0
+fi
+git commit -m x
+git push origin HEAD"
+    passed
+}
+
+# What a command line knows: the variables set in front of a program, `${W:-d}` and `${W:+v}` as the shell fills
+# them in, and an `if` whose condition it can tell, which runs one branch only.
+
+@test "send places: a variable set in front of a program is one that program's own command line knows" {
+    bash_in "${TOOL}" "W=${TOOL} bash -c 'cd \$W && git commit -m x'"; passed
+    bash_in "${TOOL}" "env W=${TOOL} bash -c 'cd \"\$W\" && git commit -m x'"; passed
+    bash_in "${TOOL}" "W=${TOOL} X=1 eval 'cd \$W && git commit -m x'"; passed
+    bash_in "${TOOL}" "bash -c 'cd \$W && git commit -m x'"; unread
+    bash_in "${TOOL}" "W=\$ELSEWHERE bash -c 'cd \$W && git commit -m x'"; unread
+    # the variable of one command is not the next command's
+    bash_in "${TOOL}" "W=${TOOL} true; bash -c 'cd \$W && git commit -m x'"; unread
+}
+
+@test "send places: a default and an alternative are filled in as the shell does" {
+    bash_in "${TOOL}" "W=${TOOL}; cd \${W:-\$ELSEWHERE} && git commit -m x"; passed
+    bash_in "${TOOL}" "E=; cd \${E:-${TOOL}} && git commit -m x"; passed
+    bash_in "${TOOL}" "W=${TOOL}; cd \${W:+\$W} && git commit -m x"; passed
+    bash_in "${TOOL}" "W=${TOOL}; cd \"\${W:+\$W/}\" && git commit -m x"; passed
+    bash_in "${TOOL}" "cd \${NOWHERE:-\$ELSEWHERE} && git commit -m x"; unread
+    bash_in "${TOOL}" "cd \${NOWHERE:+${TOOL}} && git commit -m x"; unread
+}
+
+@test "send places: an if whose condition can be told reads the branch that runs, and no other" {
+    local command
+    for command in "W=${TOOL}; if [ -n \"\$W\" ]; then D=\$W; else D=\$ELSEWHERE; fi; cd \$D && git commit -m x" \
+                   "if [ -z \"\" ]; then D=${TOOL}; else D=\$ELSEWHERE; fi; cd \$D && git commit -m x" \
+                   "W=${TOOL}; if [ -n \"\${W:-}\" ]; then cd \$W; elif [ -n \"\$X\" ]; then cd \$ELSEWHERE; else cd \$ELSEWHERE; fi; git commit -m x" \
+                   "if [ -n \"\"  ]; then cd \$ELSEWHERE; git commit -m x; fi" \
+                   "if [ ! -d ${H}/nowhere ]; then D=${TOOL}; else D=\$ELSEWHERE; fi; cd \$D && git commit -m x" \
+                   "if [ -d ${TOOL} ]; then D=${TOOL}; fi; cd \$D && git commit -m x" \
+                   "M=path; if [ \"\$M\" != path ]; then cd \$ELSEWHERE; git push; fi; git commit -m x" \
+                   "if [[ -n ${TOOL} ]]; then D=${TOOL}; else D=\$ELSEWHERE; fi; cd \$D && git commit -m x"; do
+        bash_in "${TOOL}" "${command}"
+        passed || { echo "refused: ${command}"; echo "${output}"; return 1; }
+    done
+}
+
+@test "send places: an if whose condition cannot be told is read branch by branch, and what its branches set is not known after" {
+    local command
+    for command in "if [ -n \"\$U\" ]; then D=${TOOL}; else D=\$ELSEWHERE; fi; cd \$D && git commit -m x" \
+                   "if [ -n \"\$U\" ]; then D=${TOOL}; fi; cd \$D && git commit -m x" \
+                   "if [ -n \"\$U\" ]; then D=${TOOL}; else D=${TOOL}/sub; fi; cd \$D && git commit -m x" \
+                   "if [ -n \"\$U\" ]; then cd \$ELSEWHERE; git commit -m x; fi" \
+                   "if git rev-parse --git-dir; then D=${TOOL}; else D=\$ELSEWHERE; fi; cd \$D && git commit -m x" \
+                   "if [ -n \"\" ]; then D=${TOOL}; elif [ -n \"\$U\" ]; then D=${TOOL}; else D=\$ELSEWHERE; fi; cd \$D && git commit -m x" \
+                   "if [ -n \"\$U\" ] && [ -z \"\" ]; then cd \$ELSEWHERE; git commit -m x; fi" \
+                   "if [ -n \"\"  ]; then D=${TOOL}; fi; cd \$D && git commit -m x" \
+                   "W=${TOOL}; if [ \"\$W\" = \"\$U\" ]; then cd \$ELSEWHERE; git commit -m x; fi" \
+                   "X=; for a in 1 2; do if [ -z \"\$X\" ]; then X=1; else cd \$ELSEWHERE; git commit -m x; fi; done" \
+                   "for a in 1; do D=${TOOL}; done; cd \$D && git commit -m x" \
+                   "case x in a) D=${TOOL};; esac; cd \$D && git commit -m x"; do
+        bash_in "${TOOL}" "${command}"
+        unread || { echo "not refused: ${command}"; echo "${output}"; return 1; }
+    done
+}

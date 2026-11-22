@@ -538,3 +538,193 @@ print(os.listdir(sys.argv[1]))'
     bash_call "for f in a; do bash put.sh ${SETTING}; done"; denied
     bash_call "for f in a; do rm ${H}/notes.txt; done"; passed
 }
+
+# A `cd` inside the branch of an if / for / while / until / case reaches only to the end of the branch, in a
+# script file as in a command line: what follows `fi`, `done` or `esac` stands where the branch began.
+
+@test "script files: a script that cleans up inside a branch is judged after it from where it began" {
+    git -C "${TOOL}" remote add origin git@github.com:o/tool.git
+    seed_visibility o/tool private
+    mkdir -p "${H}/tmp-clone" "${H}/hooks"
+    printf '#!/bin/sh\n' > "${H}/hooks/pre-push"
+    printf '[core]\n\thooksPath = %s\n' "${H}/hooks" > "${H}/.gitconfig"
+    script promote.sh '#!/bin/bash
+BASE_DIR="$1"
+BASE_CLONE="$2"
+if [ -z "$(git status --porcelain)" ]; then
+    echo "nothing to promote"
+    if [ "$MADE_WORKTREE" -eq 1 ]; then
+        cd "$BASE_CLONE"
+        git worktree remove "$BASE_DIR"
+        git branch -q -D "$FEATURE_BRANCH"
+    fi
+    exit 0
+fi
+git add -A
+git -C '"${TOOL}"' commit -m "$MSG" -q
+git -C '"${TOOL}"' push origin HEAD'
+    bash_call "bash promote.sh ${TOOL} \$HOME/tmp-clone"; passed
+    bash_call "./promote.sh ${TOOL} \$HOME/tmp-clone"; passed
+    script cases.sh 'case "$1" in
+    a) cd "$2";;
+    b|c) cd "$2"; ls;;
+esac
+for d in x y; do cd "$2"; done
+while false; do cd "$2"; done
+git commit -m x -q'
+    bash_call "bash cases.sh a \$ELSEWHERE"; passed
+}
+
+@test "script files: a send inside a branch of a script stands where the branch cd'd to" {
+    script inside.sh 'if true; then
+    cd "$ELSEWHERE"
+    git commit -m x -q
+fi'
+    bash_call "bash inside.sh"; denied; says "only known as it runs"
+    script after.sh 'cd "$ELSEWHERE"
+if true; then ls; fi
+git commit -m x -q'
+    bash_call "bash after.sh"; denied; says "only known as it runs"
+    script loop.sh 'for d in a; do cd "$ELSEWHERE"; git commit -m x -q; done'
+    bash_call "bash loop.sh"; denied; says "only known as it runs"
+    script chosen.sh 'case "$1" in
+    a) cd "$ELSEWHERE"; git commit -m x -q;;
+esac'
+    bash_call "bash chosen.sh a"; denied; says "only known as it runs"
+}
+
+@test "script files: a cd inside a branch is no reason to look for the next script where the branch went" {
+    keep_files
+    script put.sh 'echo x >> "$1"'
+    bash_call "if true; then cd ${H}; fi; bash put.sh ${SETTING}"; denied
+    says "the guard's settings"
+    bash_call "for d in a; do cd ${H}/org; done; bash put.sh ${SETTING}"; denied
+    bash_call "case x in a) cd ${H};; esac; bash put.sh ${SETTING}"; denied
+    bash_call "cd ${H}; if true; then ls; fi; bash put.sh ${SETTING}"; passed
+    bash_call "if true; then cd ${H}; bash put.sh ${SETTING}; fi"; passed
+}
+
+@test "script files: a write inside a branch lands in the folder the branch cd'd to" {
+    keep_files
+    local command
+    for command in "if true; then cd ${GUARD_CONFIG_DIR}; echo x > orders.txt; fi" \
+                   "if true; then ls; else cd ${GUARD_CONFIG_DIR}; echo x >> orders.txt; fi" \
+                   "for d in a; do cd ${GUARD_CONFIG_DIR}; rm orders.txt; done" \
+                   "case x in a) cd ${GUARD_CONFIG_DIR}; tee orders.txt < /dev/null;; esac" \
+                   "cd ${GUARD_CONFIG_DIR}; if true; then ls; fi; echo x > orders.txt"; do
+        bash_call "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    script settle.sh 'if true; then cd "$1"; fi
+echo x > orders.txt'
+    bash_call "bash settle.sh ${GUARD_CONFIG_DIR}"; passed
+    bash_call "if true; then cd ${GUARD_CONFIG_DIR}; fi; echo x > orders.txt"; passed
+    bash_call "for d in a; do cd ${GUARD_CONFIG_DIR}; done; rm orders.txt"; passed
+}
+
+# The patterns of a case are what a value is matched against: `'~/'*)` is no `~/*` that names every folder of
+# the home folder, and `/org/*)` no path the tab reads. What the branch after the `)` runs is read as ever.
+
+@test "script files: a case's patterns name no path, written in the command or in a script" {
+    export GUARD_WORK_FOLDER="${TOOL}"
+    local command
+    for command in "case \"\$c\" in '~'|'~/'*) c=x ;; esac" \
+                   "case \"\$c\" in
+                        '~'|'~/'*) c=x ;;
+                        *) c=y ;;
+                    esac" \
+                   "case \$c in ${H}/org/*) c=x;; ${H}/*|~/*|~/org/*) c=y;; esac" \
+                   "case \$c in (~/*) c=x;; esac" \
+                   "if true; then case \"\$c\" in '~/'*) c=x ;; esac; fi"; do
+        bash_call "${command}"
+        passed || { echo "refused: ${command}"; echo "${output}"; return 1; }
+    done
+    script tilde.sh 'clone="$1"
+case "$clone" in '"'~'|'~/'*"') clone="$HOME${clone#\~}" ;; esac
+echo "$clone"'
+    bash_call "bash tilde.sh \$X"; passed
+    bash_call "./tilde.sh \$X"; passed
+}
+
+@test "script files: what a case's branch runs is still read, and a word after the patterns is still a path" {
+    keep_files
+    export GUARD_WORK_FOLDER="${TOOL}"
+    local command
+    for command in "case x in a) rm ${SETTING};; esac" \
+                   "case x in '~/'*) c=1;; a|b) rm ${SETTING};; esac" \
+                   "case x in a) cat ~/org/clients/acme/received/memo.md;; esac" \
+                   "case x in a) c=1;; *) cat ~/org/clients/acme/received/memo.md; esac" \
+                   "case ~/org/clients/acme/received/memo.md in a) c=1;; esac; cat ~/org/clients/acme/received/memo.md"; do
+        bash_call "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    script drop.sh "case \"\$1\" in '~/'*) c=1;; *) rm ${SETTING};; esac"
+    bash_call "bash drop.sh x"; denied
+    says "the guard's settings"
+}
+
+# A script that picks the folder it commits from in the branches of an `if` (the shape of the one that promotes a
+# derived agent's files to its base): the folder is known when the command that runs it sets the variable
+# the first condition reads, and is only known as it runs when it does not.
+PICK_FOLDER='#!/bin/bash
+BASE_CLONE="${BASE_CLONE:-${AGENT_PLATFORM_ROOT:+$AGENT_PLATFORM_ROOT/tools/agent-template}}"
+MODE=clone
+if [ -n "${BASE_REPO_PATH:-}" ]; then
+    BASE_DIR="$BASE_REPO_PATH"
+    MODE=path
+    if [ ! -d "$BASE_DIR" ]; then
+        echo "error: $BASE_DIR does not exist" >&2
+        exit 1
+    fi
+elif [ -n "$BASE_CLONE" ] && git -C "$BASE_CLONE" rev-parse --git-dir > /dev/null 2>&1; then
+    MODE=worktree
+    BASE_DIR="$BASE_CLONE.worktrees/$FEATURE_BRANCH"
+    git -C "$BASE_CLONE" worktree add -q "$BASE_DIR" "$FEATURE_BRANCH"
+else
+    TMP_DIR="$(mktemp -d)"
+    BASE_DIR="$TMP_DIR/agent-template"
+    git clone "$URL" "$BASE_DIR"
+fi
+cd "$BASE_DIR"
+git add -A
+git commit -m "$1" -q
+if [ "$MODE" != path ]; then
+    git push -u origin "$FEATURE_BRANCH"
+fi'
+
+@test "script files: a script that picks its folder in the branches of an if is read from the folder its command gives it" {
+    git -C "${TOOL}" remote add origin git@github.com:o/tool.git
+    seed_visibility o/tool private
+    mkdir -p "${H}/hooks"
+    printf '#!/bin/sh\n' > "${H}/hooks/pre-push"
+    printf '[core]\n\thooksPath = %s\n' "${H}/hooks" > "${H}/.gitconfig"
+    script promote.sh "${PICK_FOLDER}"
+    bash_call "BASE_REPO_PATH=${TOOL} FEATURE_BRANCH=feature/x bash promote.sh msg"; passed
+    bash_call "env BASE_REPO_PATH=${TOOL} FEATURE_BRANCH=feature/x bash promote.sh msg"; passed
+    bash_call "BASE_REPO_PATH=${TOOL} ./promote.sh msg"; passed
+    bash_call "BASE_REPO_PATH=${TOOL} bash -c 'bash promote.sh msg'"; passed
+    bash_call "bash promote.sh msg"; denied; says "only known as it runs (\$BASE_DIR)"
+    bash_call "FEATURE_BRANCH=feature/x bash promote.sh msg"; denied; says "only known as it runs (\$BASE_DIR)"
+    bash_call "BASE_REPO_PATH= bash promote.sh msg"; denied; says "only known as it runs (\$BASE_DIR)"
+    bash_call "BASE_REPO_PATH=\$ELSEWHERE bash promote.sh msg"; denied; says "only known as it runs"
+}
+
+@test "script files: the branch a script's condition does not choose is not read, and one it cannot tell is" {
+    git -C "${TOOL}" remote add origin git@github.com:o/tool.git
+    seed_visibility o/tool private
+    mkdir -p "${H}/hooks"
+    printf '#!/bin/sh\n' > "${H}/hooks/pre-push"
+    printf '[core]\n\thooksPath = %s\n' "${H}/hooks" > "${H}/.gitconfig"
+    script chosen.sh 'if [ -n "$1" ]; then
+    cd "$ELSEWHERE"
+    git commit -m x -q
+fi'
+    script told.sh 'if [ -z "${FOLDER:-}" ]; then
+    cd "$ELSEWHERE"
+    git commit -m x -q
+fi'
+    bash_call "bash told.sh"; denied; says "only known as it runs"
+    bash_call "FOLDER=${TOOL} bash told.sh"; passed
+    bash_call "env FOLDER=${TOOL} bash told.sh"; passed
+    bash_call "bash chosen.sh x"; denied
+}

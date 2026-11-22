@@ -95,6 +95,7 @@ nothing.
 
 from __future__ import annotations
 
+import dataclasses
 import fnmatch
 import functools
 import glob
@@ -106,7 +107,7 @@ import re
 import shlex
 import sys
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -593,13 +594,17 @@ def said(command: str, depth: int = 0):
             yield from text.splitlines()
 
     try:
-        commands = list(simple_commands(line))
+        commands = list(stepped_commands(line))
     except ValueError:
         # An unclosed quote: the words cannot be told from the sentences, so every run of the line
         # between spaces and quotes is taken as a word.
         yield from re.split(r"""[\s'"`]+""", line)
         commands = []
-    for words, redirects, here in commands:
+    nesting = Nesting()
+    for all_words, redirects, here, ended_by in commands:
+        nesting.before(all_words)
+        words = nesting.unlabelled(all_words)       # a case's patterns are matched against, not read
+        nesting.after(ended_by)
         yield from (target for _, target in redirects)
         rest = words
         while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT or rest[0] in KEYWORDS):
@@ -733,6 +738,8 @@ ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 DECLARES = {"export", "local", "declare", "typeset", "readonly"}
 VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 UNKNOWN = re.compile(r"[$`]")
+NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+PARAMETER = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(?::([-+])(.*))?", re.S)
 # A string of inline code that may be a relative path: one word, with no quote inside.
 CODE_WORD = re.compile(r"""[^'"`\s]+""")
 # A media type (`application/json`, the value of a header): one of the registered top-level types
@@ -768,17 +775,245 @@ def code_paths(code: str, cwd: str) -> list[str]:
     return found
 
 
-class Standing:
+# The kinds of place a command line stands inside: a `( ... )` subshell, the branch of an if / for / while /
+# until / case (`then`, `do`, `else`, a case pattern, up to the word that ends it), and the `case` itself
+# between its `in` and its `esac` (where the next `)` closes a pattern, not a subshell).
+SUBSHELL = "subshell"
+BRANCH = "branch"
+CASE = "case"
+# The words that open a branch, and those that end the branch before them (`else` does both).
+BRANCH_OPENS = {"then", "do"}
+BRANCH_ENDS = {"elif", "fi", "done"}
+
+
+def expanded(text: str, lookup: Callable[[str], str | None]) -> str:
+    """The text with each variable written out as `lookup` knows it (`$D`, `${D}`, `${D:-word}`,
+    `${D:+word}`, the word expanded in turn). One `lookup` does not know (None), and any other
+    expansion (`$(...)`, `${#D}`, `$1`), stays as written, so the text still holds a `$` the reader
+    takes as a value it cannot know."""
+    out: list[str] = []
+    at = 0
+    while at < len(text):
+        if text[at] != "$":
+            out.append(text[at])
+            at += 1
+            continue
+        end = at + 1
+        if text.startswith("${", at):
+            depth = 0
+            for end, char in enumerate(text[at + 1:], at + 1):
+                depth += (char == "{") - (char == "}")
+                if depth == 0:
+                    break
+            else:
+                out.append(text[at:])
+                break
+            parameter = PARAMETER.fullmatch(text[at + 2:end])
+            end += 1
+        elif parameter := NAME.match(text, at + 1):
+            end = parameter.end()
+            parameter = PARAMETER.fullmatch(parameter.group(0))
+        if not parameter or (value := lookup(parameter.group(1))) is None:
+            out.append(text[at:end] if end > at + 1 else "$")
+        elif parameter.group(2) == "-":
+            out.append(value or expanded(parameter.group(3), lookup))
+        elif parameter.group(2) == "+":
+            out.append(expanded(parameter.group(3), lookup) if value else "")
+        else:
+            out.append(value)
+        at = end
+    return "".join(out)
+
+
+def test_result(words: list[str], here: str) -> bool | None:
+    """Whether a `[ ... ]` (or `[[ ... ]]`) test is true or false, when every word is written out: `-n` / `-z`
+    a string, `-d` / `-f` / `-e` a path (from `here`), two strings `=` / `==` / `!=`, a lone string, and a
+    `!` in front. None for any other test, and for a word that still holds a `$` or a backtick."""
+    closing = {"[": "]", "[[": "]]"}.get(words[0]) if words else None
+    if closing is None or words[-1] != closing or any(UNKNOWN.search(w) for w in words):
+        return None
+    body = words[1:-1]
+    negated = False
+    while body[:1] == ["!"]:
+        negated, body = not negated, body[1:]
+    if len(body) == 1:
+        result = bool(body[0])
+    elif len(body) == 2 and body[0] in ("-n", "-z"):
+        result = bool(body[1]) == (body[0] == "-n")
+    elif len(body) == 2 and body[0] in ("-d", "-f", "-e"):
+        path = Path(os.path.expanduser(body[1]))
+        path = path if path.is_absolute() else Path(here) / path
+        result = {"-d": path.is_dir, "-f": path.is_file, "-e": path.exists}[body[0]]()
+    elif len(body) == 3 and body[1] in ("=", "==", "!="):
+        result = (body[0] == body[2]) == (body[1] != "!=")
+    else:
+        return None
+    return result != negated
+
+
+class Scope(NamedTuple):
+    """A place a command line stood inside that has just closed: its kind (SUBSHELL, BRANCH), what the
+    reader carried when it opened, and whether it is a branch of an `if` that its condition did not decide
+    (it may not have run)."""
+
+    kind: str
+    carried: object
+    uncertain: bool = False
+
+
+class _Opened(NamedTuple):
+    kind: str
+    carried: object
+    saved: object
+    skipped: bool
+    uncertain: bool
+    loop: bool
+
+
+@dataclasses.dataclass
+class _Chain:
+    """An `if` up to its `fi`: whether a branch before is certain to run (`taken`), whether one that is not
+    certain was read (`undecided`), and what the condition just read said (`condition`)."""
+
+    taken: bool
+    undecided: bool = False
+    condition: bool | None = None
+
+
+class Nesting:
+    """What a command line is inside as it is read in order: a `( ... )` subshell, or the branch of an if /
+    for / while / until / case. A reader calls `before` with each command's words and `after` with the
+    operator that ends it, and takes back what those return.
+
+    The words of a case's patterns (`a|b)`, `'~/'*)`) are labels, patterns the shell matches a value
+    against, not paths and not commands: `labels` is the ones of the command last given to `before`, which
+    a reader leaves unread.
+
+    With `decide` (the words of an `if` or `elif` condition -> True, False, or None when they cannot be told),
+    a branch whose condition is decided False, or that comes after one certain to run, is `skipping`: a
+    reader leaves its commands unread, as the shell does not run them. Inside a loop no condition is
+    decided (what the loop sets reaches the next round), and the branch of a loop or a case is one that
+    may not run."""
+
+    def __init__(self, decide: Callable[[list[str]], bool | None] | None = None) -> None:
+        self._opened: list[_Opened] = []
+        self._chains: list[_Chain] = []
+        self._decide = decide
+        self.labels: list[str] = []
+
+    @property
+    def skipping(self) -> bool:
+        """Whether the command being read is in a branch that does not run."""
+        return bool(self._opened) and self._opened[-1].skipped
+
+    def before(self, words: list[str], carried: object = None, *, ended_by: str = "") -> list[Scope]:
+        """A command is about to be read: the shell words it begins with open or end a branch (`then`,
+        `do` open one; `elif`, `fi`, `done` end it; `else` ends the one before and opens the next; `case ... in`
+        starts a case and `esac` ends it). `carried` is what the reader wants given back when a branch
+        it opens here closes; `ended_by` is the operator that ends the command, which a condition read
+        by `decide` must end with. Returns the scopes this closed, innermost first."""
+        word = words[0] if words else ""
+        closed: list[Scope] = []
+        self.labels = list(words) if self._top() == CASE and word != "esac" else []
+        if word in BRANCH_ENDS or word in ("else", "esac"):
+            closed += self._close(BRANCH)
+        if word == "fi" and self._chains:
+            self._chains.pop()
+        if word == "esac" and self._top() == CASE:
+            self._opened.pop()
+        if word == "else" and closed:
+            carried = closed[-1].carried
+        leading = list(itertools.takewhile(lambda w: w in KEYWORDS, words))
+        for at, keyword in enumerate(leading):
+            self._read_keyword(keyword, words[at + 1:] if ended_by in ("", ";") else [], carried)
+        command = words[len(leading):]
+        if command[:1] == ["case"] and "in" in command:      # `then case ...`
+            self.labels = command[command.index("in") + 1:]
+            self._open(CASE, carried)
+        return closed
+
+    def after(self, ended_by: str, carried: object = None) -> list[Scope]:
+        """A command ended by this operator was read: `(` opens a subshell and `)` closes it, except that
+        between a case's `in` and its pattern's `)` they are the pattern's own, and that `)` opens the
+        pattern's branch, which `;;` ends. Returns the scopes this closed."""
+        top = self._top()
+        if ended_by == "(" and top != CASE:
+            self._open(SUBSHELL, carried)
+        elif ended_by == ")" and top == CASE:
+            self._open(BRANCH, carried, uncertain=True)
+        elif ended_by == ")":
+            return self._close(SUBSHELL)
+        elif ended_by == ";;":
+            return self._close(BRANCH)
+        return []
+
+    def unlabelled(self, words: list[str]) -> list[str]:
+        """The words of the command last given to `before`, less its case labels."""
+        return words[:len(words) - len(self.labels)]
+
+    def _read_keyword(self, keyword: str, condition: list[str], carried: object) -> None:
+        """One shell word at the start of a command: `if` and `elif` read their condition, `then`, `else`
+        and `do` open the branch they begin."""
+        chain = self._chains[-1] if self._chains else None
+        if keyword == "if":
+            self._chains.append(_Chain(taken=self.skipping))
+            self._chains[-1].condition = self._decided(condition)
+        elif keyword == "elif" and chain:
+            chain.condition = self._decided(condition)
+        elif keyword == "then" and chain:
+            skipped = chain.taken or chain.condition is False
+            uncertain = chain.undecided or chain.condition is None
+            chain.taken = chain.taken or (chain.condition is True and not skipped)
+            chain.undecided = chain.undecided or (chain.condition is None and not skipped)
+            self._open(BRANCH, carried, skipped=skipped, uncertain=uncertain and not skipped)
+        elif keyword == "else" and chain:
+            self._open(BRANCH, carried, skipped=chain.taken, uncertain=chain.undecided and not chain.taken)
+        elif keyword == "do":
+            self._open(BRANCH, carried, uncertain=True, loop=True)
+        elif keyword in BRANCH_OPENS or keyword == "else":
+            self._open(BRANCH, carried)
+
+    def _decided(self, condition: list[str]) -> bool | None:
+        if self.skipping or self._decide is None or not condition or any(o.loop for o in self._opened):
+            return None
+        return self._decide(condition)
+
+    def _top(self) -> str | None:
+        return self._opened[-1].kind if self._opened else None
+
+    def _open(self, kind: str, carried: object, *, skipped: bool = False, uncertain: bool = False,
+              loop: bool = False) -> None:
+        self._opened.append(_Opened(kind, carried, self._save(), skipped or self.skipping, uncertain, loop))
+
+    def _close(self, kind: str) -> list[Scope]:
+        """The innermost place closes when it is of this kind."""
+        if self._top() != kind:
+            return []
+        opened = self._opened.pop()
+        self._restore(opened.saved)
+        return [Scope(opened.kind, opened.carried, opened.uncertain)]
+
+    def _save(self) -> object:
+        """What a reader that keeps a place of its own gives back when a scope closes."""
+        return None
+
+    def _restore(self, saved: object) -> None:
+        """Take back what `_save` gave."""
+
+
+class Standing(Nesting):
     """Where a command line stands as it is read in order: `cd`, `pushd` / `popd` move it, and a
-    `( ... )` subshell gives the place back when it closes.
+    `( ... )` subshell or the branch of an if / for / while / until / case gives the place back when it
+    closes (`if x; then cd a; fi; git push` pushes where it started; see Nesting).
 
     The writes (named), the sends (sends_of) and the recursive reads (recursive_reads) all follow it,
     so a relative name is judged from the same folder by all three."""
 
-    def __init__(self, cwd: str, *, unknown_stays: bool = True) -> None:
+    def __init__(self, cwd: str, *, unknown_stays: bool = True,
+                 decide: Callable[[list[str]], bool | None] | None = None) -> None:
+        super().__init__(decide)
         self.here = self.previous = str(real(cwd))
         self.dirs: list[str] = []
-        self._subshells: list[tuple[str, str, list[str], object]] = []
         self._unknown_stays = unknown_stays
 
     def move(self, tool: str, args: list[str]) -> bool:
@@ -801,20 +1036,11 @@ class Standing:
             return True
         return False
 
-    def open(self, carried: object = None) -> None:
-        """A subshell opens: remember the place, and whatever else the reader keeps per subshell."""
-        self._subshells.append((self.here, self.previous, list(self.dirs), carried))
+    def _save(self) -> object:
+        return self.here, self.previous, list(self.dirs)
 
-    def inside(self) -> bool:
-        """Whether a subshell is open."""
-        return bool(self._subshells)
-
-    def close(self) -> object:
-        """A subshell closes: the place it opened at comes back, with what was carried (= None when none is open)."""
-        if not self._subshells:
-            return None
-        self.here, self.previous, self.dirs, carried = self._subshells.pop()
-        return carried
+    def _restore(self, saved: object) -> None:
+        self.here, self.previous, self.dirs = saved
 
 
 # How far an order that takes a folder away, replaces it or fills it reaches into the folders that hold
@@ -964,17 +1190,15 @@ def named_with_folders(command: str, cwd: str, depth: int = 0) -> tuple[list[Pat
     # read from where the command started.
     waiting = list(fed)
     for index, (words, redirects, stdin, ended_by) in enumerate(commands):
+        standing.before(words)
         written.extend((filled(target), standing.here) for operator, target in redirects if ">" in operator)
-        one(words, stdin, fed_files(redirects, commands[index - 1] if index else None))
+        one(standing.unlabelled(words), stdin, fed_files(redirects, commands[index - 1] if index else None))
         for operator, _ in redirects:
             if operator in ("<<", "<<-") and waiting:
                 run(*waiting.pop(0), standing.here)
-        if ended_by == "(":
-            standing.open(dict(values))
-        elif ended_by == ")":
-            carried = standing.close()
-            if carried is not None:
-                values = carried
+        for scope in standing.after(ended_by, dict(values)):
+            if scope.kind == SUBSHELL:      # a variable set inside a branch stays set, as the shell keeps it
+                values = scope.carried
     for program, body in waiting:
         run(program, body, str(real(cwd)))
 
@@ -1024,7 +1248,8 @@ def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
     found: list[tuple[str, str, str, list[str]]] = []
     standing = Standing(cwd)
     for index, (words, redirects, _, ended_by) in enumerate(steps):
-        rest = words
+        standing.before(words)
+        rest = standing.unlabelled(words)
         while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT or rest[0] in KEYWORDS):
             rest = rest[1:]
         if rest and not standing.move(os.path.basename(rest[0]), rest[1:]):
@@ -1038,10 +1263,7 @@ def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
                     [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
                 for code in codes:
                     found += ran_scripts_with_arguments(code, here, depth + 1, fed_only=fed_only)
-        if ended_by == "(":
-            standing.open()
-        elif ended_by == ")":
-            standing.close()
+        standing.after(ended_by)
     return found
 
 
@@ -1335,11 +1557,9 @@ def recursive_reads(command: str, cwd: str, depth: int = 0) -> list[tuple[Path, 
     found: list[tuple[Path, list[str]]] = []
     standing = Standing(cwd)
     for index, (words, _, _, ended_by) in enumerate(steps):
-        found += _walked(words, steps, index, standing, depth)
-        if ended_by == "(":
-            standing.open()
-        elif ended_by == ")":
-            standing.close()
+        standing.before(words)
+        found += _walked(standing.unlabelled(words), steps, index, standing, depth)
+        standing.after(ended_by)
     return found
 
 
@@ -1439,7 +1659,8 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
     return send_places(command, cwd)[0]
 
 
-def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path, list[str]]], list[str], list[str]]:
+def send_places(command: str, cwd: str, depth: int = 0, *,
+                known: dict[str, str | None] | None = None) -> tuple[list[tuple[Path, list[str]]], list[str], list[str]]:
     """(every send in a command -- git commit / push, a sending gh call -- as (repository it runs
     in, arguments naming its destination for corpus-scan), the words that leave a send's folder
     to be known only as the command runs, the commits whose options switch their hooks off
@@ -1452,9 +1673,16 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
     (script_files), is read the same way from where it runs.
 
     A variable the command line set to a literal before (`W=/a/b; cd $W`) is written out, and one
-    of the session's environment (`$HOME`) too. A folder still spelled with a variable or a
-    substitution after that (`cd $W` with W set elsewhere, `git -C "$(...)"`) cannot be read: a
-    send that stands there goes to the second list, until a `cd` to a folder written out."""
+    of the session's environment (`$HOME`) too, and `${W:-d}` / `${W:+v}` as the shell fills them in. What
+    stands before a program in the command (`W=/a/b bash run.sh`, `env W=/a/b bash run.sh`) is a
+    variable the program's own command line knows, and the programs it runs in turn (`known`). A
+    folder still spelled with a variable or a substitution after that (`cd $W` with W set elsewhere,
+    `git -C "$(...)"`) cannot be read: a send that stands there goes to the second list, until a `cd` to a
+    folder written out.
+
+    An `if` whose condition can be told (`[ -n "$W" ]`, `[ -d /a/b ]`, see test_result), outside a loop, runs
+    one branch: the others are not read. One it cannot tell is read branch by branch, and a variable set in
+    a branch that may not have run (that, a loop's or a case's) is one the command line no longer knows."""
     try:
         words = shell_words(command)
     except ValueError:
@@ -1470,14 +1698,19 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
             found += sends
             unread += unreadable
             skipping += skips
-    standing = Standing(cwd, unknown_stays=False)
-    values: dict[str, str] = {}
+    values: dict[str, str | None] = dict(known or {})      # None: set to something this line cannot read
+    environment = dict(known or {})     # what the programs this line runs inherit, besides their own prefix
     lost: str | None = None            # the word that took the command where it cannot be read
     pushed: list[str | None] = []
 
     def filled(word: str) -> str:
         """The word with the variables this command line set to a literal, and the environment's, written out."""
-        return os.path.expandvars(VARIABLE.sub(lambda m: values.get(m.group(1) or m.group(2), m.group(0)), word))
+        return expanded(word, lambda name: values[name] if name in values else os.environ.get(name))
+
+    def decide(condition: list[str]) -> bool | None:
+        return test_result([filled(word) for word in condition], standing.here)
+
+    standing = Standing(cwd, unknown_stays=False, decide=decide)
 
     def unknown(place: str, before: str | None) -> str | None:
         """What leaves a folder unread once the command goes to `place` from where `before` left it."""
@@ -1487,21 +1720,21 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
 
     def run(argv: list[str]) -> None:
         nonlocal lost
-        argv = [filled(w) for w in argv]
+        argv = [filled(w) for w in itertools.dropwhile(lambda w: w in KEYWORDS, argv)]
         assigned = argv[argv[0] in DECLARES:] if argv else []
         if assigned and all(ASSIGNMENT.fullmatch(w) for w in assigned):
             # `W=/a/b` alone on its command (or after export / local): later words may spell it $W.
             for word in assigned:
                 name, _, value = word.partition("=")
-                if UNKNOWN.search(value):
-                    values.pop(name, None)
-                else:
-                    values[name] = value
+                values[name] = None if UNKNOWN.search(value) else value
             return
-        # Skip what stands before the command: shell keywords (`do git push`), assignments
-        # (`FOO=1 git ...`) and commands that run the next one (`sudo`, `env`, `nohup`, ...).
+        # Skip what stands before the command: assignments (`FOO=1 git ...`) and commands that run the
+        # next one (`sudo`, `env`, `nohup`, ...). The assignments are variables of the program it runs.
+        prefix: dict[str, str | None] = {}
         while argv:
-            if argv[0] in KEYWORDS or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0]):
+            if ASSIGNMENT.fullmatch(argv[0]):
+                name, _, value = argv[0].partition("=")
+                prefix[name] = None if UNKNOWN.search(value) else value
                 argv = argv[1:]
             elif os.path.basename(argv[0]) in WRAPPERS:
                 argv = argv[1:]
@@ -1526,7 +1759,7 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
         def inner(code: str) -> None:
             if depth >= NESTED:
                 return
-            sends, unreadable, skips = send_places(code, str(here), depth + 1)
+            sends, unreadable, skips = send_places(code, str(here), depth + 1, known={**environment, **prefix})
             found.extend([] if lost else sends)
             unread.extend([lost] * len(sends) if lost else [])
             unread.extend(unreadable)
@@ -1582,17 +1815,26 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
             rest = rest[len(op):]
         return out
 
+    def restore(scope: Scope) -> None:
+        """A place closed: the command goes back to where it opened. A variable a branch that may not have
+        run set is one the command line no longer knows."""
+        nonlocal lost
+        lost, before = scope.carried
+        if scope.uncertain:
+            values.update({name: None for name, value in values.items() if before.get(name, False) != value})
+
     current: list[str] = []
     for w in [p for word in words for p in pieces(word)] + [";"]:
         if w not in breaks:
             current.append(w)
             continue
-        run(current)
+        for scope in standing.before(current, (lost, dict(values)), ended_by=w):
+            restore(scope)
+        if not standing.skipping:
+            run(standing.unlabelled(current))
         current = []
-        if w == "(":
-            standing.open(lost)
-        elif w == ")" and standing.inside():
-            lost = standing.close()
+        for scope in standing.after(w, (lost, dict(values))):
+            restore(scope)
     return found, unread, skipping
 
 
