@@ -116,6 +116,7 @@ import code_writes  # noqa: E402
 import commit_options  # noqa: E402
 import commit_scope  # noqa: E402
 import guard_places  # noqa: E402
+import monitor_calls  # noqa: E402
 import records  # noqa: E402
 import script_arguments  # noqa: E402
 import script_files  # noqa: E402
@@ -2258,6 +2259,7 @@ def main() -> int:
     if tool not in HELD_RUNS and order_module().held(event.get("transcript_path")):
         deny(HELD)
         return 0
+    tool, args = monitor_calls.as_shell(tool, args)
     tab = os.environ.get("PWA_SID")
     if areas:
         children.registry.save_session(tab, session)

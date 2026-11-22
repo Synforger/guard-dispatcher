@@ -774,6 +774,11 @@ step earlier, before each tool call, from the same `areas.txt`:
   no yes but one the operator gave in the sending tab, see *A message relayed with
   the operator's answer*), and a block shown for a send is no block for a change. With no
   `orders.txt`, nothing is approved.
+- **A watch the Monitor tool starts** is judged as the Bash call of its
+  command: what it reads, writes, sends and needs the operator for. A socket it
+  listens to is judged as a client listening at that address, and subprotocols
+  as a message sent there. A block shown with `tool: Bash` and that command
+  passes the watch that runs it.
 - **The operator may hand the upkeep of some settings to the agent**, when the
   settings grow with every area and every false alarm: `agent-writes.txt` names
   them, one per line (`destinations.txt`, `patterns/`, `*` for all). A session
