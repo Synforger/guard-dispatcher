@@ -23,7 +23,7 @@ from pathlib import Path
 
 def swap(source: Path, link: Path) -> None:
     """Point `link` at `source`: untouched when it already does, else a fresh link renamed over it."""
-    if link.is_symlink() and os.readlink(link) == str(source):
+    if link.is_symlink() and _points_at(link, source):
         return
     if link.exists() and not link.is_symlink():
         if link.is_dir():
@@ -35,6 +35,14 @@ def swap(source: Path, link: Path) -> None:
         passing.unlink()
     passing.symlink_to(source)
     os.replace(passing, link)
+
+
+def _points_at(link: Path, source: Path) -> bool:
+    """Whether `link` reads as `source`: a link that cannot be read, as another install moves it, does not."""
+    try:
+        return os.readlink(link) == str(source)
+    except OSError:
+        return False
 
 
 def make_folder(folder: Path) -> None:
@@ -52,7 +60,11 @@ def prune(folder: Path, kept: set[Path]) -> None:
     # A file system that does not tell case apart lists a renamed-over link under the name it had.
     laid = {link.lstat().st_ino for link in kept}
     for entry in others:
-        if entry.lstat().st_ino not in laid:
+        try:
+            inode = entry.lstat().st_ino
+        except FileNotFoundError:
+            continue  # the passing link of another install, renamed into its place since the listing
+        if inode not in laid:
             entry.unlink()
 
 
