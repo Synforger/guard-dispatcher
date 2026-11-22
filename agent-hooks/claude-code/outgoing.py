@@ -93,6 +93,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_events  # noqa: E402
 import code_writes  # noqa: E402
 import curl_options  # noqa: E402
+import destination_words  # noqa: E402
 import local_names  # noqa: E402
 import script_files  # noqa: E402
 from service_reads import rclone_reads  # noqa: E402
@@ -155,40 +156,62 @@ CURL_CREDENTIALS = {"-u", "--user"}
 CREDENTIAL_HEADER = "authorization:"
 # curl options that read more options (a body, headers, the URL) from a file.
 CURL_CONFIG = {"-K", "--config"}
+CURL_PATTERNS_OFF = {"-g", "--globoff"}
 WGET_BODY = {"--post-data", "--post-file", "--body-data", "--body-file"}
 SENDING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 # Words of a shell command that end one command and start the next.
 SHELL_BREAK = {"&&", "||", ";", "|", "&", "|&", ";;", "(", ")"}
 
 
+# The destination of an address that cannot be listed or read: judged like a send whose destination
+# the command only names as it runs, which it takes no body to.
+UNREAD = "host:?"
+UNREAD_WHY = "an address with more hosts than can be listed, or with a host that cannot be read"
+
+
 def place_of(url: str, send_scan: Path) -> str:
-    """A URL's destination name: `host:<host>`, or `local:<port><path>` when it names this
-    machine. A service on this machine is not a send out of it, so no line of destinations.txt
-    reaches a `local:` name unless it names one (see send-scan.py): the operator declares the
-    local endpoints an agent must not reach, such as one that types into a terminal as the
-    operator would. Those it blocks are blocked by every name the endpoint answers to
-    (local_names); an address no line blocks keeps the name it is written with."""
+    """The first of `places_of` the address names, or "" when it names none or cannot be read."""
+    return next((name for name in places_of(url, send_scan) if name != UNREAD), "")
+
+
+def places_of(word: str, send_scan: Path, *, globbing: bool = False) -> list[str]:
+    """The destination names an address stands for: `host:<host>`, or `local:<port><path>` when it
+    names this machine. A service on this machine is not a send out of it, so no line of
+    destinations.txt reaches a `local:` name unless it names one (see send-scan.py): the operator
+    declares the local endpoints an agent must not reach, such as one that types into a terminal as
+    the operator would. Those it blocks are blocked by every name the endpoint answers to
+    (local_names); an address no line blocks keeps the name it is written with.
+
+    With `globbing` the patterns curl expands stand for every address they expand to. UNREAD stands
+    for an address that cannot be read; so does one on this machine whose path cannot be listed."""
+    expansion = destination_words.expand(word) if globbing else destination_words.Expansion([word], True)
+    if expansion is None:
+        return [UNREAD]
+    names = []
+    for url in expansion.urls:
+        for name in names_of(url, send_scan):
+            names.append(UNREAD if name.startswith("local:") and not expansion.exact else name)
+    return list(dict.fromkeys(names))
+
+
+def names_of(url: str, send_scan: Path) -> list[str]:
+    """The destination names of one address, one for each way its host reads."""
     if name := blocked_here(url, send_scan):
-        return name
-    try:
-        parts = urlsplit(url if "://" in url else f"http://{url}")
-        host = parts.hostname or ""
-    except ValueError:   # a word that is no URL (`[` of a JSON body): no destination
-        return ""
-    if host not in LOOPBACK:
-        return f"host:{host}" if host else ""
-    try:
-        port = parts.port
-    except ValueError:
-        port = None
-    return f"local:{port or (443 if parts.scheme in ('https', 'wss') else 80)}{parts.path or '/'}"
+        return [name]
+    if (readings := destination_words.read(url)) is None:
+        return [UNREAD]
+    return [f"host:{reading.host}" if reading.host not in LOOPBACK else
+            f"local:{reading.port or (443 if reading.scheme in ('https', 'wss') else 80)}{reading.path or '/'}"
+            for reading in readings]
 
 
 @functools.cache
 def blocked_here(url: str, send_scan: Path) -> str | None:
     """The name a line blocks, of those the address answers to on this machine, else None. Each address,
     and the destination lines, are read once a call of the hook."""
-    if not (candidates := local_names.names(url)):
+    readings = destination_words.read(url) or []
+    if not (candidates := tuple(dict.fromkeys(
+            [*local_names.names(url), *(name for reading in readings for name in local_names.names(reading.plain))]))):
         return None
     judged = destinations_read_once(send_scan)
     try:
@@ -212,8 +235,7 @@ def reads_by_path(url: str) -> bool:
     `/v1/databases/<id>/query`, `search.messages`). An API that searches or queries with a body
     takes it by POST, so the method alone cannot tell. A path with no such verb sends
     (`/v1/pages`, `/graphql`), and so does one with a verb of both kinds."""
-    path = urlsplit(url if "://" in url else f"http://{url}").path
-    words = [word.lower() for word in TOOL_WORD.findall(path)]
+    words = [word.lower() for word in TOOL_WORD.findall(destination_words.path_of(url))]
     return any(word in READING for word in words) and not any(word in WRITING for word in words)
 
 
@@ -500,6 +522,7 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
         body_flags = CURL_BODY if tool == "curl" else WGET_BODY
         takes_value = CURL_TAKES_VALUE if tool == "curl" else WGET_BODY
         j, body, unreadable, urls, method, unknown = 1, [], [], [], None, None
+        patterns_off = next_transfer = False
         if tool == "curl":
             config = curl_options.default_config(words)
             words, unknown = curl_options.curl_words(words)
@@ -552,28 +575,38 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
                 elif expands(value) and flag not in CURL_CREDENTIALS and \
                         not value.strip().lower().startswith(CREDENTIAL_HEADER):
                     unknown = "a substitution or a variable"
+            elif tool == "curl" and w in CURL_PATTERNS_OFF:
+                patterns_off = True
+            elif tool == "curl" and w == "--next":
+                next_transfer = True
             elif not w.startswith("-"):
                 urls.append(w)
                 if expands(w):
                     unknown = "a substitution or a variable"
             j += 2 if takes else 1
-        places = [p for p in (place_of(u, send_scan) for u in urls) if p]
+        # curl expands the patterns of an address unless told not to (and a later transfer of the
+        # same command line may not be told): wget does not.
+        readings = (False,) if tool != "curl" or (patterns_off and not next_transfer) else \
+            (True,) if not patterns_off else (True, False)
+        places = list(dict.fromkeys(name for u in urls for globbing in readings
+                                    for name in places_of(u, send_scan, globbing=globbing)))
         # A POST whose path reads (a search, a query) to a service out of this machine: its body
         # and its URL still reach the service and are scanned, but it changes nothing there. An
         # endpoint of this machine is an action here whatever its path says.
-        reads = (method in (None, "POST") and bool(places) and all(p.startswith("host:") for p in places)
-                 and all(reads_by_path(u) for u in urls))
+        reads = (method in (None, "POST") and bool(places) and UNREAD not in places
+                 and all(p.startswith("host:") for p in places) and all(reads_by_path(u) for u in urls))
         if not (body or unknown or method in SENDING_METHODS):
             # A fetch: its URL -- the path and the query -- still reaches the host.
             # Decoded as well: `+` and `%20` hide the words a query carries.
             text = "\n".join(urls + [unquote_plus(u) for u in urls])
-            out += [Send(p, text, [], reading=True) for p in places]
+            out += [Send(p, text, [], UNREAD_WHY if p == UNREAD else None, reading=True) for p in places]
             continue
         if unknown and not places:
             out.append(Send("host:?", "", unreadable, unknown))
         for place in places:
             carried = body + (urls + [unquote_plus(u) for u in urls] if reads else [])
-            out.append(Send(place, "\n".join(carried), unreadable, unknown, reading=reads))
+            out.append(Send(place, "\n".join(carried), unreadable,
+                            UNREAD_WHY if place == UNREAD and not unknown else unknown, reading=reads))
     return out
 
 
@@ -627,8 +660,8 @@ def split_options(words: list[str], short_valued: set[str], long_valued: set[str
 def remote_host(arg: str) -> str | None:
     """The host of a remote path (`user@host:path`, `host::module`, `scp://`/`rsync://` URLs), or
     None for a local path."""
-    if "://" in arg:
-        return urlsplit(arg).hostname
+    if destination_words.SCHEME.match(arg):
+        return next((reading.host for reading in destination_words.read(arg) or []), None)
     head, colon, _ = arg.partition(":")
     if not colon or "/" in head or not head:
         return None
@@ -639,8 +672,8 @@ def remote_path(arg: str) -> str | None:
     """The path a remote argument names on its host: absolute (`host:/srv/x`, `scp://host/srv/x`), or
     under the remote home as `~/…` (`host:~/x`, and `host:x`, which scp and rsync read from the home),
     or None (an rsync module, a local path)."""
-    if "://" in arg:
-        path = urlsplit(arg).path
+    if destination_words.SCHEME.match(arg):
+        path = destination_words.path_of(arg)
     elif "::" in arg or remote_host(arg) is None:
         return None
     else:
@@ -810,7 +843,7 @@ def http_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]
     if not positional:
         return []
     url, items = positional[0], positional[1:]
-    place = place_of(f"http://localhost{url}" if url.startswith(":") else url, send_scan)
+    places = places_of(f"http://localhost{url}" if url.startswith(":") else url, send_scan)
     texts, unreadable = [], []
     for item in items:
         m = re.match(r"^([^=:@]*)(:=@|=@|@|:=|==|=|:)(.*)$", item)
@@ -823,13 +856,13 @@ def http_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]
     text, files, unknown = stdin_payload(stdin, cwd, send_scan)
     unknown = unknown or ("a substitution or a variable" if any(expands(i) for i in items) else None)
     unknown = unknown or (EXPANDED_NAME if any(globs(i) and "@" in i for i in items) else None)
-    if not place:
-        return []
     if not (items or stdin or method in SENDING_METHODS):
         # A fetch, as curl's: its URL still reaches the host, and an endpoint of this machine
         # that a line closes is closed to it.
-        return [Send(place, "\n".join([url, unquote_plus(url)]), [], reading=True)]
-    return [Send(place, "\n".join([*texts, text]), unreadable + files, unknown)]
+        return [Send(place, "\n".join([url, unquote_plus(url)]), [], UNREAD_WHY if place == UNREAD else None,
+                     reading=True) for place in places]
+    return [Send(place, "\n".join([*texts, text]), unreadable + files,
+                 UNREAD_WHY if place == UNREAD and not unknown else unknown) for place in places]
 
 
 def bucket_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
@@ -894,14 +927,16 @@ def ws_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
     address it connects to. With neither, the client only listens: a reading call, whose address
     still reaches the host."""
     addresses = [w for w in words if WS_ADDRESS.match(w)]
-    places = list(dict.fromkeys(p for p in (place_of(a, send_scan) for a in addresses) if p))
+    places = list(dict.fromkeys(p for a in addresses for p in places_of(a, send_scan)))
     said = [words[i + 1] for i, w in enumerate(words[:-1]) if w in WS_MESSAGE]
     text, unreadable, unknown = stdin_payload(stdin, cwd, send_scan)
     if any(expands(w) for w in said):
         unknown = unknown or "a substitution or a variable"
     if not (said or stdin):
-        return [Send(place, "\n".join(addresses), [], reading=True) for place in places]
-    return [Send(place, "\n".join([*said, text]), unreadable, unknown) for place in places]
+        return [Send(place, "\n".join(addresses), [], UNREAD_WHY if place == UNREAD else None, reading=True)
+                for place in places]
+    return [Send(place, "\n".join([*said, text]), unreadable,
+                 UNREAD_WHY if place == UNREAD and not unknown else unknown) for place in places]
 
 
 # tmux commands that type into a pane, as whoever sits at that terminal would.
