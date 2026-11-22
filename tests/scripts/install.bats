@@ -71,6 +71,134 @@ JSON
     grep -q '# edited' "${H}/.git-hooks/scanners/anon-scan.sh"
 }
 
+@test "install: a watcher finds the hooks' links in place through reinstalls from the same clone" {
+    clone_to "${H}/src"
+    run bash "${H}/src/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    : > "${H}/missed"
+    (
+        while [ ! -e "${H}/done" ]; do
+            for f in agent-hooks/claude-code/area-guard.py scripts/install.sh pre-push scanners/send-scan.py; do
+                [ -e "${H}/.git-hooks/${f}" ] || echo "${f}" >> "${H}/missed"
+            done
+        done
+    ) &
+    local watcher=$! n
+    for n in 1 2 3 4 5 6; do
+        bash "${H}/src/scripts/install.sh" > /dev/null 2>&1
+    done
+    : > "${H}/done"
+    wait "${watcher}"
+    [ ! -s "${H}/missed" ] || { sort "${H}/missed" | uniq -c; return 1; }
+    # nothing is left under a passing name
+    [ -z "$(find "${H}/.git-hooks" -maxdepth 2 -name '.*.new-*')" ]
+}
+
+# installed_links <folder>: the inode and path of every link the install laid there.
+installed_links() {
+    find "$1" -type l -exec ls -di {} + | sort
+}
+
+@test "install: a reinstall keeps the inode of a link that already points at its place, and moves the others" {
+    clone_to "${H}/src"
+    bash "${H}/src/scripts/install.sh" > /dev/null
+    local before
+    before="$(installed_links "${H}/.git-hooks")"
+    [ -n "${before}" ]
+    bash "${H}/src/scripts/install.sh" > /dev/null
+    [ "$(installed_links "${H}/.git-hooks")" = "${before}" ]
+
+    # installing from another clone still points every link at that clone
+    clone_to "${H}/moved"
+    bash "${H}/moved/scripts/install.sh" > /dev/null
+    [ "$(readlink "${H}/.git-hooks/agent-hooks")" = "${H}/moved/agent-hooks" ]
+    [ "$(readlink "${H}/.git-hooks/pre-push")" = "${H}/moved/git-hooks/pre-push" ]
+    [ "$(readlink "${H}/.git-hooks/scanners/anon-scan.sh")" = "${H}/moved/scanners/words/anon-scan.sh" ]
+}
+
+@test "install: a scanner renamed only in case keeps one link, to the file under its new name" {
+    clone_to "${H}/src"
+    bash "${H}/src/scripts/install.sh" > /dev/null
+    mv "${H}/src/scanners/words/anon-fix.sh" "${H}/src/scanners/words/Anon-Fix.sh"
+    local folder="${H}/.git-hooks/scanners" turn
+    for turn in 1 2; do
+        bash "${H}/src/scripts/install.sh" > /dev/null
+        [ "$(readlink "${folder}/Anon-Fix.sh")" = "${H}/src/scanners/words/Anon-Fix.sh" ]
+        # a file system that tells case apart holds no second link under the old name
+        [ "$(ls "${folder}" | grep -ic '^anon-fix[.]sh$')" -eq 1 ]
+    done
+}
+
+# link_step <case>: the link step alone, met by what another install running beside it leaves.
+link_step() {
+    python3 - "${GUARD_ROOT}/scripts/_internal" "${H}" "$1" <<'PY_STEP'
+import errno
+import os
+import sys
+import types
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+sys.dont_write_bytecode = True
+import swap_links
+
+home, case = Path(sys.argv[2]), sys.argv[3]
+source, link = home / "source", home / "link"
+source.write_text("x")
+link.symlink_to(home / "before")
+if case == "moving":
+    readlink = os.readlink
+
+    def unreadable(path: Path) -> str:
+        raise OSError(errno.EINVAL, "the link is being moved")
+
+    os.readlink = unreadable
+    swap_links.swap(source, link)
+    os.readlink = readlink
+    assert os.readlink(link) == str(source)
+else:
+    class Gone:
+        def is_symlink(self) -> bool:
+            return True
+
+        def lstat(self) -> os.stat_result:
+            raise FileNotFoundError(errno.ENOENT, "renamed into its place")
+
+    swap_links.prune(types.SimpleNamespace(iterdir=lambda: [Gone()]), {link})
+    assert link.is_symlink()
+PY_STEP
+}
+
+@test "install: a link another install is moving is laid again, not an error" {
+    run link_step moving
+    [ "${status}" -eq 0 ]
+}
+
+@test "install: a passing link another install renamed away is not an error to the pruning" {
+    run link_step gone
+    [ "${status}" -eq 0 ]
+}
+
+@test "install: a file or a link standing where the scanners folder goes gives way to the folder" {
+    clone_to "${H}/src"
+    local place="${H}/.git-hooks/scanners"
+    mkdir -p "${H}/.git-hooks" "${H}/elsewhere"
+    printf 'x\n' > "${place}"
+    run bash "${H}/src/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    [ -d "${place}" ]
+    [ -f "${place}/send-scan.py" ]
+
+    rm -r "${place}"
+    ln -s "${H}/elsewhere" "${place}"
+    run bash "${H}/src/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    [ ! -L "${place}" ]
+    [ -f "${place}/send-scan.py" ]
+    # what the link pointed at is left as it was
+    [ -z "$(ls -A "${H}/elsewhere")" ]
+}
+
 @test "install: a scanner called by its name alone finds the parts it uses, and a link to nothing is removed" {
     clone_to "${H}/src"
     mkdir -p "${H}/.git-hooks"

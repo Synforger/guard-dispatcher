@@ -54,14 +54,15 @@ destinations.txt (a `local:` or `tmux:` name, see outgoing.py).
 
 The same holds for a call the entry guard keeps for the operator (a change of the guard's settings
 or of the hooks, see area-guard.py), with two differences. The agent shows it in a ```guard block
-and asks; the operator's last message answers yes: it holds one of the approving phrases, the
-lines of orders.txt starting with `+` (with none, the built-in `APPROVALS`), with the same
-cancelling tails. A send is ordered and a change approved apart: a ```send block takes no yes, and
+and asks; the operator's last message answers yes: it opens with one of the approving phrases, the
+lines of orders.txt starting with `+` (with none, the built-in `APPROVALS`), as a word that ends
+there (`opens_with_yes`), with the same cancelling tails. An order is found anywhere in the message;
+a yes is only its first word, as short phrases such as `ok` sit inside other words. A send is ordered and a change approved apart: a ```send block takes no yes, and
 a ```guard block no order.
 
-The `>` and `>>` lines may also sit in openings.txt, beside orders.txt, which an agent may keep up
-to date under the operator's grant: a line there only takes words out of what counts as the
-operator's, so it needs no yes. A line `include <file>` there reads more of them from another file
+The `>` and `>>` lines may also sit in openings.txt, beside orders.txt, which an agent may add to
+under the operator's grant: a line added there only takes words out of what counts as the
+operator's, so it needs no yes, and taking one away does (area-guard.py). A line `include <file>` there reads more of them from another file
 in the same form, so a client keeps the openings of what it types in its own repository and adds
 one with no hand here. A file that cannot be read gives none. `order.py --openings` prints every
 opening, one per line with its `>` or `>>`, for whatever else tells a relayed message apart.
@@ -123,6 +124,8 @@ SHOW = {SEND: "Show the call in a ```send block and wait for the operator's orde
 NOTES = {"Bash": frozenset({"description", "timeout", "run_in_background"})}
 # What an operator answers when asked whether a change may be made, when orders.txt names none.
 APPROVALS = ("はい", "お願い", "どうぞ", "いいよ", "いいです", "やって", "変えて", "外して", "OK", "ok", "yes", "Yes")
+# What may be joined to an approving phrase with no space and leave it a yes.
+YES_ENDINGS = ("いたします", "致します", "します", "です", "ください", "下さい", "おいて", "よ", "ね")
 # The head of a message a client relayed with the operator's words in the sender's tab: the client's
 # opening line, the envelope naming the sender's tab, and the operator's words as the first thing in it.
 ANSWERED_ELSEWHERE = re.compile(r"^[^\n]*\n<agent-message from=\"[^\n]*?\" session=\"([\w-]+)\">\n"
@@ -170,12 +173,27 @@ def opening_lines() -> list[str]:
     out = []
     for line in read(OPENINGS):
         line = line.split("#", 1)[0].strip()
-        if line.startswith(INCLUDE):
-            target = Path(os.path.expanduser(os.path.expandvars(line[len(INCLUDE):].strip())))
+        if (target := included(line)) is not None:
             out += [x.strip() for x in read(target) if x.strip().startswith(">")]
         elif line.startswith(">"):
             out.append(line)
     return out
+
+
+def included(line: str) -> Path | None:
+    """The file an `include` line of openings.txt names, or None for any other line."""
+    if not line.startswith(INCLUDE):
+        return None
+    return Path(os.path.expanduser(os.path.expandvars(line[len(INCLUDE):].strip())))
+
+
+def included_files() -> list[Path]:
+    """The files openings.txt includes, whether or not they are there."""
+    try:
+        lines = OPENINGS.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    return [target for line in lines if (target := included(line.split("#", 1)[0].strip())) is not None]
 
 
 def phrases() -> tuple[list[str], list[str]]:
@@ -205,7 +223,32 @@ def orders_a_send(text: str) -> bool:
 
 def approves_a_change(text: str) -> bool:
     found = settings()
-    return holds_phrase(text, found[4], found[1])
+    return opens_with_yes(text, found[4], found[1])
+
+
+def opens_with_yes(text: str, wanted: list[str], tails: list[str]) -> bool:
+    """Whether a message opens with one of the approving phrases, as a word that ends there: only
+    another of them or a polite ending (`YES_ENDINGS`) may run on from it. As for an order, its
+    sentence does not ask and no cancelling tail follows the phrase."""
+    said = text.lstrip()
+    phrases_first = sorted(filter(None, wanted), key=len, reverse=True)
+    word = next((phrase for phrase in phrases_first if said.startswith(phrase)), None)
+    if word is None:
+        return False
+    rest = said[len(word):]
+    unquoted = QUOTED.sub("", rest)
+    end = SENTENCE_END.search(unquoted)
+    sentence = unquoted[: end.start()] if end else unquoted
+    if "?" in sentence or "？" in sentence or any(sentence.lstrip().startswith(t) for t in tails):
+        return False
+    runs_on = sorted((*phrases_first, *YES_ENDINGS), key=len, reverse=True)
+    while rest[:1].isalnum():
+        # Japanese puts no space between words: what is joined to the yes must itself be a yes
+        joined = next((part for part in runs_on if rest.startswith(part)), None)
+        if joined is None:
+            return False
+        rest = rest[len(joined):]
+    return True
 
 
 def holds_phrase(text: str, wanted: list[str], tails: list[str]) -> bool:
@@ -424,8 +467,9 @@ def how_to_show(tool: str, args: dict, kind: str) -> str:
     words, tails = (found[0] if kind == SEND else found[4]), found[1]
     asked = "order" if kind == SEND else "yes"
     if words:
+        opening = "" if kind == SEND else ", opening the message"
         counted = (f"Only these words of the operator count as the {asked}: {', '.join(words)} "
-                   f"(orders.txt); other words do not, nor one in a sentence that asks (`?`)")
+                   f"(orders.txt){opening}; other words do not, nor one in a sentence that asks (`?`)")
         if tails:
             counted += f" or goes on with {', '.join(tails)}"
     else:

@@ -94,6 +94,10 @@ Scanners read one PCRE fragment per line from the first of:
    (recommended location; `<root>/config/guard/exit/words/master.txt` under a platform root)
 4. a repo-local `.tooling/local-ci/anon-words.txt` (legacy)
 
+A send of a tool or a network command to a destination outside every area
+skips step 2: it takes the operator master, whatever list the folder the
+call is typed in names.
+
 The word list is private operator data — it is never committed
 anywhere. See `configs/anon-words.example.txt` for the format.
 
@@ -738,8 +742,14 @@ step earlier, before each tool call, from the same `areas.txt`:
   guard lets through is judged from the settings, and an order for a send from
   the transcript (see *A send the operator orders* below). An agent that could
   write them would draw an area around what it wants to send, call a phrase fine
-  to send, or make an order itself. Reading them and copying them out pass; a
-  change of the settings passes on the operator's yes, a change of a transcript never.
+  to send, or make an order itself. The same goes for the folders that hold the
+  transcripts: the guard refuses a command that removes, moves, links over or empties
+  `~/.claude*/projects`, a folder in it, or a folder that holds it (`~/.claude-work`), and one
+  that copies or unpacks into them (`cp`, `mv` and `install` with or without `-t`, `rsync`,
+  `tar -x`, `unzip -d`), or that deletes in them (`find -delete`, `find -exec rm`,
+  `rsync --remove-source-files`), whether the path is written directly or reached
+  through a link. A project's `memory` folder stays writable. Reading them and copying them
+  out pass; a change of the settings passes on the operator's yes, a change of a transcript never.
 - **A transcript holds what its session read.** Every session's transcript sits under the
   same folders, wherever the session worked, and holds the words of each file it read. A
   call that reads one (`Read`, `Grep`, a command that names it, or a recursive read of a
@@ -747,6 +757,8 @@ step earlier, before each tool call, from the same `areas.txt`:
   child's inherited ones too): a session that may not read there is refused before it
   reads, and one that may holds those areas from then on. A transcript of a session that
   read inside no area, and a listing of names (`Glob`, `ls`), mark nothing.
+  Config folders may share one `projects` through a link: a recursive read of any of
+  them counts the records behind the link, whether or not the program would follow it.
 - **A change the operator approves**: the agent shows the very call in a
   `guard` block and asks; the operator answers in the chat, and types no command.
 
@@ -758,8 +770,10 @@ step earlier, before each tool call, from the same `areas.txt`:
   ```
   ````
 
-  The call passes once when the operator's next message says yes (`はい`, `お願い`,
-  `OK`, ...; the `+` lines of `orders.txt` replace that list), in a sentence that
+  The call passes once when the operator's next message opens with a yes (`はい`,
+  `お願い`, `OK`, ...; the `+` lines of `orders.txt` replace that list) as a word
+  that ends there: `はい、お願いします` and `OKです` are yes, `look`, `はいらない` and
+  a yes further into the message are not. Its first sentence
   does not ask and does not go on with one of the file's cancelling tails, and
   when the session may read where the call acts: a repository or a folder inside
   an area, or a setting of `areas/<area>/`, only from a session that reads inside
@@ -768,6 +782,11 @@ step earlier, before each tool call, from the same `areas.txt`:
   no yes but one the operator gave in the sending tab, see *A message relayed with
   the operator's answer*), and a block shown for a send is no block for a change. With no
   `orders.txt`, nothing is approved.
+- **A watch the Monitor tool starts** is judged as the Bash call of its
+  command: what it reads, writes, sends and needs the operator for. A socket it
+  listens to is judged as a client listening at that address, and subprotocols
+  as a message sent there. A block shown with `tool: Bash` and that command
+  passes the watch that runs it.
 - **The operator may hand the upkeep of some settings to the agent**, when the
   settings grow with every area and every false alarm: `agent-writes.txt` names
   them, one per line (`destinations.txt`, `patterns/`, `*` for all). A session
@@ -839,6 +858,29 @@ step earlier, before each tool call, from the same `areas.txt`:
   session with no marks), and 1 with one line per refused path on stderr. A
   relative path resolves from the caller's working directory. It only
   answers: it adds no mark and changes nothing.
+
+  One case needs no `may-write`: when a word handed to a script names the
+  guard's settings, a session's transcript, or the folder that holds
+  transcripts (or one in it), the guard reads the script with its arguments
+  in place and refuses it if it writes, empties or fills there, with the
+  reason the same write gets from a command. This reaches:
+
+  - a Python file (`sys.argv[1]`, `sys.argv[1:]`, `from sys import argv`; with
+    `argparse` or a loop over `sys.argv`, any write whose target the code does
+    not say counts as writing every word);
+  - a shell script (`$1`..`$9`, `${1:-x}`, `$@`, `$*`, `${@:2}`, a `for` loop
+    over them, a `shift` at the top of the script; `getopts`, `eval` and a
+    `shift` inside a loop count as writing every word when the script writes);
+  - a script it runs in turn with those words (`python3 put.py "$1"`), and one
+    that moves to the folder it is given (`cd "$1"`) before it writes a relative name;
+  - a Node, Ruby, Perl or PHP file that takes its arguments (`process.argv`,
+    `ARGV`, `$ARGV`, `$argv`) and spells a call that writes or runs a program.
+
+  A script that only reads the word, or writes somewhere else, passes. What
+  stays outside: a script in another language, a word passed on through an
+  environment variable or a file, and a path the script builds from the word.
+  The commands in the branches of a `case`, a `for` or an `if` are read as the
+  commands they are, in the folder the command stands in there.
 
 - **A session may hand work to a child of its own.** The client that opens a child's
   tab registers it with the guard (`area-guard.py child add --child TAB --parent TAB
@@ -1007,7 +1049,8 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   app:calendar              personal    # an osascript script that writes to the Calendar app
   ```
 
-  A `repo:` line naming an area says who owns the repositories. A private one
+  A `repo:` line naming an area says who owns the repositories; one GitHub answers
+  is public is outside every area whatever the line says. A private one
   cloned inside that area sits where its clone is, and the owner's text is its
   own too: a client's repository in the company's organization, cloned in the
   client's folder, takes the client's text and the company's, and still not
@@ -1261,10 +1304,13 @@ This holds as long as agents cannot reach the client's own way of typing as
 the operator: block it (see *What stays on this machine*).
 
 The `>` and `>>` lines may also sit in `openings.txt`, beside `orders.txt`. A
-line there only takes words out of what counts as the operator's, so an agent
-keeps that file under the operator's grant (`agent-writes.txt`) with no yes;
-anything but a `>` or `>>` line there is not read, so it never orders or
-approves. `include <file>` there reads the `>` and `>>` lines of another file,
+line added there only takes words out of what counts as the operator's, so an
+agent adds to that file under the operator's grant (`agent-writes.txt`) with
+no yes, with an Edit or a Write. Taking a line away, or writing the file
+through the shell, needs the yes, as does the same on a file an `include` line
+names (which takes added openings with no grant) and taking away a folder that
+holds one. Anything but a `>`, `>>` or `include` line there is not read, so it
+never orders or approves. `include <file>` there reads the `>` and `>>` lines of another file,
 one level deep: a client keeps the openings of everything it types in its own
 repository and adds one with no hand on the machine.
 

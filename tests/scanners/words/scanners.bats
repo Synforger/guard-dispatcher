@@ -615,12 +615,18 @@ leak_in_history() {
     export STUB_SENTINEL=""
     setup_gh_stub
     GIT_COMMITTER_DATE="2026-10-18T09:00:00Z" GIT_AUTHOR_DATE="2026-10-18T09:00:00Z" leak_in_history old
-    local repo outside
-    repo="$(pwd)"
-    outside="${BATS_RUN_TMPDIR}/outside-repo-${RANDOM}"
+    local repo outside company
+    # Both areas stay inside this test's folder: an area is audited with every repository under
+    # it, and the folders above hold the repositories of every other test of the run.
+    company="${BATS_TEST_TMPDIR}/company"
+    mkdir -p "${company}/client"
+    repo="${company}/client/$(basename "$(pwd)")"
+    mv "$(pwd)" "${repo}"
+    cd "${repo}"
+    outside="${BATS_TEST_TMPDIR}/outside-repo"
     git init -q "${outside}"
     mkdir -p "${GUARD_CONFIG_DIR}"
-    printf 'company %s\nclient %s\n' "$(dirname "$(dirname "${repo}")")" "$(dirname "${repo}")" > "${GUARD_CONFIG_DIR}/areas.txt"
+    printf 'company %s\nclient %s\n' "${company}" "${company}/client" > "${GUARD_CONFIG_DIR}/areas.txt"
     export HOME="${BATS_TEST_TMPDIR}/home"
     mkdir -p "${HOME}/.config/guard-dispatcher"
     printf 'REPOS_GLOB="%s"\n' "${outside}" > "${HOME}/.config/guard-dispatcher/weekly-audit.conf"

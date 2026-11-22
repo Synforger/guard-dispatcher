@@ -198,6 +198,7 @@ def shell_words(command: str) -> list[str]:
     on an unclosed quote, as `shlex.split` does. A line break that ends a command is a `;`."""
     lexer = shlex.shlex(with_line_breaks(command), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    lexer.commenters = ""      # with_line_breaks left the comments out: a `#` inside a word (`$#`) is no comment
     words: list[str] = []
     target = False
     for word in lexer:
