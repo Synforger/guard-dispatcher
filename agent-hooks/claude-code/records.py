@@ -16,6 +16,9 @@ from pathlib import Path
 RECORD = re.compile(r"\.claude[^/]*/projects/[^/]+/(?P<session>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
                     r"[0-9a-f]{4}-[0-9a-f]{12})(?:\.jsonl|/.+)", re.IGNORECASE)
 RECORDS = ".claude*/projects/*/*.jsonl"
+#: The records of one config folder. Named step by step, so a `projects` that is a link is followed:
+#: several config folders may share one, and `rglob` steps into no link below the folder it starts at.
+OF_ONE = "projects/*/*.jsonl"
 
 
 def session_of(path: Path, homes: Iterable[Path]) -> str | None:
@@ -33,7 +36,7 @@ def sessions_under(folder: Path, homes: Iterable[Path]) -> set[str]:
         if folder == home or folder in home.parents:
             records = home.glob(RECORDS)
         elif home in folder.parents and folder.relative_to(home).parts[0].startswith(".claude"):
-            records = folder.rglob("*.jsonl")
+            records = set(folder.rglob("*.jsonl")) | set(folder.glob(OF_ONE))
         else:
             continue
         found |= {session for record in records if (session := session_of(record, [home]))}

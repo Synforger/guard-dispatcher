@@ -93,10 +93,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_events  # noqa: E402
 import code_writes  # noqa: E402
 import curl_options  # noqa: E402
+import local_names  # noqa: E402
 import script_files  # noqa: E402
 from service_reads import rclone_reads  # noqa: E402
 from path_forms import resolved  # noqa: E402
-from shell_commands import expands, globs, simple_commands  # noqa: E402
+from shell_commands import NESTED, expands, globs, simple_commands  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
 
 # The words of a tool's own name (`mcp__server__slack_read_channel` -> slack, read, channel), however
@@ -160,12 +161,15 @@ SENDING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 SHELL_BREAK = {"&&", "||", ";", "|", "&", "|&", ";;", "(", ")"}
 
 
-def place_of(url: str) -> str:
+def place_of(url: str, send_scan: Path) -> str:
     """A URL's destination name: `host:<host>`, or `local:<port><path>` when it names this
     machine. A service on this machine is not a send out of it, so no line of destinations.txt
     reaches a `local:` name unless it names one (see send-scan.py): the operator declares the
     local endpoints an agent must not reach, such as one that types into a terminal as the
-    operator would."""
+    operator would. Those it blocks are blocked by every name the endpoint answers to
+    (local_names); an address no line blocks keeps the name it is written with."""
+    if name := blocked_here(url, send_scan):
+        return name
     try:
         parts = urlsplit(url if "://" in url else f"http://{url}")
         host = parts.hostname or ""
@@ -178,6 +182,28 @@ def place_of(url: str) -> str:
     except ValueError:
         port = None
     return f"local:{port or (443 if parts.scheme in ('https', 'wss') else 80)}{parts.path or '/'}"
+
+
+@functools.cache
+def blocked_here(url: str, send_scan: Path) -> str | None:
+    """The name a line blocks, of those the address answers to on this machine, else None. Each address,
+    and the destination lines, are read once a call of the hook."""
+    if not (candidates := local_names.names(url)):
+        return None
+    judged = destinations_read_once(send_scan)
+    try:
+        return next((name for name in candidates if judged.where(name) == judged.BLOCK), None)
+    except judged.Broken:
+        return candidates[0]        # the check then refuses it for the file that cannot be read
+
+
+@functools.cache
+def destinations_read_once(send_scan: Path):
+    """send_scan_module's module, shared with the check, made to read the destination lines once: the
+    hook is one process a call, and the lines do not change within it."""
+    judged = send_scan_module(send_scan)
+    judged.rules = functools.cache(judged.rules)
+    return judged
 
 
 def reads_by_path(url: str) -> bool:
@@ -198,6 +224,7 @@ def shell_words(command: str) -> list[str]:
     on an unclosed quote, as `shlex.split` does. A line break that ends a command is a `;`."""
     lexer = shlex.shlex(with_line_breaks(command), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    lexer.commenters = ""      # with_line_breaks left the comments out: a `#` inside a word (`$#`) is no comment
     words: list[str] = []
     target = False
     for word in lexer:
@@ -383,7 +410,7 @@ def fetched_host(args: dict, send_scan: Path) -> str | None:
     when its URL is on this machine and a `local:` line names it, else None. A destinations.txt
     that cannot be read leaves the tool's name, which then stops the call."""
     url = args.get("url")
-    name = place_of(url) if isinstance(url, str) else ""
+    name = place_of(url, send_scan) if isinstance(url, str) else ""
     if not name.startswith(("host:", "local:")):
         return None
     judged = send_scan_module(send_scan)
@@ -530,7 +557,7 @@ def curl_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
                 if expands(w):
                     unknown = "a substitution or a variable"
             j += 2 if takes else 1
-        places = [p for p in map(place_of, urls) if p]
+        places = [p for p in (place_of(u, send_scan) for u in urls) if p]
         # A POST whose path reads (a search, a query) to a service out of this machine: its body
         # and its URL still reach the service and are scanned, but it changes nothing there. An
         # endpoint of this machine is an action here whatever its path says.
@@ -783,7 +810,7 @@ def http_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]
     if not positional:
         return []
     url, items = positional[0], positional[1:]
-    place = place_of(f"http://localhost{url}" if url.startswith(":") else url)
+    place = place_of(f"http://localhost{url}" if url.startswith(":") else url, send_scan)
     texts, unreadable = [], []
     for item in items:
         m = re.match(r"^([^=:@]*)(:=@|=@|@|:=|==|=|:)(.*)$", item)
@@ -867,7 +894,7 @@ def ws_sends(words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
     address it connects to. With neither, the client only listens: a reading call, whose address
     still reaches the host."""
     addresses = [w for w in words if WS_ADDRESS.match(w)]
-    places = list(dict.fromkeys(p for p in map(place_of, addresses) if p))
+    places = list(dict.fromkeys(p for p in (place_of(a, send_scan) for a in addresses) if p))
     said = [words[i + 1] for i, w in enumerate(words[:-1]) if w in WS_MESSAGE]
     text, unreadable, unknown = stdin_payload(stdin, cwd, send_scan)
     if any(expands(w) for w in said):
@@ -968,6 +995,18 @@ def local_commands(tool: str, args: list[str]) -> list[str]:
     return [m.group(1) for o, v in options if o == "-o" and v and (m := LOCAL_COMMAND.match(v))]
 
 
+def fed_files(stdin, previous) -> list[str]:
+    """The files a command's standard input comes from, where the line names them: a `<` redirection,
+    or the files of a plain `cat` piped into it (`previous` is the command before, as simple_commands
+    gives it)."""
+    if stdin and stdin[0] == "file":
+        return [stdin[1]]
+    if stdin == ("unknown", "a pipe") and previous is not None and previous[0] \
+            and os.path.basename(str(previous[0][0])) == "cat":
+        return [str(word) for word in previous[0][1:] if not str(word).startswith("-")]
+    return []
+
+
 def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[Send]:
     """Code written into the command line: a shell's `-c` string is a command line of its own; an
     interpreter's `-c` / `-e` code, or a heredoc fed to one, sends to each host a URL in it names,
@@ -983,12 +1022,13 @@ def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[
     bodies = [m.group(3) for m in HEREDOC.finditer(command)]
     out = []
     here = cwd
-    for words, stdin in commands:
+    for index, (words, stdin) in enumerate(commands):
         tool = os.path.basename(words[0])
         if tool == "cd" and len(words) > 1 and not UNREAD_FOLDER.search(words[1]):
             here = str(resolved(Path(os.path.join(here, os.path.expanduser(words[1])))))
             continue
-        script = script_files.ran(list(words), here) if depth < 3 else None
+        script = script_files.ran(list(words), here, fed_files(stdin, commands[index - 1] if index else None)) \
+            if depth < NESTED else None
         if script is not None:
             program, text = script
             if program in SHELLS:
@@ -999,11 +1039,11 @@ def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[
                 continue
             tool, words = program, [program, "-c", text]
         codes = [words[i + 1] for i, w in enumerate(words[:-1]) if w in CODE_FLAGS]
-        if tool in SHELLS and depth < 3:
+        if tool in SHELLS and depth < NESTED:
             for code in codes:
                 out += sends("Bash", {"command": code}, cwd, send_scan, depth=depth + 1)
             continue
-        if tool in ("ssh", "scp", "sftp", "rsync") and depth < 3:
+        if tool in ("ssh", "scp", "sftp", "rsync") and depth < NESTED:
             for code in local_commands(tool, words[1:]):
                 out += sends("Bash", {"command": code}, cwd, send_scan, depth=depth + 1)
             continue
@@ -1021,7 +1061,10 @@ def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[
                 because = f"the Python code counts as sending to each URL it names, because {why}"
             else:
                 because = f"{tool}'s code counts as sending to each URL it names: only Python is read"
-            for place in dict.fromkeys(p for p in map(place_of, URL.findall(code)) if p):
+            found = [place_of(u, send_scan) for u in URL.findall(code)]
+            # An address URL cuts short or does not match counts only where a line blocks what it reaches.
+            found += [blocked_here(u, send_scan) for u in local_names.in_code(code)]
+            for place in dict.fromkeys(p for p in found if p):
                 out.append(Send(place, code, [], because=because))
     return out
 

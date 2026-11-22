@@ -17,6 +17,26 @@ unset GUARD_WORK_FOLDER GUARD_DEST_KNOWN AGENT_PLATFORM_ROOT
 # destination does, and a test that wants a destination gives a local one.
 export GIT_ALLOW_PROTOCOL=file
 
+# A test that hangs fails on its own instead of holding the whole suite: bats stops any test that
+# runs longer than this. The value is three times the slowest test of an ordinary run (5.4 s,
+# rounded up); a run may set its own in the environment.
+BATS_TEST_TIMEOUT="${BATS_TEST_TIMEOUT:-17}"
+
+# Write how long the test that just ran took, for tests/setup_suite.bash to name the slowest ones
+# after the last test. A test file that defines its own teardown calls this from it.
+record_test_duration() {
+    [ -n "${BATS_TEST_START_TIME:-}" ] || return 0   # a bats that does not keep the start time
+    local now_ms
+    get_mills_since_epoch now_ms
+    local elapsed_ms=$((now_ms - BATS_TEST_START_TIME))
+    mkdir -p "${BATS_RUN_TMPDIR}/durations"
+    printf '%d.%03d %s::%s\n' $((elapsed_ms / 1000)) $((elapsed_ms % 1000)) \
+        "${BATS_TEST_FILENAME#"${GUARD_ROOT}/"}" "${BATS_TEST_DESCRIPTION}" \
+        > "${BATS_RUN_TMPDIR}/durations/${BATS_SUITE_TEST_NUMBER}"
+}
+
+teardown() { record_test_duration; }
+
 # The sentinel the fixture word list flags. Deliberately gibberish so it
 # can never collide with legitimate repo content.
 SENTINEL="XLEAKX7q3z"

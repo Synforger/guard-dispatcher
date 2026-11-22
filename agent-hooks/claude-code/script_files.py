@@ -11,12 +11,16 @@ keeps:
 - a file the shell reads into itself: `source env.sh`, `. env.sh`;
 - a file run by its path (`./run.sh`, `scripts/run.sh`, `/abs/run.py`): its `#!` line names the
   program, and a text file with none is run by the shell, as the shell does with it;
-- `uv run [options] fix.py`, and `uv run [options] python3 fix.py`.
+- `uv run [options] fix.py`, and `uv run [options] python3 fix.py`;
+- a file an interpreter that takes no file reads its code from on standard input: `bash < run.sh`,
+  `cat run.sh | bash`, `python3 - < fix.py` (the caller says which files feed the command: `fed`).
 
 A relative file is the one in the folder the command stands in when it reaches it (the caller says).
 What is not read: a module run by name (`python3 -m pkg`), a program found on PATH by its bare name,
-what the code imports or starts in turn, a file larger than MAX_BYTES, and one that is not text (a
-compiled AppleScript). Those run unread.
+a file named only as the command runs (`xargs bash`, `find -exec bash {} +`, a variable the line
+does not set), what the code imports or starts in turn, a file larger than MAX_BYTES, and one that
+is not text (a compiled AppleScript). Those run unread. A C shell, fish or another shell is read as
+Bash: close enough to find the files it names and the commands it runs.
 """
 
 from __future__ import annotations
@@ -33,13 +37,15 @@ SNIFF_BYTES = 8192
 #: How much of the first line is read for a `#!` line.
 SHEBANG_BYTES = 256
 
-SHELL = re.compile(r"(?:ba|z|da|k)?sh")
-PYTHON = re.compile(r"python(?:\d+(?:\.\d+)*)?")
+SHELL = re.compile(r"(?:ba|z|da|k|c|tc|fi|mk|ok|yash|ash|pdk)?sh")
+PYTHON = re.compile(r"python(?:\d+(?:\.\d+)*t?)?")
+#: What stands for standard input where an interpreter takes a file.
+STDIN = "-"
 
 # Per kind of code: the options that take the next word as their value, and the options that hand
 # the code some other way (so no file follows). `--` ends the options: the next word is the file.
 VALUED = {
-    "python": {"-W", "-X", "-Q"},
+    "python": {"-W", "-X", "-Q", "--check-hash-based-pycs"},
     "node": {"-r", "--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions",
              "--input-type", "--env-file", "--inspect-port", "--title"},
     "ruby": {"-I", "-r", "-C", "-E", "-F", "--encoding", "--external-encoding", "--internal-encoding"},
@@ -49,14 +55,16 @@ VALUED = {
     "shell": {"-o", "-O", "+o", "+O", "--rcfile", "--init-file"},
 }
 CODE_GIVEN = {
-    "python": {"-c", "-m", "-"},
-    "node": {"-e", "--eval", "-p", "--print", "-", "--test"},
-    "ruby": {"-e", "-"},
-    "perl": {"-e", "-E", "-"},
-    "php": {"-r", "-a", "-"},
-    "osascript": {"-e", "-"},
-    "shell": {"-s", "-"},
+    "python": {"-c", "-m"},
+    "node": {"-e", "--eval", "-p", "--print", "--test"},
+    "ruby": {"-e"},
+    "perl": {"-e", "-E"},
+    "php": {"-r", "-a"},
+    "osascript": {"-e"},
+    "shell": set(),
 }
+# env's options that take the next word as their value (in a `#!` line through `env -S`).
+ENV_VALUED = {"-u", "--unset", "-P", "-C", "--chdir"}
 # The program name the readers know each kind by (area-guard's code_flags and SHELL_CODE, outgoing's
 # INTERPRETERS and SHELLS).
 READ_AS = {"python": "python3", "node": "node", "ruby": "ruby", "perl": "perl", "php": "php",
@@ -71,17 +79,28 @@ UV_VALUED = {"--with", "--with-editable", "--with-requirements", "--python", "-p
              "--config-setting", "-C", "--color"}
 
 
-def ran(words: list[str], here: str) -> tuple[str, str] | None:
+def ran(words: list[str], here: str, fed: list[str] | None = None) -> tuple[str, str] | None:
     """(the program the readers read the code as, the code) for the file `words` hand to the program
     that runs it, or None when they hand none (see the module's docstring). `words` start at the
     program, past what stands before it (`sudo`, `env`, an assignment); `here` is the folder the
-    command stands in."""
+    command stands in; `fed` are the files its standard input comes from (`< f`, `cat f |`), when the
+    caller can name them."""
+    found = ran_with_arguments(words, here, fed)
+    return None if found is None else found[:2]
+
+
+def ran_with_arguments(words: list[str], here: str, fed: list[str] | None = None) -> tuple[str, str, list[str]] | None:
+    """`ran`, and the words the command hands the code as its arguments (the words after the file)."""
     found = _file_run(words, here)
     if found is None:
         return None
-    kind, name = found
-    text = _text(name, here)
-    return None if text is None else (READ_AS[kind], text)
+    kind, name, arguments = found
+    if name == STDIN:
+        texts = [_text(file, here) for file in fed or []]
+        text = None if not texts or None in texts else "\n".join(texts)
+    else:
+        text = _text(name, here)
+    return None if text is None else (READ_AS[kind], text, arguments)
 
 
 def kind_of(program: str) -> str | None:
@@ -96,14 +115,14 @@ def kind_of(program: str) -> str | None:
     return name if name in ("ruby", "perl", "php", "osascript") else None
 
 
-def _file_run(words: list[str], here: str) -> tuple[str, str] | None:
-    """(kind, the file as written) the command runs, or None."""
+def _file_run(words: list[str], here: str) -> tuple[str, str, list[str]] | None:
+    """(kind, the file as written, the words after it) the command runs, or None."""
     if not words:
         return None
     program, args = words[0], words[1:]
     name = os.path.basename(program)
     if name in ("source", "."):
-        return ("shell", args[0]) if args else None
+        return ("shell", args[0], args[1:]) if args else None
     if name == "uv":
         return _uv_run(args, here)
     if name in ("deno", "bun") and args[:1] == ["run"]:
@@ -111,32 +130,37 @@ def _file_run(words: list[str], here: str) -> tuple[str, str] | None:
     if (kind := kind_of(program)) is not None:
         return _after_options(kind, args)
     if "/" in program:
-        return _by_its_line(program, here)
+        return _by_its_line(program, args, here)
     return None
 
 
-def _after_options(kind: str, args: list[str]) -> tuple[str, str] | None:
-    """The file an interpreter of `kind` is handed after its own options, or None when the code
-    comes some other way (`-c`, `-m`, standard input)."""
+def _after_options(kind: str, args: list[str]) -> tuple[str, str, list[str]] | None:
+    """The file an interpreter of `kind` is handed after its own options (STDIN when it reads its
+    code from standard input: no file, `-`, a shell's `-s`), or None when the code comes in a word of
+    the command (`-c`, `-e`) or by a module's name (`-m`). The words after the file come with it."""
     valued, given = VALUED[kind], CODE_GIVEN[kind]
     at = 0
     while at < len(args):
         word = args[at]
         if word == "--" or (kind == "php" and word == "-f"):
-            return (kind, args[at + 1]) if at + 1 < len(args) else None
+            return (kind, args[at + 1] if at + 1 < len(args) else STDIN, args[at + 2:])
+        if word == STDIN:
+            return kind, STDIN, args[at + 1:]
         option = word.split("=", 1)[0]
         if word in given or option in given:
             return None
-        if kind == "shell" and re.fullmatch(r"[-+][A-Za-z]*[cs][A-Za-z]*", word):
-            return None                 # `-c` / `-s` among other letters (`-lc`): the code is no file
+        if kind == "shell" and re.fullmatch(r"[-+][A-Za-z]*c[A-Za-z]*", word):
+            return None                 # `-c` among other letters (`-lc`): the code is a word
+        if kind == "shell" and re.fullmatch(r"-[A-Za-z]*s[A-Za-z]*", word):
+            return kind, STDIN, args[at + 1:]   # `-s`: the code comes on standard input
         if word.startswith("-") or (kind == "shell" and word.startswith("+")):
             at += 2 if option in valued and word == option else 1
             continue
-        return kind, word
-    return None
+        return kind, word, args[at + 1:]
+    return kind, STDIN, []
 
 
-def _uv_run(args: list[str], here: str) -> tuple[str, str] | None:
+def _uv_run(args: list[str], here: str) -> tuple[str, str, list[str]] | None:
     """`uv run [options] <file or program> ...`: a `.py` file, or what the program after it runs."""
     if args[:1] != ["run"]:
         return None
@@ -150,12 +174,12 @@ def _uv_run(args: list[str], here: str) -> tuple[str, str] | None:
     rest = rest[at:]
     if not rest:
         return None
-    if rest[0].endswith(".py"):
-        return "python", rest[0]
+    if rest[0].endswith(".py") and kind_of(rest[0]) is None:
+        return "python", rest[0], rest[1:]
     return _file_run(rest, here)
 
 
-def _by_its_line(program: str, here: str) -> tuple[str, str] | None:
+def _by_its_line(program: str, arguments: list[str], here: str) -> tuple[str, str, list[str]] | None:
     """A file run by its path: the program its `#!` line names (through `env`, `env -S`, `uv run`), or
     the shell for a file with no `#!` line (the shell runs such a file itself)."""
     try:
@@ -164,7 +188,7 @@ def _by_its_line(program: str, here: str) -> tuple[str, str] | None:
     except OSError:
         return None
     if not head.startswith(b"#!"):
-        return "shell", program
+        return "shell", program, arguments
     try:
         words = shlex.split(head[2:].decode("utf-8", "replace"))
     except ValueError:
@@ -172,11 +196,11 @@ def _by_its_line(program: str, here: str) -> tuple[str, str] | None:
     while words and os.path.basename(words[0]) == "env":
         words = [w for w in words[1:] if w not in ("-S", "--split-string")]
         while words and (words[0].startswith("-") or "=" in words[0]):
-            words = words[1:]
+            words = words[2:] if words[0] in ENV_VALUED else words[1:]
     if words[:2] == ["uv", "run"]:
-        return "python", program
+        return "python", program, arguments
     kind = kind_of(words[0]) if words else None
-    return (kind, program) if kind is not None else None
+    return (kind, program, arguments) if kind is not None else None
 
 
 def _resolved(name: str, here: str) -> Path:
