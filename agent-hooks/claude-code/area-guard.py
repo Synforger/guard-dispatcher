@@ -106,6 +106,7 @@ import re
 import shlex
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -116,10 +117,12 @@ import commit_options  # noqa: E402
 import commit_scope  # noqa: E402
 import guard_places  # noqa: E402
 import records  # noqa: E402
+import script_arguments  # noqa: E402
 import script_files  # noqa: E402
 from path_forms import resolved  # noqa: E402
 import orders_edit  # noqa: E402
 import service_reads  # noqa: E402
+import syntax_checks  # noqa: E402
 import ticket_places  # noqa: E402
 import work_reads  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
@@ -506,6 +509,36 @@ def glued(token: str) -> list[str]:
     return out
 
 
+class CaseLabels:
+    """Where the labels of a `case` statement stand as a command line is stepped, so that the `)` that
+    ends a label (and the `(` that may open it) is no subshell closing or opening: `(cd d; case $x in
+    a) rm f ;; esac)` runs `rm f` in `d`."""
+
+    def __init__(self) -> None:
+        self._depth = 0
+        self._expecting = False
+
+    def step(self, words: list[str], ended_by: str) -> str:
+        """What ends the command `words`: `ended_by`, or `;` when it ends a label."""
+        lead = list(words)
+        while lead and lead[0] in KEYWORDS:
+            lead = lead[1:]
+        if lead[:1] == ["case"] and "in" in lead:
+            self._depth += 1
+            self._expecting = True
+        elif lead[:1] == ["esac"]:
+            self._depth = max(self._depth - 1, 0)
+            self._expecting = False
+        if self._expecting and ended_by == ")":
+            self._expecting = False
+            return ";"
+        if self._expecting and ended_by == "(" and (not words or words[-1] == "in"):
+            return ";"
+        if self._depth and ended_by in (";;", ";&", ";;&"):
+            self._expecting = True
+        return ended_by
+
+
 def stepped_commands(line: str):
     """The simple commands of a command line whose heredoc bodies are taken out, in order:
     (its words, its redirections as (operator, word), its here-string or None, the control operator
@@ -513,10 +546,12 @@ def stepped_commands(line: str):
     unclosed quote, as `shlex.split` does. A line break that ends a command is a `;`."""
     lexer = shlex.shlex(with_line_breaks(line), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    lexer.commenters = ""      # with_line_breaks left the comments out: a `#` inside a word (`$#`) is no comment
     breaks = outgoing_module().SHELL_BREAK
     words: list[str] = []
     redirects: list[tuple[str, str]] = []
     here = operator = None
+    labels = CaseLabels()
     for token in list(lexer):
         if operator is not None:
             if operator == "<<<":
@@ -526,7 +561,7 @@ def stepped_commands(line: str):
             operator = None
         elif token in breaks or (token and set(token) <= set(";&|()")):
             for ended_by in glued(token):
-                yield words, redirects, here, ended_by
+                yield words, redirects, here, labels.step(words, ended_by)
                 words, redirects, here = [], [], None
         elif token and set(token) <= set("<>&|") and set(token) & set("<>"):
             if words and words[-1].isdigit():   # the fd of `2>`
@@ -599,7 +634,7 @@ def said(command: str, depth: int = 0):
     for words, redirects, here in commands:
         yield from (target for _, target in redirects)
         rest = words
-        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT):
+        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT or rest[0] in KEYWORDS):
             rest = rest[1:]
         tool = os.path.basename(rest[0]) if rest else ""
         shell, flags = bool(SHELL_CODE.fullmatch(tool)), code_flags(tool)
@@ -722,6 +757,8 @@ CODE_FLAGS = {"python": {"-c"}, "node": {"-e", "--eval", "-p", "--print"}, "perl
               "ruby": {"-e"}, "bun": {"-e", "--eval"}, "php": {"-r"}, "osascript": {"-e"}}
 # What stands before a command and runs it (`sudo tee f`), and a variable set for it (`A=1 cp a b`).
 RUNS_NEXT = {"sudo", "env", "command", "exec", "builtin", "nohup", "nice", "time", "caffeinate"}
+# Words of the shell that stand before a command and run it (`do rm x`, `then rm x`, `! rm x`, `{ rm x; }`).
+KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}", "time"}
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 # Builtins that set the variables written after them, a variable as a word spells it (`$D`, `${D}`),
 # and what makes a value one this command line cannot know.
@@ -812,8 +849,83 @@ class Standing:
         return carried
 
 
+# How far an order that takes a folder away, replaces it or fills it reaches into the folders that hold
+# a session's transcripts (holds_transcripts): into the folders of transcripts alone, also the config folders
+# (`~/.claude-work`) that hold them, or also the home and every folder above it.
+RECORDS = "records"
+CONFIG_HOMES = "config homes"
+ABOVE_HOME = "above home"
+# Programs that fill the folder they are given as their last word with what they copy (cp, mv and ln are COPIES).
+FOLDER_COPIES = {"rsync", "ditto", "scp"}
+REMOTE = re.compile(r"[^/]*:")
+
+
+class FolderOrder(NamedTuple):
+    """One place a command takes away, replaces or fills, spelled two ways: followed through its
+    links (`resolved`) and as written (`spelled`, `~/linked/projects` stays that), with how far
+    the order reaches (RECORDS, CONFIG_HOMES, ABOVE_HOME)."""
+
+    resolved: Path
+    spelled: Path
+    reach: str
+
+
+def target_directory(args: list[str]) -> str | None:
+    """The folder `-t` / `--target-directory` gives cp, mv and install as where they put what they copy."""
+    for at, word in enumerate(args):
+        if word in ("-t", "--target-directory") and at + 1 < len(args):
+            return args[at + 1]
+        if word.startswith("--target-directory="):
+            return word.partition("=")[2]
+        if re.fullmatch(r"-t.+", word):
+            return word[2:]
+    return None
+
+
+def find_deletes(args: list[str]) -> list[str]:
+    """The folders a `find` takes away what it finds in (`-delete`, or `-exec rm ...`), else nothing."""
+    roots = list(itertools.takewhile(lambda w: not w.startswith(("-", "(", "!")) or w in ("-H", "-L", "-P"), args))
+    roots = [root for root in roots if root not in ("-H", "-L", "-P")] or ["."]
+    deletes = "-delete" in args or any(
+        word in FIND_RUNS and at + 1 < len(args) and os.path.basename(args[at + 1]) in REMOVES
+        for at, word in enumerate(args))
+    return roots if deletes else []
+
+
+def unpacks_into(tool: str, args: list[str]) -> str | None:
+    """The folder `tar -x` or `unzip` puts the files of an archive in (`-C`, `-d`; the folder the
+    command stands in without), or None when the command does not unpack."""
+    if tool == "tar":
+        mode = args[0] if args and not args[0].startswith("-") else ""
+        if not (re.search(r"x", mode) or any(re.fullmatch(r"-[A-Za-z]*x[A-Za-z]*|--extract|--get", a) for a in args)):
+            return None
+        for at, word in enumerate(args):
+            if word in ("-C", "--directory") and at + 1 < len(args):
+                return args[at + 1]
+            if word.startswith("--directory="):
+                return word.partition("=")[2]
+            if re.fullmatch(r"-C.+", word):
+                return word[2:]
+        return "."
+    if any(re.fullmatch(r"-[A-Za-z]*[lptvZz][A-Za-z]*", a) for a in args):
+        return None
+    for at, word in enumerate(args):
+        if word == "-d" and at + 1 < len(args):
+            return args[at + 1]
+        if re.fullmatch(r"-d.+", word):
+            return word[2:]
+    return "."
+
+
 def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path]]:
-    """(paths a Bash command names as a place it writes, paths it names as removed).
+    """(paths a Bash command names as a place it writes, paths it names as removed): see
+    named_with_folders, which also tells what each order does to a folder."""
+    return named_with_folders(command, cwd, depth)[:2]
+
+
+def named_with_folders(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path], list[FolderOrder]]:
+    """(paths a Bash command names as a place it writes, paths it names as removed, the orders that
+    replace, empty or fill a folder: see FolderOrder).
 
     Written: a redirection's target (`>`, `>>`), the files of tee / touch / truncate, the
     destination of cp / mv / install / ln, the existing files sed -i edits, dd's of=, and the
@@ -840,7 +952,8 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
         commands = []
     written: list[tuple[str, str]] = []     # (the name as written, the folder the command stood in)
     removed: list[tuple[str, str]] = []
-    found: tuple[list[Path], list[Path]] = ([], [])
+    folder_orders: list[tuple[str, str, str]] = []     # (the name as written, the folder the command stood in, reach)
+    found: tuple[list[Path], list[Path], list[FolderOrder]] = ([], [], [])
     standing = Standing(cwd)
     values: dict[str, str] = {}
 
@@ -853,13 +966,17 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
         if SHELL_CODE.fullmatch(tool):
             if depth >= NESTED:
                 return
-            inner = named(code, base, depth + 1)
+            inner = named_with_folders(code, base, depth + 1)
             found[0].extend(inner[0])
             found[1].extend(inner[1])
+            found[2].extend(inner[2])
         elif code_flags(tool):
             if tool.startswith("python"):
                 code = code_writes.python.written_code(code)
-            written.extend((path, base) for path in code_paths(code, base))
+            for path in code_paths(code, base):
+                written.append((path, base))
+                # code that only looks the config folders up (`glob(home / ".claude*")`) changes none of them
+                folder_orders.append((path, base, RECORDS))
 
     def one(words: list[str], stdin: str | None, fed: list[str]) -> None:
         if words and all(ASSIGNMENT.fullmatch(w) for w in words[words[0] in DECLARES:]):
@@ -873,7 +990,7 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
                 else:
                     values[name] = value
             return
-        while words and (ASSIGNMENT.fullmatch(words[0]) or os.path.basename(words[0]) in RUNS_NEXT):
+        while words and (ASSIGNMENT.fullmatch(words[0]) or os.path.basename(words[0]) in RUNS_NEXT or words[0] in KEYWORDS):
             wrapper = not ASSIGNMENT.fullmatch(words[0])
             words = words[1:]
             while wrapper and words and (words[0].startswith("-") or ASSIGNMENT.fullmatch(words[0])):
@@ -885,14 +1002,38 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
             return
         here = standing.here
         paths = [a for a in args if not a.startswith("-")]
+        operands = _operands(args, set())       # what follows `--` is a name too, `-home-tool` included
         if tool in CREATES:
             written.extend((p, here) for p in paths)
-        elif tool in COPIES and len(paths) >= 2:
-            written.append((paths[-1], here))
+        elif tool in COPIES and (target_directory(args) is not None or len(paths) >= 2):
+            target = target_directory(args)
+            sources = [o for o in operands if o != target] if target is not None else operands[:-1]
+            destination = target if target is not None else operands[-1]
+            written.append((destination, here))
             if tool in MOVES:
-                removed.extend((p, here) for p in paths[:-1])
+                removed.extend((p, here) for p in sources)
+                folder_orders.extend((p, here, ABOVE_HOME) for p in sources)
+            if tool == "ln":
+                folder_orders.append((destination, here, RECORDS if destination.endswith("/") else ABOVE_HOME))
+            else:
+                folder_orders.append((destination, here, CONFIG_HOMES if _copy_recursive(tool, args) else RECORDS))
+        elif tool in FOLDER_COPIES and len(operands) >= 2:
+            if not REMOTE.match(operands[-1]):
+                written.append((operands[-1], here))
+                folder_orders.append((operands[-1], here, CONFIG_HOMES))
+            if tool == "rsync" and "--remove-source-files" in args:
+                gone = [o for o in operands[:-1] if not REMOTE.match(o)]
+                removed.extend((o, here) for o in gone)
+                folder_orders.extend((o, here, ABOVE_HOME) for o in gone)
+        elif tool == "find" and (roots := find_deletes(args)):
+            removed.extend((root, here) for root in roots)
+            folder_orders.extend((root, here, ABOVE_HOME) for root in roots)
+        elif tool in ("tar", "unzip") and (unpacked := unpacks_into(tool, args)) is not None:
+            written.append((unpacked, here))
+            folder_orders.append((unpacked, here, CONFIG_HOMES))
         elif tool in REMOVES:
             removed.extend((p, here) for p in paths)
+            folder_orders.extend((p, here, ABOVE_HOME) for p in operands)
         elif tool in IN_PLACE and any(a.startswith(("-i", "--in-place")) for a in args):
             written.extend((p, here) for p in paths if Path(real(p, here)).is_file())
         elif tool == "dd":
@@ -931,17 +1072,20 @@ def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path
     for program, body in waiting:
         run(program, body, str(real(cwd)))
 
-    def spelled(names: list[tuple[str, str]]) -> list[Path]:
-        out = []
-        for name, stood in names:
-            if not name or name in ("-", "/dev/null"):
-                continue
-            base = os.path.expanduser(name)
-            base = base if os.path.isabs(base) else os.path.join(stood, base)
-            out.extend(real(m) for m in (glob.glob(base) if GLOB.search(name) else []) or [base])
-        return out
+    def matched(name: str, stood: str) -> list[str]:
+        """The names a word stands for, written out from the folder the command stood in (a glob: its matches)."""
+        if not name or name in ("-", "/dev/null"):
+            return []
+        base = os.path.expanduser(name)
+        base = base if os.path.isabs(base) else os.path.join(stood, base)
+        return (glob.glob(base) if GLOB.search(name) else []) or [base]
 
-    return spelled(written) + found[0], spelled(removed) + found[1]
+    def spelled(names: list[tuple[str, str]]) -> list[Path]:
+        return [real(m) for name, stood in names for m in matched(name, stood)]
+
+    ordered = [FolderOrder(real(m), Path(os.path.normpath(m)), reach)
+               for name, stood, reach in folder_orders for m in matched(name, stood)]
+    return spelled(written) + found[0], spelled(removed) + found[1], ordered + found[2]
 
 
 def fed_files(redirects: list[tuple[str, str]], previous: tuple | None) -> list[str]:
@@ -960,28 +1104,34 @@ def ran_scripts(command: str, cwd: str, depth: int = 0, *, fed_only: bool = Fals
     command hands to a program (script_files), in order, following where the command stands (Standing),
     a shell's `-c` string and `eval` included. With `fed_only`, only the code a program reads from the
     files on its standard input (`bash < run.sh`, `cat run.sh | bash`)."""
+    return [found[:3] for found in ran_scripts_with_arguments(command, cwd, depth, fed_only=fed_only)]
+
+
+def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
+                               fed_only: bool = False) -> list[tuple[str, str, str, list[str]]]:
+    """ran_scripts, and the words the command hands each file as its arguments."""
     line, _ = split_heredocs(spell_home(command))
     try:
         steps = list(stepped_commands(line))
     except ValueError:
         return []
-    found: list[tuple[str, str, str]] = []
+    found: list[tuple[str, str, str, list[str]]] = []
     standing = Standing(cwd)
     for index, (words, redirects, _, ended_by) in enumerate(steps):
         rest = words
-        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT):
+        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT or rest[0] in KEYWORDS):
             rest = rest[1:]
         if rest and not standing.move(os.path.basename(rest[0]), rest[1:]):
             tool, here = os.path.basename(rest[0]), standing.here
             fed = fed_files(redirects, steps[index - 1] if index else None)
-            if (script := script_files.ran(rest, here, fed)) is not None:
+            if (script := script_files.ran_with_arguments(rest, here, fed)) is not None:
                 if not fed_only or script_files.ran(rest, here) is None:
-                    found.append((*script, here))
+                    found.append((*script[:2], here, script[2]))
             elif depth < NESTED and (tool == "eval" or SHELL_CODE.fullmatch(tool)):
                 codes = [" ".join(rest[1:])] if tool == "eval" else \
                     [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
                 for code in codes:
-                    found += ran_scripts(code, here, depth + 1, fed_only=fed_only)
+                    found += ran_scripts_with_arguments(code, here, depth + 1, fed_only=fed_only)
         if ended_by == "(":
             standing.open()
         elif ended_by == ")":
@@ -1094,13 +1244,98 @@ def adds_relay_lines(path: Path, tool: str, args: dict) -> bool:
     return after is not None and orders_edit.only_adds_relay_lines(before, after)
 
 
+def holds_transcripts(path: Path, reach: str) -> bool:
+    """Whether an order that takes `path` away, replaces it or fills it (FolderOrder) touches the
+    transcripts: the folder of transcripts (`~/.claude*/projects`, a folder in it, but for a
+    project's `memory`), and as far as `reach` goes the config folder (`~/.claude-work`) and the
+    home with every folder above it, which hold them too."""
+    for home in {Path.home(), real(Path.home())}:
+        if path == home or path in home.parents:
+            if reach == ABOVE_HOME:
+                return True
+            continue
+        if home not in path.parents:
+            continue
+        parts = path.relative_to(home).parts
+        if not parts[0].startswith(".claude"):
+            continue
+        if len(parts) == 1:
+            if reach != RECORDS and not path.is_file():
+                return True
+        elif parts[1] == "projects" and parts[3:4] != ("memory",) and (len(parts) == 2 or not path.is_file()):
+            return True
+    return False
+
+
+def script_argument_orders(command: str, cwd: str, transcript: str | None, marks: set[str] | None = None,
+                           depth: int = 0) -> tuple[list[Path], list[FolderOrder]]:
+    """(the paths, the orders on a folder) a file of code the command runs writes where its arguments say,
+    when one of the words handed to it names what the agent may not write: a thing `kept` judges, or
+    the folder of transcripts or one in it (`holds_transcripts`). A script that takes the path from its
+    arguments is read again with them in place (script_arguments): a Python file by `sys.argv`, a shell
+    script by `$1`, `$@`, a loop over them, a `shift` and a default, and what it runs in turn by the words
+    it hands on. A script that uses its words where the text does not say, and writes, writes every one;
+    so does the code of another interpreter that uses its arguments and spells a call that writes. A
+    command that hands no such word is read as it always was."""
+    paths: list[Path] = []
+    orders: list[FolderOrder] = []
+
+    def spelled(word: str, here: str) -> tuple[Path, Path]:
+        target = os.path.join(here, os.path.expanduser(word))
+        return real(target), Path(os.path.normpath(target))
+
+    def guarded(word: str, here: str) -> bool:
+        resolved, written = spelled(word, here)
+        return bool(kept(resolved, transcript, marks) or holds_transcripts(resolved, RECORDS)
+                    or holds_transcripts(written, RECORDS))
+
+    def writes_all(words: list[str], here: str) -> None:
+        for word in script_arguments.candidates(words):
+            resolved, written = spelled(word, here)
+            paths.append(resolved)
+            orders.append(FolderOrder(resolved, written, RECORDS))
+
+    for program, code, here, words in ran_scripts_with_arguments(command, cwd):
+        if not any(guarded(word, here) for word in script_arguments.candidates(words)):
+            continue
+        if SHELL_CODE.fullmatch(program):
+            texts, unreadable = script_arguments.shell_variants(code, words)
+            wrote = False
+            for text in texts:
+                written, removed, folders = named_with_folders(text, here)
+                paths += [*written, *removed]
+                orders += folders
+                wrote = wrote or bool(written or removed or folders)
+                if depth < NESTED:
+                    inner_paths, inner_orders = script_argument_orders(text, here, transcript, marks, depth + 1)
+                    paths += inner_paths
+                    orders += inner_orders
+            if unreadable and wrote:
+                writes_all(words, here)
+        elif program.startswith("python"):
+            parts = code_writes.python.written_with_arguments(code, words)
+            for name in code_paths(parts, here):
+                resolved, written = spelled(name, here)
+                paths.append(resolved)
+                orders.append(FolderOrder(resolved, written, RECORDS))
+        elif script_arguments.writes_where_told(program, code):
+            writes_all(words, here)
+    return paths, orders
+
+
 def kept_by(command: str, cwd: str, transcript: str | None,
             marks: set[str] | None = None) -> tuple[str, str] | None:
     """What a Bash command writes or removes that the agent may not (and why), or None. Removing
     a setting counts: with no destinations.txt a destination held to an order is undeclared, and
-    with no areas.txt nothing is an area."""
-    written, removed = named(command, cwd)
-    for path in written + removed:
+    with no areas.txt nothing is an area. So does taking away, replacing or filling the folder of
+    transcripts, or one that holds it, as writing a transcript does (each path is judged as it is
+    written and as its links lead)."""
+    written, removed, orders = named_with_folders(command, cwd)
+    script_paths, script_orders = script_argument_orders(command, cwd, transcript, marks)
+    for order in [*orders, *script_orders]:
+        if holds_transcripts(order.resolved, order.reach) or holds_transcripts(order.spelled, order.reach):
+            return "the folder holding a session's transcripts", TRANSCRIPT_WHY
+    for path in [*written, *removed, *script_paths]:
         if what := kept(path, transcript, marks):
             return what
     for path in removed:
@@ -1205,7 +1440,7 @@ def recursive_reads(command: str, cwd: str, depth: int = 0) -> list[tuple[Path, 
 def _walked(words: list[str], steps: list, index: int, standing: Standing, depth: int) -> list[tuple[Path, list[str]]]:
     """The folders one command of a command line reads every file under (see recursive_reads)."""
     rest = words
-    while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT):
+    while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT or rest[0] in KEYWORDS):
         rest = rest[1:]
     if not rest:
         return []
@@ -1290,7 +1525,6 @@ def upto_break(words: list[str]) -> list[str]:
 # git options that take a value before the subcommand (`git -C dir -c k=v push`).
 GIT_VALUED = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
 SHELLS = {"bash", "sh", "zsh", "dash"}
-KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}", "time"}
 WRAPPERS = {"sudo", "env", "command", "exec", "builtin", "nohup", "nice", "caffeinate", "xargs"}
 
 
@@ -1443,11 +1677,13 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
         return out
 
     current: list[str] = []
+    labels = CaseLabels()
     for w in [p for word in words for p in pieces(word)] + [";"]:
         if w not in breaks:
             current.append(w)
             continue
         run(current)
+        w = labels.step(current, w)
         current = []
         if w == "(":
             standing.open(lost)
@@ -2114,6 +2350,9 @@ def main() -> int:
     areas = load_areas()
     tool, args, cwd = event.get("tool_name", ""), event.get("tool_input", {}), event.get("cwd", os.getcwd())
     session = event.get("session_id", "unknown")
+    shown = args        # what the operator is shown, and says yes to
+    if tool == "Bash" and "command" in args:
+        args = {**args, "command": syntax_checks.as_reads(args["command"])}
     # A message from another machine holds the session until the operator types, areas or none.
     if tool not in HELD_RUNS and order_module().held(event.get("transcript_path")):
         deny(HELD)
@@ -2137,7 +2376,7 @@ def main() -> int:
     if tool == "Bash" and (reason := bypass(args.get("command", ""), cwd, areas)):
         command = args.get("command", "")
         places = [real(cwd), *mentioned_paths(command, areas, cwd), *(t for t, _ in sends_of(command, cwd))]
-        if reason == MARKS_REWRITE or (why := approval(tool, args, event, places, areas)):
+        if reason == MARKS_REWRITE or (why := approval(tool, shown, event, places, areas)):
             deny(f"area-guard: an agent does not switch the guards off or around ({reason})"
                  + ("" if reason == MARKS_REWRITE else f": {why}"))
             return 0
@@ -2178,7 +2417,7 @@ def main() -> int:
             paths = [Path(written)]
         else:
             paths = [p for found in named(args.get("command", ""), cwd) for p in found if in_settings(p)]
-        why = approval(tool, args, event, paths or [real(cwd)], areas) if is_setting else None
+        why = approval(tool, shown, event, paths or [real(cwd)], areas) if is_setting else None
         if not is_setting or why:
             deny(f"area-guard: an agent does not write or remove {what[0]}: {what[1]} "
                  f"(code written into a command counts as writing every path it names)"

@@ -738,8 +738,14 @@ step earlier, before each tool call, from the same `areas.txt`:
   guard lets through is judged from the settings, and an order for a send from
   the transcript (see *A send the operator orders* below). An agent that could
   write them would draw an area around what it wants to send, call a phrase fine
-  to send, or make an order itself. Reading them and copying them out pass; a
-  change of the settings passes on the operator's yes, a change of a transcript never.
+  to send, or make an order itself. The same goes for the folders that hold the
+  transcripts: the guard refuses a command that removes, moves, links over or empties
+  `~/.claude*/projects`, a folder in it, or a folder that holds it (`~/.claude-work`), and one
+  that copies or unpacks into them (`cp`, `mv` and `install` with or without `-t`, `rsync`,
+  `tar -x`, `unzip -d`), or that deletes in them (`find -delete`, `find -exec rm`,
+  `rsync --remove-source-files`), whether the path is written directly or reached
+  through a link. A project's `memory` folder stays writable. Reading them and copying them
+  out pass; a change of the settings passes on the operator's yes, a change of a transcript never.
 - **A transcript holds what its session read.** Every session's transcript sits under the
   same folders, wherever the session worked, and holds the words of each file it read. A
   call that reads one (`Read`, `Grep`, a command that names it, or a recursive read of a
@@ -747,6 +753,8 @@ step earlier, before each tool call, from the same `areas.txt`:
   child's inherited ones too): a session that may not read there is refused before it
   reads, and one that may holds those areas from then on. A transcript of a session that
   read inside no area, and a listing of names (`Glob`, `ls`), mark nothing.
+  Config folders may share one `projects` through a link: a recursive read of any of
+  them counts the records behind the link, whether or not the program would follow it.
 - **A change the operator approves**: the agent shows the very call in a
   `guard` block and asks; the operator answers in the chat, and types no command.
 
@@ -818,12 +826,14 @@ step earlier, before each tool call, from the same `areas.txt`:
   `php`, `osascript`), `source` and `.`, a file run by its path (the program its
   `#!` line names, the shell when it has none) and `uv run fix.py`. It is
   followed where the command stands (`cd`, a subshell, `-c`, `eval`), and a
-  script that runs another is followed a few steps. A shell told to execute
-  nothing runs none of it, so `bash -n run.sh` is judged as a command that
-  only reads the file: this holds for `sh`, `bash`, `zsh`, `dash` and `ksh`
-  named bare or in their usual folders, with `-n` or `-o noexec` and no option
-  but `-e`, `-u`, `-v`, `-x`, `--norc`, `--noprofile`, `--posix` beside it;
-  any other form (`-n +n`, `-n -i`) is read as a run. Not read: a module run by
+  script that runs another is followed a few steps. A syntax check at
+  the head of the call runs none of it, so `bash -n run.sh` there is judged
+  as `cat run.sh`: only `sh`, `bash`, `zsh`, `dash` or `ksh` (bare, or in
+  `/bin` or `/usr/bin`) with `-n` or `-o noexec` and one file written out,
+  one after another, after a `cd` to a folder written out at most. Anywhere
+  else (after another command, an assignment or a function, in a pipe, with
+  another option) it is read as a run, since what stands before it can make
+  that name run the file. Not read: a module run by
   name (`python3 -m`), a program found on PATH by its bare name, what the code
   imports or starts in turn, a file over 512 KiB and one that is not text. A
   shell script's comment lines are not held to the lines about switching the
@@ -844,6 +854,29 @@ step earlier, before each tool call, from the same `areas.txt`:
   session with no marks), and 1 with one line per refused path on stderr. A
   relative path resolves from the caller's working directory. It only
   answers: it adds no mark and changes nothing.
+
+  One case needs no `may-write`: when a word handed to a script names the
+  guard's settings, a session's transcript, or the folder that holds
+  transcripts (or one in it), the guard reads the script with its arguments
+  in place and refuses it if it writes, empties or fills there, with the
+  reason the same write gets from a command. This reaches:
+
+  - a Python file (`sys.argv[1]`, `sys.argv[1:]`, `from sys import argv`; with
+    `argparse` or a loop over `sys.argv`, any write whose target the code does
+    not say counts as writing every word);
+  - a shell script (`$1`..`$9`, `${1:-x}`, `$@`, `$*`, `${@:2}`, a `for` loop
+    over them, a `shift` at the top of the script; `getopts`, `eval` and a
+    `shift` inside a loop count as writing every word when the script writes);
+  - a script it runs in turn with those words (`python3 put.py "$1"`), and one
+    that moves to the folder it is given (`cd "$1"`) before it writes a relative name;
+  - a Node, Ruby, Perl or PHP file that takes its arguments (`process.argv`,
+    `ARGV`, `$ARGV`, `$argv`) and spells a call that writes or runs a program.
+
+  A script that only reads the word, or writes somewhere else, passes. What
+  stays outside: a script in another language, a word passed on through an
+  environment variable or a file, and a path the script builds from the word.
+  The commands in the branches of a `case`, a `for` or an `if` are read as the
+  commands they are, in the folder the command stands in there.
 
 - **A session may hand work to a child of its own.** The client that opens a child's
   tab registers it with the guard (`area-guard.py child add --child TAB --parent TAB
