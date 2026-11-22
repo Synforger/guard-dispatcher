@@ -2394,7 +2394,7 @@ def main() -> int:
     areas = load_areas()
     tool, args, cwd = event.get("tool_name", ""), event.get("tool_input", {}), event.get("cwd", os.getcwd())
     session = event.get("session_id", "unknown")
-    shown = args        # what the operator is shown, and says yes to
+    shown = monitor_calls.as_shell(tool, args)[1]       # what the operator is shown, and says yes to
     if tool == "Bash" and "command" in args:
         args = {**args, "command": syntax_checks.as_reads(args["command"])}
     # A message from another machine holds the session until the operator types, areas or none.
@@ -2494,7 +2494,7 @@ def main() -> int:
     tabs = state.setdefault("tabs", {})
     try:
         reason = outgoing_module().check(tool, args, cwd, SEND_SCAN, frozenset(marks), private_area, tabs,
-                                         event, STATE)
+                                         event, STATE, shown=shown)
     except Exception as error:  # noqa: BLE001 — a hook that fails lets the call run: a check that breaks sends nothing
         where = error.__traceback__
         while where.tb_next:
