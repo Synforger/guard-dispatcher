@@ -818,7 +818,12 @@ step earlier, before each tool call, from the same `areas.txt`:
   `php`, `osascript`), `source` and `.`, a file run by its path (the program its
   `#!` line names, the shell when it has none) and `uv run fix.py`. It is
   followed where the command stands (`cd`, a subshell, `-c`, `eval`), and a
-  script that runs another is followed a few steps. Not read: a module run by
+  script that runs another is followed a few steps. A shell told to execute
+  nothing runs none of it, so `bash -n run.sh` is judged as a command that
+  only reads the file: this holds for `sh`, `bash`, `zsh`, `dash` and `ksh`
+  named bare or in their usual folders, with `-n` or `-o noexec` and no option
+  but `-e`, `-u`, `-v`, `-x`, `--norc`, `--noprofile`, `--posix` beside it;
+  any other form (`-n +n`, `-n -i`) is read as a run. Not read: a module run by
   name (`python3 -m`), a program found on PATH by its bare name, what the code
   imports or starts in turn, a file over 512 KiB and one that is not text. A
   shell script's comment lines are not held to the lines about switching the

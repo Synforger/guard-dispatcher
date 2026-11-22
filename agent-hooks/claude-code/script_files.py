@@ -16,6 +16,8 @@ keeps:
   `cat run.sh | bash`, `python3 - < fix.py` (the caller says which files feed the command: `fed`).
 
 A relative file is the one in the folder the command stands in when it reaches it (the caller says).
+A shell told to execute nothing (`bash -n run.sh`, `sh -o noexec`) runs no code, so none is read:
+only where each of its options is one known to leave that so (`_runs_nothing`).
 What is not read: a module run by name (`python3 -m pkg`), a program found on PATH by its bare name,
 a file named only as the command runs (`xargs bash`, `find -exec bash {} +`, a variable the line
 does not set), what the code imports or starts in turn, a file larger than MAX_BYTES, and one that
@@ -63,6 +65,14 @@ CODE_GIVEN = {
     "osascript": {"-e"},
     "shell": set(),
 }
+# The shells that execute nothing under `-n` / `-o noexec`, startup files included, the folders their
+# own binaries stand in, and the options that beside it cannot switch execution on again. A list of what
+# is allowed, not of what is refused: `+n` and `+o noexec` do switch it on, an interactive shell may
+# ignore it, and a word only known as the command runs (`$OPTS`) can be any of those.
+NOEXEC_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+SHELL_FOLDERS = frozenset({"", "/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"})
+NOEXEC_LETTERS = re.compile(r"-[enuvx]+")
+BESIDE_NOEXEC = frozenset({"--norc", "--noprofile", "--posix"})
 # env's options that take the next word as their value (in a `#!` line through `env -S`).
 ENV_VALUED = {"-u", "--unset", "-P", "-C", "--chdir"}
 # The program name the readers know each kind by (area-guard's code_flags and SHELL_CODE, outgoing's
@@ -122,10 +132,35 @@ def _file_run(words: list[str], here: str) -> tuple[str, str] | None:
     if name in ("deno", "bun") and args[:1] == ["run"]:
         args = args[1:]
     if (kind := kind_of(program)) is not None:
+        if kind == "shell" and _runs_nothing(program, args):
+            return None
         return _after_options(kind, args)
     if "/" in program:
         return _by_its_line(program, here)
     return None
+
+
+def _runs_nothing(program: str, args: list[str]) -> bool:
+    """Whether a shell is told to execute nothing and no word before its file can undo that."""
+    folder, name = os.path.split(program)
+    if name not in NOEXEC_SHELLS or folder not in SHELL_FOLDERS:
+        return False
+    noexec = False
+    at = 0
+    while at < len(args) and args[at].startswith(("-", "+")):
+        word = args[at]
+        if word == "--":
+            break
+        if args[at:at + 2] == ["-o", "noexec"]:
+            noexec = True
+            at += 2
+            continue
+        if NOEXEC_LETTERS.fullmatch(word):
+            noexec = noexec or "n" in word
+        elif word not in BESIDE_NOEXEC:
+            return False
+        at += 1
+    return noexec
 
 
 def _after_options(kind: str, args: list[str]) -> tuple[str, str] | None:

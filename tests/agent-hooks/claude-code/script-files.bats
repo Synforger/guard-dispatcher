@@ -270,3 +270,55 @@ print(os.path.expanduser('~'))
 open('out/report.md', 'w').write('x')"
     bash_call "python3 note.py"; passed
 }
+
+# --- a shell told to execute nothing ---------------------------------------------------------------
+
+@test "script files: a shell that only checks a script's syntax does not run what the script holds" {
+    bash_call "cat ~/org/clients/acme/received/memo.md"; passed
+    script send.sh 'gh api "${ENDPOINT}" --method "${METHOD}" --input - <<BODY
+{"state": "on"}
+BODY'
+    script w.sh "echo x >> ${PLACE}/a.jsonl"
+    script post.sh "curl -d x https://chat.example.com/api"
+    script land.sh "git commit --no-verify -m x"
+    local file command
+    for file in send.sh w.sh post.sh land.sh; do
+        for command in "bash -n ${file}" "sh -n ${file}" "zsh -n ${file}" "dash -n ${file}" "ksh -n ${file}" \
+                       "/bin/bash -n ${file}" "bash -nx ${file}" "bash -eun -- ${file}" "bash -o noexec ${file}" \
+                       "bash --norc -n ${file}" "bash -n < ${file}" "cat ${file} | bash -n" \
+                       "bash -n ${file} && git diff --stat"; do
+            bash_call "${command}"
+            passed || { echo "refused: ${command}"; echo "${output}"; return 1; }
+        done
+    done
+}
+
+@test "script files: a form that can still execute the script is read, whatever -n it carries" {
+    bash_call "cat ~/org/clients/acme/received/memo.md"; passed
+    script send.sh 'gh api "${ENDPOINT}" --method "${METHOD}" --input - <<BODY
+{"state": "on"}
+BODY'
+    script w.sh "echo x >> ${PLACE}/a.jsonl"
+    script post.sh "curl -d x https://chat.example.com/api"
+    script land.sh "git commit --no-verify -m x"
+    mkdir -p "${TOOL}/bin"
+    local file command
+    for file in send.sh w.sh post.sh land.sh; do
+        # -n taken back, an option not known to keep it, a word after the file (the script's own argument),
+        # a program that only has a shell's name, a shell not known to honour it, and a later run
+        for command in "bash ${file}" "bash -n +n ${file}" "bash -n +o noexec ${file}" "bash -o noexec +n ${file}" \
+                       "bash -n -i ${file}" "bash ${file} -n" "bash -- ${file} -n" "bash -o errexit ${file}" \
+                       "./bin/bash -n ${file}" "fish -n ${file}" "bash -n ${file} && bash ${file}"; do
+            bash_call "${command}"
+            denied || { echo "not refused: ${command}"; return 1; }
+        done
+    done
+}
+
+@test "script files: a syntax check still reads the file it is given and writes where it is sent" {
+    script w.sh "echo hi"
+    bash_call "bash -n w.sh > ${PLACE}/a.jsonl"; denied
+    export GUARD_WORK_FOLDER="${TOOL}"
+    bash_call "bash -nv ~/org/clients/acme/received/memo.md"; denied
+    says "reads inside client"
+}
