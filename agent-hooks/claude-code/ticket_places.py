@@ -11,7 +11,10 @@ place, no listing of every place by an agent) cannot differ.
   (what a commit or a push would carry out), the area's own settings name the folder in
   `areas/<area>/tickets.txt`: one line, `~` allowed, `#` starts a comment. The folder must lie
   in the area alone and outside every git work tree;
-- areas read that do not lie one inside the next: no single place holds them.
+- areas read that do not lie one inside the next (two clients of one company): the place of the
+  innermost area around them all (the company). What is written there is judged for a reader of that
+  area, so the text of one client is not let into it. When no area lies around them all, no single
+  place holds them.
 
 A place has boundaries: the area it lies in most closely and the areas around that one. A place
 in no area has none. What may be written into a place is judged as a message to a session that
@@ -106,12 +109,24 @@ def _lies_inside(area: str, other: str, areas: area_roles.Areas) -> bool:
 
 
 def _innermost_of(marks: set[str], areas: area_roles.Areas) -> str:
-    """The one area of `marks` that lies inside all the others, or PlaceError when they are not in a line."""
+    """The one area of `marks` that lies inside all the others; when they are not in a line, the innermost
+    area around them all (_innermost_around); PlaceError when there is none."""
     for first, second in itertools.combinations(sorted(marks), 2):
         if not (_lies_inside(first, second, areas) or _lies_inside(second, first, areas)):
+            if (around := _innermost_around(marks, areas)) is not None:
+                return around
             raise PlaceError(NO_SINGLE_PLACE, f"the areas read ({first}, {second}) do not fit in one place: "
-                                              f"neither lies inside the other")
+                                              f"neither lies inside the other, and no area lies around them all")
     return next(name for name in sorted(marks) if all(name == other or _lies_inside(name, other, areas) for other in marks))
+
+
+def _innermost_around(marks: set[str], areas: area_roles.Areas) -> str | None:
+    """The area that every area of `marks` lies inside (or is) and that lies inside every other such area,
+    or None when no area lies around them all."""
+    around = [name for name in sorted(area_names(areas))
+              if all(name == mark or _lies_inside(mark, name, areas) for mark in marks)]
+    return next((name for name in around if all(name == other or _lies_inside(name, other, areas) for other in around)),
+                None)
 
 
 def _declared_place(area: str, areas: area_roles.Areas, why_needed: str) -> Path:
