@@ -990,13 +990,17 @@ def named_with_folders(command: str, cwd: str,
     found: tuple[list[Path], list[Path], list[FolderOrder]] = ([], [], [])
     standing = Standing(cwd)
     values: dict[str, str] = {}
+    handed: set[tuple[str, str, str]] = set()
 
     def filled(word: str) -> str:
         """The word with the variables this command line set to a literal written out."""
         return VARIABLE.sub(lambda m: values.get(m.group(1) or m.group(2), m.group(0)), word)
 
     def run(tool: str, code: str, base: str) -> None:
-        """Code handed to a program that runs it."""
+        """Code handed to a program that runs it: read once, however often the line hands it on."""
+        if (tool, code, base) in handed:
+            return
+        handed.add((tool, code, base))
         if SHELL_CODE.fullmatch(tool):
             if depth >= NESTED:
                 return

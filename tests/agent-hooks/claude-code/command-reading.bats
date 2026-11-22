@@ -135,3 +135,17 @@ written, removed, orders = guard.named_with_folders("v=$(echo x > out; rm gone)"
 print(*(len(found) == len(set(map(repr, found))) and len(found) > 0 for found in (written, removed, orders)))' "${HOOK}" "${REPO}"
     [ "${output}" = "True True True" ]
 }
+
+@test "command reading: code a substitution runs is read once for what it writes" {
+    printf 'open("out.txt", "w").write("x")\n' > "${REPO}/w.py"
+    run python3 -c 'import importlib.util, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+guard = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(guard)
+read, paths = [], guard.code_paths
+guard.code_paths = lambda code, base: read.append(code) or paths(code, base)
+written = guard.named_with_folders("v=$(python3 w.py)", sys.argv[2])[0]
+print(len(read), any(path.name == "out.txt" for path in written))' "${HOOK}" "${REPO}"
+    [ "${output}" = "1 True" ]
+}
