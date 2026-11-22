@@ -124,6 +124,7 @@ import orders_edit  # noqa: E402
 import service_reads  # noqa: E402
 import ticket_places  # noqa: E402
 import work_reads  # noqa: E402
+from shell_commands import with_inner_first  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
 
 CONFIG = guard_places.settings_folder()
@@ -538,6 +539,13 @@ class CaseLabels:
         return ended_by
 
 
+@functools.lru_cache(maxsize=256)
+def in_run_order(command: str) -> str:
+    """The command with what runs inside its words written ahead of them (shell_commands), for the
+    readers here, which take quoted text as one word: what it writes, sends and switches off."""
+    return with_inner_first(command)
+
+
 def stepped_commands(line: str):
     """The simple commands of a command line whose heredoc bodies are taken out, in order:
     (its words, its redirections as (operator, word), its here-string or None, the control operator
@@ -944,7 +952,7 @@ def named_with_folders(command: str, cwd: str, depth: int = 0) -> tuple[list[Pat
     `pushd` / `popd` move it and a subshell gives the place back. A variable the command line set to
     a literal before (`D=/a/b; echo x > $D/out`) is written out. Where neither can be read (`cd $X`,
     a value from a substitution), the name is judged as it was written, from where the command stood."""
-    line, fed = split_heredocs(spell_home(command))
+    line, fed = split_heredocs(spell_home(in_run_order(command)))
     try:
         commands = list(stepped_commands(line))
     except ValueError:
@@ -1109,7 +1117,7 @@ def ran_scripts(command: str, cwd: str, depth: int = 0, *, fed_only: bool = Fals
 def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
                                fed_only: bool = False) -> list[tuple[str, str, str, list[str]]]:
     """ran_scripts, and the words the command hands each file as its arguments."""
-    line, _ = split_heredocs(spell_home(command))
+    line, _ = split_heredocs(spell_home(in_run_order(command)))
     try:
         steps = list(stepped_commands(line))
     except ValueError:
@@ -1548,6 +1556,7 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
     of the session's environment (`$HOME`) too. A folder still spelled with a variable or a
     substitution after that (`cd $W` with W set elsewhere, `git -C "$(...)"`) cannot be read: a
     send that stands there goes to the second list, until a `cd` to a folder written out."""
+    command = in_run_order(command)
     try:
         words = shell_words(command)
     except ValueError:
@@ -2184,7 +2193,8 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
         return "switches the entry guard off"
     if re.search(r"\b(rm|mv|unlink|ln)\b[^|;&]*\.git-hooks(/agent-hooks)?/?(\s|$|[;&|])", expanded):
         return "removes the guards' installed hooks"
-    if config_writes_guard_key(command) and not writes_derived_scope(command, cwd):
+    ordered_line = in_run_order(command)
+    if config_writes_guard_key(ordered_line) and not writes_derived_scope(ordered_line, cwd):
         return "a git config that switches the hooks off"
     sends, _, skipping = send_places(command, cwd)
     if not sends and not skipping:
@@ -2376,7 +2386,7 @@ def main() -> int:
             deny(f"area-guard: an agent does not switch the guards off or around ({reason})"
                  + ("" if reason == MARKS_REWRITE else f": {why}"))
             return 0
-    if tool == "Bash" and children.rules.runs_registration(args.get("command", "")):
+    if tool == "Bash" and children.rules.runs_registration(in_run_order(args.get("command", ""))):
         deny("area-guard: an agent does not register a child: the client does, once it has opened the child's tab")
         return 0
     written = str(real(args.get("file_path") or args.get("notebook_path") or "", cwd)) if tool in WRITES else ""
