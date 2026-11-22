@@ -129,6 +129,56 @@ installed_links() {
     done
 }
 
+# link_step <case>: the link step alone, met by what another install running beside it leaves.
+link_step() {
+    python3 - "${GUARD_ROOT}/scripts/_internal" "${H}" "$1" <<'PY_STEP'
+import errno
+import os
+import sys
+import types
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+sys.dont_write_bytecode = True
+import swap_links
+
+home, case = Path(sys.argv[2]), sys.argv[3]
+source, link = home / "source", home / "link"
+source.write_text("x")
+link.symlink_to(home / "before")
+if case == "moving":
+    readlink = os.readlink
+
+    def unreadable(path: Path) -> str:
+        raise OSError(errno.EINVAL, "the link is being moved")
+
+    os.readlink = unreadable
+    swap_links.swap(source, link)
+    os.readlink = readlink
+    assert os.readlink(link) == str(source)
+else:
+    class Gone:
+        def is_symlink(self) -> bool:
+            return True
+
+        def lstat(self) -> os.stat_result:
+            raise FileNotFoundError(errno.ENOENT, "renamed into its place")
+
+    swap_links.prune(types.SimpleNamespace(iterdir=lambda: [Gone()]), {link})
+    assert link.is_symlink()
+PY_STEP
+}
+
+@test "install: a link another install is moving is laid again, not an error" {
+    run link_step moving
+    [ "${status}" -eq 0 ]
+}
+
+@test "install: a passing link another install renamed away is not an error to the pruning" {
+    run link_step gone
+    [ "${status}" -eq 0 ]
+}
+
 @test "install: a file or a link standing where the scanners folder goes gives way to the folder" {
     clone_to "${H}/src"
     local place="${H}/.git-hooks/scanners"
