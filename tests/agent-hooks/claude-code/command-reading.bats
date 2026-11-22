@@ -117,6 +117,7 @@ print(joins(10) == joins(1000))' "${GUARD_ROOT}/_common"
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
 guard = importlib.util.module_from_spec(spec)
+sys.modules["guard"] = guard
 spec.loader.exec_module(guard)
 read, words = [], guard.shell_words
 guard.shell_words = lambda line: read.append(line) or words(line)
@@ -130,6 +131,7 @@ print(len(read) == len(set(read)), len(sends))' "${HOOK}" "${REPO}"
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
 guard = importlib.util.module_from_spec(spec)
+sys.modules["guard"] = guard
 spec.loader.exec_module(guard)
 written, removed, orders = guard.named_with_folders("v=$(echo x > out; rm gone)", sys.argv[2])
 print(*(len(found) == len(set(map(repr, found))) and len(found) > 0 for found in (written, removed, orders)))' "${HOOK}" "${REPO}"
@@ -142,10 +144,31 @@ print(*(len(found) == len(set(map(repr, found))) and len(found) > 0 for found in
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
 guard = importlib.util.module_from_spec(spec)
+sys.modules["guard"] = guard
 spec.loader.exec_module(guard)
 read, paths = [], guard.code_paths
 guard.code_paths = lambda code, base: read.append(code) or paths(code, base)
 written = guard.named_with_folders("v=$(python3 w.py)", sys.argv[2])[0]
 print(len(read), any(path.name == "out.txt" for path in written))' "${HOOK}" "${REPO}"
     [ "${output}" = "1 True" ]
+}
+
+@test "command reading: the paths a script names are read once, however it is reached" {
+    local n
+    for n in 1 2 3; do
+        printf 'v="$(bash r%d.sh)"\nbash r%d.sh\nbash r%d.sh\n' $((n + 1)) $((n + 1)) $((n + 1)) > "${REPO}/r${n}.sh"
+    done
+    printf 'cat %s/org/notes.md\n' "${H}" > "${REPO}/r4.sh"
+    run python3 -c 'import importlib.util, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+guard = importlib.util.module_from_spec(spec)
+sys.modules["guard"] = guard
+spec.loader.exec_module(guard)
+read, ran = [], guard.ran_scripts
+guard.ran_scripts = lambda *at: read.append(at) or ran(*at)
+for _ in range(3):
+    paths = guard.named_paths("bash r1.sh; bash r1.sh", sys.argv[2])
+print(len(read) == len(set(read)), any(path.name == "notes.md" for path in paths))' "${HOOK}" "${REPO}"
+    [ "${output}" = "True True" ]
 }

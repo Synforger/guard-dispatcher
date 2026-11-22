@@ -696,9 +696,11 @@ def mentioned_paths(command: str, areas, cwd: str) -> list[Path]:
     return [path for path in named_paths(command, cwd) if area_of(path, areas)]
 
 
-def named_paths(command: str, cwd: str, depth: int = 0) -> list[Path]:
+@functools.lru_cache(maxsize=None)
+def named_paths(command: str, cwd: str, depth: int = 0) -> tuple[Path, ...]:
     """Every path a Bash command names standing by themselves, globs matched (mentioned_paths), and
-    every path the code of a file it runs names (ran_scripts), as that code written into the command."""
+    every path the code of a file it runs names (ran_scripts), as that code written into the command.
+    A call of the hook reads each command line from each folder once, and names each path once."""
     stretches = list(said(command))
     for program, code, here in ran_scripts(command, cwd) if depth < NESTED else []:
         if SHELL_CODE.fullmatch(program):
@@ -706,14 +708,14 @@ def named_paths(command: str, cwd: str, depth: int = 0) -> list[Path]:
         else:
             stretches += [stretch for stretch, _ in literals(code)]
     found = []
-    for stretch in stretches:
+    for stretch in dict.fromkeys(stretches):
         for name in standing(stretch):
             try:
                 matches = list(itertools.islice(glob.iglob(name), GLOB_MATCHES)) if GLOB.search(name) else []
                 found += [real(match) for match in [name, *matches]]
             except (OSError, ValueError, re.error):
                 continue
-    return found
+    return tuple(dict.fromkeys(found))
 
 
 def record_areas(tool: str, args: dict, cwd: str) -> set[str]:
