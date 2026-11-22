@@ -747,6 +747,8 @@ step earlier, before each tool call, from the same `areas.txt`:
   child's inherited ones too): a session that may not read there is refused before it
   reads, and one that may holds those areas from then on. A transcript of a session that
   read inside no area, and a listing of names (`Glob`, `ls`), mark nothing.
+  Config folders may share one `projects` through a link: a recursive read of any of
+  them counts the records behind the link, whether or not the program would follow it.
 - **A change the operator approves**: the agent shows the very call in a
   `guard` block and asks; the operator answers in the chat, and types no command.
 
