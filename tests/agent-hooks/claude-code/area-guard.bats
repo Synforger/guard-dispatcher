@@ -422,6 +422,23 @@ record_of() {
     unset GUARD_WORK_FOLDER
 }
 
+@test "area-guard: a projects folder shared through a link is counted from either config folder" {
+    local id="2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f"
+    record_of "${id}" client
+    mkdir -p "${H}/.claude-work"
+    ln -s "${H}/.claude/projects" "${H}/.claude-work/projects"
+    export GUARD_WORK_FOLDER="${PERSONAL}"
+    local folder
+    for folder in "~/.claude" "~/.claude-work" "~/.claude-work/projects" "~/.claude-work/projects/-work"; do
+        bash_in "${H}" "grep -rn notes ${folder}" s1
+        denied || { echo "not counted: ${folder}"; return 1; }
+        [[ "${output}" == *"this call reads inside client"* ]]
+    done
+    agent Grep path "${H}/.claude-work" "${H}" s1; denied
+    agent Read file_path "${H}/.claude-work/projects/-work/${id}.jsonl" "${H}" s1; denied
+    unset GUARD_WORK_FOLDER
+}
+
 @test "area-guard: the record of a session that read inside no area marks nothing" {
     local id="1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
     record_of "${id}"
