@@ -764,8 +764,10 @@ step earlier, before each tool call, from the same `areas.txt`:
   ```
   ````
 
-  The call passes once when the operator's next message says yes (`はい`, `お願い`,
-  `OK`, ...; the `+` lines of `orders.txt` replace that list), in a sentence that
+  The call passes once when the operator's next message opens with a yes (`はい`,
+  `お願い`, `OK`, ...; the `+` lines of `orders.txt` replace that list) as a word
+  that ends there: `はい、お願いします` and `OKです` are yes, `look`, `はいらない` and
+  a yes further into the message are not. Its first sentence
   does not ask and does not go on with one of the file's cancelling tails, and
   when the session may read where the call acts: a repository or a folder inside
   an area, or a setting of `areas/<area>/`, only from a session that reads inside
