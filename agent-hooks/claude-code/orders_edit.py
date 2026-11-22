@@ -1,4 +1,5 @@
-"""Whether an edit of `orders.txt` only adds openings of relayed messages (`>` and `>>` lines).
+"""Whether an edit only adds openings of relayed messages (`>` and `>>` lines): of `orders.txt`, of
+`openings.txt` (which may also gain an `include` line) and of a file that one includes.
 
 The entry guard (`area-guard.py`) keeps `orders.txt` to the operator, but for this one kind of
 change: an opening tells the guard a message was relayed by a client and not typed by the operator,
@@ -14,6 +15,8 @@ import re
 
 #: A line that opens a relayed message (`>`), or one from another machine (`>>`), and names it.
 RELAY_LINE = re.compile(r"^>{1,2}\s*[^\s#]")
+#: A line of openings.txt that reads more openings from another file.
+INCLUDE_LINE = re.compile(r"^include [^#]*\S")
 
 
 def text_after(tool: str, arguments: dict, before: str) -> str | None:
@@ -40,9 +43,9 @@ def text_after(tool: str, arguments: dict, before: str) -> str | None:
     return text
 
 
-def only_adds_relay_lines(before: str, after: str) -> bool:
+def only_adds_relay_lines(before: str, after: str, *, may_include: bool = False) -> bool:
     """Every line of `before` stays, in its place, and every line added is an opening of a relayed
-    message, a comment or blank."""
+    message, a comment or blank, or with `may_include` an `include` line."""
     old, new = before.splitlines(), after.splitlines()
     for kind, _, _, start, end in difflib.SequenceMatcher(a=old, b=new, autojunk=False).get_opcodes():
         if kind == "equal":
@@ -51,6 +54,8 @@ def only_adds_relay_lines(before: str, after: str) -> bool:
             return False
         for line in new[start:end]:
             stripped = line.strip()
-            if stripped and not stripped.startswith("#") and not RELAY_LINE.match(stripped):
+            if not stripped or stripped.startswith("#") or RELAY_LINE.match(stripped):
+                continue
+            if not (may_include and INCLUDE_LINE.match(stripped)):
                 return False
     return True

@@ -1289,10 +1289,13 @@ This holds as long as agents cannot reach the client's own way of typing as
 the operator: block it (see *What stays on this machine*).
 
 The `>` and `>>` lines may also sit in `openings.txt`, beside `orders.txt`. A
-line there only takes words out of what counts as the operator's, so an agent
-keeps that file under the operator's grant (`agent-writes.txt`) with no yes;
-anything but a `>` or `>>` line there is not read, so it never orders or
-approves. `include <file>` there reads the `>` and `>>` lines of another file,
+line added there only takes words out of what counts as the operator's, so an
+agent adds to that file under the operator's grant (`agent-writes.txt`) with
+no yes, with an Edit or a Write. Taking a line away, or writing the file
+through the shell, needs the yes, as does the same on a file an `include` line
+names (which takes added openings with no grant) and taking away a folder that
+holds one. Anything but a `>`, `>>` or `include` line there is not read, so it
+never orders or approves. `include <file>` there reads the `>` and `>>` lines of another file,
 one level deep: a client keeps the openings of everything it types in its own
 repository and adds one with no hand on the machine.
 

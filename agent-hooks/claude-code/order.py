@@ -59,9 +59,9 @@ lines of orders.txt starting with `+` (with none, the built-in `APPROVALS`), wit
 cancelling tails. A send is ordered and a change approved apart: a ```send block takes no yes, and
 a ```guard block no order.
 
-The `>` and `>>` lines may also sit in openings.txt, beside orders.txt, which an agent may keep up
-to date under the operator's grant: a line there only takes words out of what counts as the
-operator's, so it needs no yes. A line `include <file>` there reads more of them from another file
+The `>` and `>>` lines may also sit in openings.txt, beside orders.txt, which an agent may add to
+under the operator's grant: a line added there only takes words out of what counts as the
+operator's, so it needs no yes, and taking one away does (area-guard.py). A line `include <file>` there reads more of them from another file
 in the same form, so a client keeps the openings of what it types in its own repository and adds
 one with no hand here. A file that cannot be read gives none. `order.py --openings` prints every
 opening, one per line with its `>` or `>>`, for whatever else tells a relayed message apart.
@@ -170,12 +170,27 @@ def opening_lines() -> list[str]:
     out = []
     for line in read(OPENINGS):
         line = line.split("#", 1)[0].strip()
-        if line.startswith(INCLUDE):
-            target = Path(os.path.expanduser(os.path.expandvars(line[len(INCLUDE):].strip())))
+        if (target := included(line)) is not None:
             out += [x.strip() for x in read(target) if x.strip().startswith(">")]
         elif line.startswith(">"):
             out.append(line)
     return out
+
+
+def included(line: str) -> Path | None:
+    """The file an `include` line of openings.txt names, or None for any other line."""
+    if not line.startswith(INCLUDE):
+        return None
+    return Path(os.path.expanduser(os.path.expandvars(line[len(INCLUDE):].strip())))
+
+
+def included_files() -> list[Path]:
+    """The files openings.txt includes, whether or not they are there."""
+    try:
+        lines = OPENINGS.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    return [target for line in lines if (target := included(line.split("#", 1)[0].strip())) is not None]
 
 
 def phrases() -> tuple[list[str], list[str]]:
