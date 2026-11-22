@@ -205,3 +205,38 @@ def _range(body: str) -> tuple[str, ...] | None:
     if from_letter.isupper() != to_letter.isupper() or from_letter > to_letter:
         return None
     return tuple(chr(code) for code in range(ord(from_letter), ord(to_letter) + 1, step))
+
+
+# --- variables a command line sets to a literal ----------------------------------------------------
+
+VARIABLE = re.compile(r"\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)")
+# What a value may be written with to be put in a word as it stands: no space, glob, `~` or quote.
+PLAIN_VALUE = re.compile(r"[\w@%+=,./:-]+")
+LITERAL_ASSIGNMENT = re.compile(
+    r"(?:^|(?<=[;&|(\n]))[ \t]*(?:(?:export|local|readonly)[ \t]+)?([A-Za-z_]\w*)="
+    r"('[^'\n]*'|\"[^\"$`\\\n]*\"|[^\s;&|<>()$`\"'\\]*)(?=[ \t]*(?:[;&|)\n]|$))")
+
+
+def literal_values(command: str) -> dict[str, str]:
+    """The variables a command line sets to a literal and nowhere else: each is written once as
+    `NAME=value` on a command of its own (or twice with the same value). A name that is set another
+    way too (`NAME+=`, `read NAME`, a loop, a substitution, ahead of one command) is left out, as the
+    value it has at a word cannot be told."""
+    found: dict[str, list[str]] = {}
+    for name, written in LITERAL_ASSIGNMENT.findall(command):
+        found.setdefault(name, []).append(written[1:-1] if written[:1] in "'\"" else written)
+    values = {}
+    for name, written in found.items():
+        sites = len(re.findall(rf"(?<![\w$.-]){name}\+?=", command))
+        rebound = re.search(rf"\b(?:read|for|select|unset|getopts|mapfile|readarray)\b[^\n;&|]*\b{name}\b|-v\s+{name}\b",
+                            command)
+        if sites == len(written) and not rebound and len(set(written)) == 1 and PLAIN_VALUE.fullmatch(written[0]):
+            values[name] = written[0]
+    return values
+
+
+def filled(word: str, values: dict[str, str]) -> str:
+    """The word with each variable `values` holds written out, or the word as it was when it holds
+    another that is only known as the command runs."""
+    text = VARIABLE.sub(lambda m: values.get(m.group(1) or m.group(2), m.group(0)), word)
+    return word if "$" in text or "`" in text else text

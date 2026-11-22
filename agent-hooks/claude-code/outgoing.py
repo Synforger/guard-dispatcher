@@ -167,6 +167,8 @@ SHELL_BREAK = {"&&", "||", ";", "|", "&", "|&", ";;", "(", ")"}
 # the command only names as it runs, which it takes no body to.
 UNREAD = "host:?"
 UNREAD_WHY = "an address with more hosts than can be listed, or with a host that cannot be read"
+RUNTIME_WORD = "a substitution or a variable"
+MACHINE_UNKNOWN = "the machine it names is only known when the command runs"
 
 
 def place_of(url: str, send_scan: Path) -> str:
@@ -657,6 +659,12 @@ def split_options(words: list[str], short_valued: set[str], long_valued: set[str
     return options, positional
 
 
+def machine_unknown(arg: str) -> bool:
+    """Whether the machine a remote argument names is only known when the command runs: a variable
+    or a substitution stands before its first `:` or `/`, where the machine's name is written."""
+    return expands(arg) and expands(re.split(r"[:/]", arg, maxsplit=1)[0])
+
+
 def remote_host(arg: str) -> str | None:
     """The host of a remote path (`user@host:path`, `host::module`, `scp://`/`rsync://` URLs), or
     None for a local path."""
@@ -708,16 +716,18 @@ def remote_paths(command: str, cwd: str, send_scan: Path) -> list[tuple[str, str
     except ValueError:
         return []
     found = []
+    values = destination_words.literal_values(command)
     for words, stdin in commands:
         tool, args = os.path.basename(words[0]), words[1:]
         if tool in ("scp", "rsync"):
             _, paths = split_options(args, VALUED[tool], RSYNC_VALUED if tool == "rsync" else frozenset())
+            paths = [destination_words.filled(a, values) for a in paths]
             found += [(h, p) for a in paths if (h := remote_host(a)) and (p := remote_path(a))]
         elif tool == "ssh":
             _, positional = split_options(args, VALUED["ssh"])
             if positional:
                 text = stdin_payload(stdin, cwd, send_scan)[0]
-                host = positional[0].rsplit("@", 1)[-1]
+                host = destination_words.filled(positional[0], values).rsplit("@", 1)[-1]
                 said = "\n".join([*positional[1:], text])
                 found += [(host, p) for p in ABS_PATH.findall(said) + HOME_PATH.findall(said)]
     return found
@@ -754,10 +764,15 @@ def stdin_payload(stdin, cwd: str, send_scan: Path) -> tuple[str, list[tuple[Pat
     return text, files, None
 
 
-def copy_sends(tool: str, words: list[str], cwd: str, send_scan: Path) -> list[Send]:
-    """scp / rsync: local sources copied to a remote destination (the last path)."""
+def copy_sends(tool: str, words: list[str], cwd: str, send_scan: Path, values: dict[str, str]) -> list[Send]:
+    """scp / rsync: local sources copied to a remote destination (the last path). `values` are the
+    variables the command line set to a literal: they are written out in the paths."""
     options, paths = split_options(words, VALUED[tool], RSYNC_VALUED if tool == "rsync" else frozenset())
-    if len(paths) < 2 or (host := remote_host(paths[-1])) is None:
+    paths = [destination_words.filled(path, values) for path in paths]
+    if len(paths) < 2:
+        return []
+    unknown_machine = machine_unknown(paths[-1])
+    if not unknown_machine and (host := remote_host(paths[-1])) is None:
         return []
     texts, unreadable = [], []
     local = [source for source in paths[:-1] if remote_host(source) is None]
@@ -766,18 +781,23 @@ def copy_sends(tool: str, words: list[str], cwd: str, send_scan: Path) -> list[S
         texts.append(text)
         unreadable += files
     unknown = EXPANDED_NAME if any(globs(source) for source in local) else None
+    unknown = unknown or (RUNTIME_WORD if any(expands(source) for source in local) else None)
+    if unknown_machine:
+        return [Send(UNREAD, "\n".join(texts), unreadable, unknown or MACHINE_UNKNOWN)]
     # The path it lands at decides where it sits when a root on that machine holds it (send-scan)
     landing = remote_path(paths[-1])
     return [Send(f"host:{host}:{landing}" if landing else f"host:{host}", "\n".join(texts), unreadable, unknown)]
 
 
-def shell_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) -> list[Send]:
-    """ssh host [command] / nc host port: the command's words and standard input."""
+def shell_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path, values: dict[str, str]) -> list[Send]:
+    """ssh host [command] / nc host port: the command's words and standard input. `values` are the
+    variables the command line set to a literal: the host is written out."""
     options, positional = split_options(words, VALUED["ssh" if tool == "ssh" else "nc"])
     flags = {o for o, _ in options}
     if not positional or (tool != "ssh" and ("-l" in flags)):
         return []
-    host = positional[0].rsplit("@", 1)[-1]
+    host_word = destination_words.filled(positional[0], values)
+    host = host_word.rsplit("@", 1)[-1]
     text, unreadable, unknown = stdin_payload(stdin, cwd, send_scan)
     carried = positional[1:] if tool == "ssh" else []
     if tool != "ssh" and ({"-e", "-c"} & flags):
@@ -788,6 +808,8 @@ def shell_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path) -
         return []
     # ssh sends its remote command as one line, its words joined by spaces.
     payload = "\n".join([" ".join(carried), text]) if carried else text
+    if expands(host):
+        return [Send(UNREAD, payload, unreadable, unknown or MACHINE_UNKNOWN)]
     # A command that names folders of areas on that machine is judged as sent into them; one that
     # names none, by the machine's own line.
     roots = remote_roots(send_scan) if tool == "ssh" else []
@@ -1112,13 +1134,14 @@ def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
     except ValueError:
         return []
     out = []
+    values = destination_words.literal_values(command)
     for words, stdin in commands:
         tool = os.path.basename(words[0])
         args = words[1:]
         if tool in ("scp", "rsync"):
-            out += copy_sends(tool, args, cwd, send_scan)
+            out += copy_sends(tool, args, cwd, send_scan, values)
         elif tool in ("ssh", "nc", "ncat", "netcat"):
-            out += shell_sends("ssh" if tool == "ssh" else "nc", args, stdin, cwd, send_scan)
+            out += shell_sends("ssh" if tool == "ssh" else "nc", args, stdin, cwd, send_scan, values)
         elif tool in ("mail", "mailx", "sendmail"):
             out += mail_sends(tool, args, stdin, cwd, send_scan)
         elif tool in ("http", "https", "xh", "xhs"):
