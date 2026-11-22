@@ -1241,6 +1241,39 @@ session_files() {
     bash_in "$(dirname "${TRANSCRIPT}")" "python3 -c \"open('s1.jsonl','a').write('{}')\""; denied
 }
 
+@test "area-guard: the agent does not replace the folder of transcripts either, whole or in part" {
+    session_files
+    mkdir -p "${H}/fake/-home-tool" "${H}/linked" "${H}/scratch"
+    : > "${H}/fake/s1.jsonl"
+    : > "${H}/fake/-home-tool/s1.jsonl"
+    : > "${H}/.claude.json"
+    ln -s "${H}/.claude/projects" "${H}/linked/projects"
+    ln -s "${H}/.claude-work/projects" "${H}/.claude-work/projects-by-another-name"
+    local c
+    for c in "rm -rf ~/.claude/projects" "mv ~/.claude/projects ~/old" "mv ~/.claude/projects/-home-tool ~/old" \
+             "mv ~/.claude-work ~/old" "rm ~/linked/projects" "ln -sfn ~/fake ~/.claude-work/projects" \
+             "cp ~/fake/s1.jsonl ~/.claude/projects/-home-tool/" "cp -R ~/fake/-home-tool ~/.claude/projects/" \
+             "rsync -a ~/fake/ ~/.claude/projects/" \
+             "python3 -c \"import os; os.rename('${H}/.claude/projects', '${H}/old')\"" \
+             "rm -rf ~/.claude-work/projects/p" "rm -rf ~/.claude" "rm -rf ~" "rm -rf ${H}/.claude/projects/" \
+             "cd ~/.claude/projects && rm -rf -- -home-tool" "mv ~/fake/s1.jsonl ~/.claude/projects/-home-tool/" \
+             "rm ~/.claude-work/projects-by-another-name" "rsync -a ~/fake/ ~/.claude-work/" \
+             "cp -R ~/fake/. ~/.claude-work/"; do
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+        [[ "${output}" == *"an order for a send is judged from it"* ]] || { echo "other reason: ${c}"; return 1; }
+    done
+    # the transcripts' folders stay the agent's to read and copy out, and what is no transcript's stays its own
+    for c in "cp ~/.claude/projects/-home-tool/s1.jsonl ~/scratch/" "cp -R ~/.claude/projects ~/scratch/backup" \
+             "rsync -a ~/.claude/projects/ ~/scratch/" "ls ~/.claude/projects" "mv ~/scratch ~/scratch-old" \
+             "cp ~/fake/s1.jsonl ~/.claude/projects/-home-tool/memory/" "cp -R ~/fake ~/.claude/projects/-home-tool/memory/" \
+             "rm -rf ~/.claude/projects/-home-tool/memory" "cp ~/fake/s1.jsonl ~/scratch/" "cp -R ~/fake ~/.claude/skills" \
+             "ln -s ~/fake ~/scratch/fake-link" "rm ~/.claude.json"; do
+        bash_in "${H}" "${c}"
+        passed || { echo "refused: ${c}"; return 1; }
+    done
+}
+
 @test "area-guard: reading them and copying them out pass" {
     session_files
     local c g="${GUARD_CONFIG_DIR}"
