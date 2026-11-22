@@ -1,15 +1,16 @@
-"""Lay the install's links down without a moment in which one is missing: scripts/install.sh calls it.
+"""Lay the install's links down, changing only the ones that move: scripts/install.sh calls it.
 
 Hooks of every agent session on the machine run all the time, and a hook that starts while its link is
 gone cannot follow it: it finds its own files under the install folder instead of the clone and breaks.
-Removing a link and making it again leaves that moment open, so each link is made under a passing name
-beside its place and renamed over the old one, which the file system does in one step. A real folder or
-file standing where a link goes is removed first, as it cannot be renamed over.
+A link that already points at its place is therefore left untouched. One that moves is made under a
+passing name beside its place and renamed over the old one, rather than removed and made again. A real
+folder or file standing where a link goes is removed first.
 
     swap_links.py [--only <folder>] <source> <link> [<source> <link> ...]
 
-With `--only`, every other link directly in that folder is removed afterwards, so a scanner the clone no
-longer has does not stay behind. Exit 0 when every link is laid, 1 with the reason otherwise.
+With `--only`, a file or a link standing where that folder goes gives way to it, and every other link
+directly in the folder is removed afterwards, so a scanner the clone no longer has does not stay behind.
+Exit 0 when every link is laid, 1 with the reason otherwise.
 """
 
 from __future__ import annotations
@@ -21,7 +22,9 @@ from pathlib import Path
 
 
 def swap(source: Path, link: Path) -> None:
-    """Point `link` at `source`, renaming a fresh link over whatever link stood there."""
+    """Point `link` at `source`: untouched when it already does, else a fresh link renamed over it."""
+    if link.is_symlink() and os.readlink(link) == str(source):
+        return
     if link.exists() and not link.is_symlink():
         if link.is_dir():
             shutil.rmtree(link)
@@ -32,6 +35,13 @@ def swap(source: Path, link: Path) -> None:
         passing.unlink()
     passing.symlink_to(source)
     os.replace(passing, link)
+
+
+def make_folder(folder: Path) -> None:
+    """Make `folder` a real folder, in place of a file or a link that stands there."""
+    if folder.is_symlink() or (folder.exists() and not folder.is_dir()):
+        folder.unlink()
+    folder.mkdir(parents=True, exist_ok=True)
 
 
 def prune(folder: Path, kept: set[Path]) -> None:
@@ -55,7 +65,7 @@ def main(arguments: list[str]) -> int:
     pairs = [(Path(arguments[at]), Path(arguments[at + 1])) for at in range(0, len(arguments), 2)]
     try:
         if only is not None:
-            only.mkdir(parents=True, exist_ok=True)
+            make_folder(only)
         for source, link in pairs:
             swap(source, link)
         if only is not None:
