@@ -139,6 +139,43 @@ denied() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"permissionDecision": "d
     passed
 }
 
+@test "peers: a name a _shows line of the machine's areas.txt gives is said to every session, and that name alone" {
+    printf '%s\n' '_shows client ACME' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    tell plain "the acme-template repository asks for a fix"
+    passed
+    tell plain "acme"
+    passed
+    # another name, and the text of the area whose name is shown, are refused as before
+    tell plain "the org planning tab"
+    denied
+    tell plain "seen here: ${CLIENT_TEXT}"
+    denied
+}
+
+@test "peers: a _shows line shows the name of the area it gives, not the same name of another area" {
+    mkdir -p "${H}/elsewhere/acme"
+    printf '%s\n' 'other ~/elsewhere/acme' '_shows client acme' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    tell plain "the acme tab asks for a fix"
+    denied
+}
+
+@test "peers: a _shows line in an area's own settings is not read" {
+    mkdir -p "${GUARD_CONFIG_DIR}/areas/client"
+    printf '%s\n' '_shows client acme' > "${GUARD_CONFIG_DIR}/areas/client/areas.txt"
+    tell plain "the acme tab asks for a fix"
+    denied
+}
+
+@test "peers: a _shows line that gives no name, no area, or no name of that area refuses instead of guessing" {
+    cp "${GUARD_CONFIG_DIR}/areas.txt" "${H}/areas.base"
+    for line in '_shows' '_shows client' '_shows nosuch acme' '_shows client nosuch' '_shows _exempt acme'; do
+        { cat "${H}/areas.base"; printf '%s\n' "${line}"; } > "${GUARD_CONFIG_DIR}/areas.txt"
+        tell plain "${OWN_TEXT}"
+        denied || return 1
+        [[ "${output}" == *"_shows"* ]] || return 1
+    done
+}
+
 @test "peers: --covers says whether the receiver knows every area the sender has read inside" {
     run python3 "${PEERS}" --to plain --covers "${ID_CLIENT}"; [ "${status}" -eq 1 ]
     run python3 "${PEERS}" --to company --covers "${ID_CLIENT}"; [ "${status}" -eq 1 ]
