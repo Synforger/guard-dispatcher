@@ -1275,6 +1275,47 @@ session_files() {
     done
 }
 
+@test "area-guard: find, tar, unzip, -t and rsync take away or fill the transcripts' and the settings' folders as the commands beside them do" {
+    session_files
+    mkdir -p "${H}/fake" "${H}/scratch"
+    : > "${H}/fake/s1.jsonl"
+    local c g="${GUARD_CONFIG_DIR}"
+    for c in "find ~/.claude/projects -name '*.jsonl' -delete" "find ~/.claude/projects/-home-tool -exec rm {} +" \
+             "find -L ~/.claude-work -delete" "find ~/.claude/projects -type f -execdir rm -f {} ;" \
+             "tar -xf ~/old.tar -C ~/.claude/projects" "tar -x -C ~/.claude-work -f ~/old.tar" \
+             "tar xzf ~/old.tgz --directory=~/.claude/projects" "unzip ~/old.zip -d ~/.claude/projects" \
+             "unzip -o ~/old.zip -d ~/.claude-work" \
+             "cp -t ~/.claude/projects/-home-tool/ ~/fake/s1.jsonl" "mv -t ~/.claude/projects/-home-tool/ ~/fake/s1.jsonl" \
+             "install -t ~/.claude/projects/-home-tool ~/fake/s1.jsonl" "cp --target-directory=~/.claude/projects/-home-tool ~/fake/s1.jsonl" \
+             "mv -t ~/scratch ~/.claude/projects/-home-tool" \
+             "rsync -a --remove-source-files ~/.claude/projects/ ~/scratch/" \
+             "rsync --remove-source-files ~/.claude/projects/-home-tool/ ~/scratch/" \
+             "rsync -a --delete ~/fake/ ~/.claude/projects/"; do
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+        [[ "${output}" == *"an order for a send is judged from it"* ]] || { echo "other reason: ${c}"; return 1; }
+    done
+    for c in "find ${g} -name orders.txt -delete" "find ${g} -exec rm {} +" "tar -xf ~/old.tar -C ${g}" \
+             "unzip ~/old.zip -d ${g}" "cp -t ${g} ~/fake/s1.jsonl" "mv -t ${g} ~/fake/s1.jsonl" \
+             "install -t ${g} ~/fake/s1.jsonl" "rsync -a ~/fake/ ${g}/" "rsync -a --remove-source-files ${g}/ ~/scratch/"; do
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+        [[ "${output}" == *"what the guard lets through is judged from it"* ]] || { echo "other reason: ${c}"; return 1; }
+    done
+    # reading, listing, unpacking elsewhere, and what is no transcript's stay the agent's own
+    for c in "find ~/.claude/projects -name '*.jsonl'" "find ~/.claude/projects -exec cat {} +" "find ~/scratch -delete" \
+             "find ${g} -name orders.txt" "tar -xf ~/old.tar -C ~/scratch" "tar -czf ~/scratch/b.tgz ~/.claude/projects" \
+             "tar -tf ~/old.tar" "unzip -l ~/old.zip" "unzip ~/old.zip -d ~/scratch" \
+             "cp -t ~/scratch ~/.claude/projects/-home-tool/s1.jsonl" "cp -t ~/scratch ${g}/orders.txt" \
+             "mv -t ~/scratch ~/fake/s1.jsonl" "install -t ~/scratch ~/fake/s1.jsonl" \
+             "cp -t ~/.claude/projects/-home-tool/memory/ ~/fake/s1.jsonl" \
+             "find ~/.claude/projects/-home-tool/memory -delete" "rsync -a ~/.claude/projects/ ~/scratch/" \
+             "rsync -a --remove-source-files ~/fake/ ~/scratch/" "rsync -a ${g}/ ~/scratch/"; do
+        bash_in "${H}" "${c}"
+        passed || { echo "refused: ${c}"; return 1; }
+    done
+}
+
 @test "area-guard: reading them and copying them out pass" {
     session_files
     local c g="${GUARD_CONFIG_DIR}"

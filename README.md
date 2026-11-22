@@ -745,7 +745,9 @@ step earlier, before each tool call, from the same `areas.txt`:
   to send, or make an order itself. The same goes for the folders that hold the
   transcripts: the guard refuses a command that removes, moves, links over or empties
   `~/.claude*/projects`, a folder in it, or a folder that holds it (`~/.claude-work`), and one
-  that copies into them (`cp`, `rsync`), whether the path is written directly or reached
+  that copies or unpacks into them (`cp`, `mv` and `install` with or without `-t`, `rsync`,
+  `tar -x`, `unzip -d`), or that deletes in them (`find -delete`, `find -exec rm`,
+  `rsync --remove-source-files`), whether the path is written directly or reached
   through a link. A project's `memory` folder stays writable. Reading them and copying them
   out pass; a change of the settings passes on the operator's yes, a change of a transcript never.
 - **A transcript holds what its session read.** Every session's transcript sits under the
@@ -869,13 +871,16 @@ step earlier, before each tool call, from the same `areas.txt`:
   - a shell script (`$1`..`$9`, `${1:-x}`, `$@`, `$*`, `${@:2}`, a `for` loop
     over them, a `shift` at the top of the script; `getopts`, `eval` and a
     `shift` inside a loop count as writing every word when the script writes);
-  - a script it runs in turn with those words (`python3 put.py "$1"`);
+  - a script it runs in turn with those words (`python3 put.py "$1"`), and one
+    that moves to the folder it is given (`cd "$1"`) before it writes a relative name;
   - a Node, Ruby, Perl or PHP file that takes its arguments (`process.argv`,
     `ARGV`, `$ARGV`, `$argv`) and spells a call that writes or runs a program.
 
   A script that only reads the word, or writes somewhere else, passes. What
   stays outside: a script in another language, a word passed on through an
   environment variable or a file, and a path the script builds from the word.
+  The commands in the branches of a `case`, a `for` or an `if` are read as the
+  commands they are, in the folder the command stands in there.
 
 - **A session may hand work to a child of its own.** The client that opens a child's
   tab registers it with the guard (`area-guard.py child add --child TAB --parent TAB
