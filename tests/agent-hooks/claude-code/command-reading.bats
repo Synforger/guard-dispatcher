@@ -106,3 +106,32 @@ def joins(lines):
 print(joins(10) == joins(1000))' "${GUARD_ROOT}/_common"
     [ "${output}" = "True" ]
 }
+
+@test "command reading: a script reached by several ways is read once" {
+    local n
+    for n in 1 2 3; do
+        printf 'v="$(bash s%d.sh)"\nbash s%d.sh\nbash s%d.sh\n' $((n + 1)) $((n + 1)) $((n + 1)) > "${REPO}/s${n}.sh"
+    done
+    printf 'git push\n' > "${REPO}/s4.sh"
+    run python3 -c 'import importlib.util, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+guard = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(guard)
+read, words = [], guard.shell_words
+guard.shell_words = lambda line: read.append(line) or words(line)
+sends = guard.send_places("bash s1.sh; bash s1.sh", sys.argv[2])[0]
+print(len(read) == len(set(read)), len(sends))' "${HOOK}" "${REPO}"
+    [ "${output}" = "True 1" ]
+}
+
+@test "command reading: what a command writes is named once, however often the line holds it" {
+    run python3 -c 'import importlib.util, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("guard", sys.argv[1])
+guard = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(guard)
+written, removed, orders = guard.named_with_folders("v=$(echo x > out; rm gone)", sys.argv[2])
+print(*(len(found) == len(set(map(repr, found))) and len(found) > 0 for found in (written, removed, orders)))' "${HOOK}" "${REPO}"
+    [ "${output}" = "True True True" ]
+}
