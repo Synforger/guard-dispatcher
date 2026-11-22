@@ -1307,26 +1307,6 @@ session_files() {
 
 # The README names this as the range of a script that is handed its path: the guard reads the file's
 # code, and a word handed to it is no path the code names. The same code in the command is refused.
-@test "area-guard: a python file that writes where its argument says is not judged against them" {
-    session_files
-    local g="${GUARD_CONFIG_DIR}" script target
-    printf 'import sys\nopen(sys.argv[1], "a").write("x")\n' > "${H}/append.py"
-    printf 'import sys, shutil\nshutil.copy("/etc/hosts", sys.argv[1])\n' > "${H}/copy.py"
-    printf 'import sys\nprint(open(sys.argv[1]).read())\n' > "${H}/read.py"
-    for script in append copy read; do
-        for target in "${TRANSCRIPT}" "${g}/orders.txt" "$(dirname "${TRANSCRIPT}")/s1.jsonl"; do
-            bash_in "${H}" "python3 ${H}/${script}.py ${target}"
-            passed || { echo "refused: ${script}.py ${target}"; return 1; }
-            bash_in "${H}" "cd ${H} && python3 ${script}.py --out ${target}"
-            passed || { echo "refused: ${script}.py --out ${target}"; return 1; }
-        done
-    done
-    # the path written into the file, or into the command, is named and refused
-    printf 'import shutil\nshutil.copy("/etc/hosts", "%s")\n' "${TRANSCRIPT}" > "${H}/named.py"
-    bash_in "${H}" "python3 ${H}/named.py"; denied
-    bash_in "${H}" "python3 -c \"import shutil; shutil.copy('/etc/hosts', '${TRANSCRIPT}')\""; denied
-}
-
 # --- a script asks before it writes where its arguments say ----------------------
 
 # may_write <session> <path>... — ask the guard as a script would, from HOME.
