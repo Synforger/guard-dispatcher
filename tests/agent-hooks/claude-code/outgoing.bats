@@ -1908,3 +1908,19 @@ remote_roots() {
     denied
     [[ "${output}" == *"none here"* ]]
 }
+
+@test "outgoing: outside every area the operator's own word list holds, whatever list the repository typed in names" {
+    unset ANON_WORDS_FILE
+    export ANON_TRUTH_PATH="${H}/words/master.txt"
+    mkdir -p "${H}/words"
+    printf '%s\n' "${SENTINEL}" > "${ANON_TRUTH_PATH}"
+    printf '%s\n' 'another-word-entirely' > "${H}/words/narrow.txt"
+    git init -q "${H}/repos/tool"
+    git -C "${H}/repos/tool" config guard.wordlist "${H}/words/narrow.txt"
+    cd "${H}/repos/tool"
+    send mcp__acme__drive_upload_file "a note that names ${SENTINEL}"
+    denied
+    [[ "${output}" == *"word list"* ]]
+    send mcp__acme__drive_upload_file "a note of my own about nothing private"
+    passed
+}
