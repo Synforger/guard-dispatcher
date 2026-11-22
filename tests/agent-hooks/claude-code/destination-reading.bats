@@ -214,3 +214,45 @@ PY
     bash_call "rsync f.txt 'rsync://u＠x@blocked.example/mod'"
     blocked
 }
+
+# --- a machine or a source a variable names -----------------------------------------------------
+
+@test "destination reading: a variable the command line sets to a literal is written out in scp, rsync and ssh" {
+    printf 'x\n' > "${H}/repos/tool/f.txt"
+    places 'H=blocked.example; scp f.txt "u@$H:/tmp/x"' \
+        'H=blocked.example; rsync f.txt "$H:/tmp/x"' \
+        'H=blocked.example; ssh "$H" ls' \
+        'H=blocked.example && ssh -p 22 u@${H} ls /tmp'
+    [ "${lines[0]}" = "host:blocked.example:/tmp/x" ]
+    [ "${lines[1]}" = "host:blocked.example:/tmp/x" ]
+    [ "${lines[2]}" = "host:blocked.example" ]
+    [ "${lines[3]}" = "host:blocked.example" ]
+    bash_call 'H=blocked.example; scp f.txt "u@$H:/tmp/x"'
+    blocked
+}
+
+@test "destination reading: the file an scp sends is read when a variable the command line set names it" {
+    printf '%s\n' "${SENTINEL}" > "${H}/repos/tool/f.txt"
+    bash_call 'F=f.txt; scp "$F" u@fine.example:/tmp/x'
+    denied
+    [[ "${output}" == *"flagged identifier"* ]]
+}
+
+@test "destination reading: a machine or a source only known as the command runs is a destination that is not known" {
+    printf 'x\n' > "${H}/repos/tool/f.txt"
+    places 'scp f.txt "u@$H:/tmp/x"' \
+        'scp f.txt "$DEST"' \
+        'H=a.example; H=b.example; ssh "$H" ls' \
+        'scp "$F" u@fine.example:/tmp/x' \
+        'scp f.txt u@fine.example:"$DIR/x"'
+    [ "${lines[0]}" = "host:?" ]
+    [ "${lines[1]}" = "host:?" ]
+    [ "${lines[2]}" = "host:?" ]
+    [ "${lines[3]}" = "host:fine.example:/tmp/x" ]
+    [[ "${lines[4]}" == "host:fine.example:"* ]]
+    bash_call 'scp "$F" u@fine.example:/tmp/x'
+    denied
+    [[ "${output}" == *"only known when the command runs"* ]]
+    bash_call 'scp f.txt "u@$H:/tmp/x"'
+    denied
+}
