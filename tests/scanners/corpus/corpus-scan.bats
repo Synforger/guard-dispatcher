@@ -2404,6 +2404,25 @@ commit_lines() {
     [[ "$output" == *"company text"* ]]
 }
 
+@test "corpus: a public repository is outside every area, whatever area a line declares for it" {
+    seed_visibility acme/pipeline public
+    printf 'repo:acme/* company\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    mk_clone_at "${WORK}/repos/pipeline" acme/pipeline
+    commit_line "${COMPANY_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"company text"* ]]
+}
+
+@test "corpus: a repository whose visibility has no answer keeps the area declared for it" {
+    seed_visibility acme/pipeline unknown
+    printf 'repo:acme/* company\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    mk_repo_at "${BATS_TEST_TMPDIR}/elsewhere/pipeline"
+    commit_line "${COMPANY_TEXT}"
+    run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git
+    [ "$status" -eq 0 ]
+}
+
 @test "corpus: a declared area with no clone inside it is where the repository sits, as before" {
     seed_visibility acme/pipeline private
     printf 'repo:acme/* client\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
