@@ -2206,6 +2206,7 @@ OWNERS: set[str] = set()
 def destination(slugs: set[str], sender: Path, areas: dict[str, list[Path]]) -> Path | None:
     """Where the destination lives; None = outside every area.
 
+    A repository GitHub answers is public sits outside every area, whatever a line declares.
     A `repo:<pattern> <area>` line names the area a repository belongs to. A private one cloned
     inside that area sits where its clone is, and the declared area is its owner (OWNERS): a
     client's repository in the company's own GitHub organization takes the client's text and the
@@ -2220,6 +2221,9 @@ def destination(slugs: set[str], sender: Path, areas: dict[str, list[Path]]) -> 
             say(f"destination {slug} is declared outside every area -- checked against every area")
             return None
         if target in areas and areas[target]:
+            if shown := next((s for s in sorted(slugs) if visibility(s) == "public"), None):
+                say(f"destination {shown} is public on GitHub -- checked against every area, whatever is declared")
+                return None
             clone = cloned_place(slugs, sender, areas)
             if clone is not None and target in holding(clone, areas):
                 OWNERS.add(target)
