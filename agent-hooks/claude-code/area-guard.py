@@ -117,6 +117,7 @@ import commit_options  # noqa: E402
 import commit_scope  # noqa: E402
 import guard_places  # noqa: E402
 import records  # noqa: E402
+import script_arguments  # noqa: E402
 import script_files  # noqa: E402
 from path_forms import resolved  # noqa: E402
 import orders_edit  # noqa: E402
@@ -1006,12 +1007,18 @@ def ran_scripts(command: str, cwd: str, depth: int = 0, *, fed_only: bool = Fals
     command hands to a program (script_files), in order, following where the command stands (Standing),
     a shell's `-c` string and `eval` included. With `fed_only`, only the code a program reads from the
     files on its standard input (`bash < run.sh`, `cat run.sh | bash`)."""
+    return [found[:3] for found in ran_scripts_with_arguments(command, cwd, depth, fed_only=fed_only)]
+
+
+def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
+                               fed_only: bool = False) -> list[tuple[str, str, str, list[str]]]:
+    """ran_scripts, and the words the command hands each file as its arguments."""
     line, _ = split_heredocs(spell_home(command))
     try:
         steps = list(stepped_commands(line))
     except ValueError:
         return []
-    found: list[tuple[str, str, str]] = []
+    found: list[tuple[str, str, str, list[str]]] = []
     standing = Standing(cwd)
     for index, (words, redirects, _, ended_by) in enumerate(steps):
         rest = words
@@ -1020,14 +1027,14 @@ def ran_scripts(command: str, cwd: str, depth: int = 0, *, fed_only: bool = Fals
         if rest and not standing.move(os.path.basename(rest[0]), rest[1:]):
             tool, here = os.path.basename(rest[0]), standing.here
             fed = fed_files(redirects, steps[index - 1] if index else None)
-            if (script := script_files.ran(rest, here, fed)) is not None:
+            if (script := script_files.ran_with_arguments(rest, here, fed)) is not None:
                 if not fed_only or script_files.ran(rest, here) is None:
-                    found.append((*script, here))
+                    found.append((*script[:2], here, script[2]))
             elif depth < NESTED and (tool == "eval" or SHELL_CODE.fullmatch(tool)):
                 codes = [" ".join(rest[1:])] if tool == "eval" else \
                     [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
                 for code in codes:
-                    found += ran_scripts(code, here, depth + 1, fed_only=fed_only)
+                    found += ran_scripts_with_arguments(code, here, depth + 1, fed_only=fed_only)
         if ended_by == "(":
             standing.open()
         elif ended_by == ")":
@@ -1163,6 +1170,27 @@ def holds_transcripts(path: Path, reach: str) -> bool:
     return False
 
 
+def script_argument_writes(command: str, cwd: str, transcript: str | None,
+                           marks: set[str] | None = None) -> list[Path]:
+    """The paths a file of code the command runs writes where its arguments say, when one of the
+    words handed to it names what the agent may not write (`kept`): a script that takes the path
+    from its arguments is read again with them in place (script_arguments). A command that hands
+    no such word is read as it always was. A Python file and a shell script are read; the code of
+    another interpreter is not."""
+    found: list[Path] = []
+    for program, code, here, words in ran_scripts_with_arguments(command, cwd):
+        if not any(kept(real(os.path.expanduser(word), here), transcript, marks)
+                   for word in script_arguments.candidates(words)):
+            continue
+        if SHELL_CODE.fullmatch(program):
+            found += [path for paths in named(script_arguments.shell_with_arguments(code, words), here)
+                      for path in paths]
+        elif program.startswith("python"):
+            parts = code_writes.python.written_with_arguments(code, words)
+            found += [real(os.path.expanduser(name), here) for name in code_paths(parts, here)]
+    return found
+
+
 def kept_by(command: str, cwd: str, transcript: str | None,
             marks: set[str] | None = None) -> tuple[str, str] | None:
     """What a Bash command writes or removes that the agent may not (and why), or None. Removing
@@ -1174,7 +1202,7 @@ def kept_by(command: str, cwd: str, transcript: str | None,
     for order in orders:
         if holds_transcripts(order.resolved, order.reach) or holds_transcripts(order.spelled, order.reach):
             return "the folder holding a session's transcripts", TRANSCRIPT_WHY
-    for path in written + removed:
+    for path in [*written, *removed, *script_argument_writes(command, cwd, transcript, marks)]:
         if what := kept(path, transcript, marks):
             return what
     for path in removed:

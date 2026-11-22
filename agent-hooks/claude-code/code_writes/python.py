@@ -18,6 +18,11 @@ Code that hands on, other than by calling it, something of a module this module 
 (`key=shutil.copy`, `f = os.system`, `o = os`) or a method that writes its receiver (`key=p.write_text`)
 gives itself whole too: a known call may call what it is handed.
 
+A file of code is handed words by the command that runs it. `written_with_arguments` reads it with
+those words as `sys.argv`: `sys.argv[n]` is the n-th word, as a string, wherever the code takes it. Code
+that takes them another way (`argparse`, a loop over `sys.argv`) and writes where it cannot be told from
+the code alone is taken to write every word.
+
 The same reading tells outgoing.py whether code reaches past this machine (stays_here): code whose
 every call is known as above holds its URLs as text and sends nothing.
 """
@@ -171,6 +176,22 @@ def written_code(code: str) -> str:
     return _Reader(code, tree).written()
 
 
+def written_with_arguments(code: str, words: list[str]) -> str:
+    """`written_code` for a file of code handed `words` as its arguments: the source of every part that
+    can name a file it writes, with `sys.argv[n]` (and a slice of it) written out as the word it stands
+    for. When the code also writes where the code alone does not say (a target that is not made of what
+    the code holds: `open(args.out, "w")`), or does not parse, every word is a part too."""
+    quoted = "\n".join(repr(word) for word in words)
+    try:
+        tree = _Arguments(words).visit(ast.parse(code))
+        filled = ast.unparse(tree)
+        reader = _Reader(filled, ast.parse(filled))
+    except (SyntaxError, ValueError, RecursionError):
+        return quoted
+    parts = reader.written_targets()
+    return f"{parts}\n{quoted}" if reader.writes_where_unknown() else parts
+
+
 def stays_here(code: str) -> bool:
     """Whether `code` can do nothing but compute and read or write this machine's files (reaches_out
     finds nothing)."""
@@ -207,12 +228,54 @@ class _Reader:
     def written(self) -> str:
         if self._hands_on_unknown() is not None:
             return self._code
+        return self.written_targets()
+
+    def written_targets(self) -> str:
+        """The source of the targets of the calls that write, and of the values their names were given."""
         targets = [t for node in ast.walk(self._tree) if isinstance(node, ast.Call) for t in self._targets(node)]
         seen: set[int] = set()
         parts: list[str] = []
         for target in targets:
             self._sources(target, seen, parts)
         return "\n".join(parts)
+
+    def writes_where_unknown(self) -> bool:
+        """Whether a call writes a target the code does not hold (a value of `sys.argv` the reading
+        could not write out, a name an unknown call gave), or the code hands on a function or a method
+        that writes (`functools.reduce(open, [path, "w"])`: the call that writes is not in the code)."""
+        handed = self._hands_on_unknown()
+        if handed is not None and (not isinstance(handed, ast.Attribute) or self._dotted(handed) is not None
+                                   or handed.attr in RECEIVER_WRITES or handed.attr == "open"):
+            return True
+        return any(not self._held(target, frozenset()) for node in ast.walk(self._tree)
+                   if isinstance(node, ast.Call) for target in self._targets(node))
+
+    def _held(self, node: ast.AST, active: frozenset[str]) -> bool:
+        """Whether `node` is made of what the code holds: constants, names it gives a held value,
+        and calls it knows. `sys.argv`, a call it does not know and a name nothing gives are not."""
+        if isinstance(node, ast.Constant):
+            return True
+        if isinstance(node, ast.Name):
+            if node.id in active:
+                return True
+            if values := self._values.get(node.id):
+                return all(self._held(value, active | {node.id}) for value in values)
+            return node.id in self._functions or (self._dotted(node) or "") in PURE_FUNCTIONS
+        if isinstance(node, ast.Attribute):
+            name = self._dotted(node)
+            if name is not None:
+                return name != "sys.argv" and (_pure(name) or name in MODULE_VALUES)
+            return node.attr in VALUE_ATTRIBUTES and self._held(node.value, active)
+        if isinstance(node, ast.Call):
+            receiver = node.func.value if isinstance(node.func, ast.Attribute) and self._dotted(node.func) is None \
+                else None
+            return self._known(node) and all(
+                self._held(part, active) for part in [*node.args, *(k.value for k in node.keywords),
+                                                      *([receiver] if receiver is not None else [])])
+        children = [child for child in ast.iter_child_nodes(node)
+                    if isinstance(child, (ast.expr, ast.keyword, ast.comprehension))]
+        return all(self._held(child.value if isinstance(child, ast.keyword) else child, active)
+                   for child in children)
 
     def reaches_out(self) -> str | None:
         if (handed := self._hands_on_unknown()) is not None:
@@ -424,6 +487,48 @@ class _Reader:
                 for sub in ast.walk(function):
                     if isinstance(sub, ast.Return) and sub.value is not None:
                         self._sources(sub.value, seen, parts)
+
+
+class _Arguments(ast.NodeTransformer):
+    """Writes `sys.argv[n]` and `sys.argv[a:b]` (also `argv` taken from `sys`) out as the word or the
+    words they stand for; `sys.argv[0]` is the script's name, which is none of the words."""
+
+    def __init__(self, words: list[str]) -> None:
+        self._argv = ["", *words]
+        self._modules: set[str] = set()
+        self._names: set[str] = set()
+
+    def visit_Module(self, node: ast.Module) -> ast.AST:
+        for found in ast.walk(node):
+            if isinstance(found, ast.Import):
+                self._modules.update(alias.asname or alias.name for alias in found.names if alias.name == "sys")
+            elif isinstance(found, ast.ImportFrom) and found.module == "sys":
+                self._names.update(alias.asname or alias.name for alias in found.names if alias.name == "argv")
+        return self.generic_visit(node)
+
+    def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+        if self._is_argv(node.value):
+            index = node.slice
+            if isinstance(index, ast.Constant) and isinstance(index.value, int):
+                try:
+                    return ast.Constant(self._argv[index.value])
+                except IndexError:
+                    return ast.Constant("")
+            if isinstance(index, ast.Slice) and all(
+                    bound is None or (isinstance(bound, ast.Constant) and isinstance(bound.value, int))
+                    for bound in (index.lower, index.upper, index.step)):
+                bounds = [bound.value if bound is not None else None for bound in (index.lower, index.upper, index.step)]
+                try:
+                    return ast.List([ast.Constant(word) for word in self._argv[slice(*bounds)]], ast.Load())
+                except ValueError:
+                    return ast.List([], ast.Load())
+        return self.generic_visit(node)
+
+    def _is_argv(self, node: ast.AST) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id in self._names
+        return (isinstance(node, ast.Attribute) and node.attr == "argv"
+                and isinstance(node.value, ast.Name) and node.value.id in self._modules)
 
 
 @functools.lru_cache(maxsize=None)
