@@ -1244,13 +1244,14 @@ def kept(path: Path, transcript: str | None, marks: set[str] | None = None) -> t
                     f"{SETTINGS_WHY}, and the operator hands it only to a session that has read inside no area "
                     f"(this one has read inside {', '.join(sorted(marks))})")
         return f"the guard's settings ({path.name})", SETTINGS_WHY
-    if only_takes_openings(path):
-        return f"a file openings.txt includes ({path.name})", f"{SETTINGS_WHY}, and {ADDS_ONLY}"
     if transcript and same_file(path, real(transcript)):
         return "the session's transcript", TRANSCRIPT_WHY
     for home in {Path.home(), real(Path.home())}:
         if home in path.parents and TRANSCRIPT.fullmatch(path.relative_to(home).as_posix()):
             return "a session's transcript", TRANSCRIPT_WHY
+    # Last: an agent adds include lines itself, so one only ever holds a file that nothing else holds.
+    if only_takes_openings(path):
+        return f"a file openings.txt includes ({path.name})", f"{SETTINGS_WHY}, and {ADDS_ONLY}"
     return None
 
 
@@ -2448,7 +2449,7 @@ def main() -> int:
         writer |= remote_marks(command, cwd)
     what = kept(Path(written), transcript, writer) if tool in WRITES else \
         kept_by(args.get("command", ""), cwd, transcript, writer) if tool == "Bash" else None
-    if what and tool in WRITES and (adds_openings(Path(written), tool, args, writer)
+    if what and tool in WRITES and ((what[1].endswith(ADDS_ONLY) and adds_openings(Path(written), tool, args, writer))
                                     or (not writer and adds_relay_lines(Path(written), tool, args))):
         what = None
     # The guard's settings change on the operator's yes; a transcript, which judges that yes, never.
