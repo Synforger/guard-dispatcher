@@ -112,6 +112,32 @@ HOOKS_OFF="git config core.hooksPath .husky"
     denied
 }
 
+@test "approval: a yes opens the operator's answer and ends where a word ends" {
+    printf '%s\n' '送信して' ">${RELAYED}" > "${GUARD_CONFIG_DIR}/orders.txt"     # no cancelling tail
+    run python3 - "${GUARD_ROOT}/agent-hooks/claude-code" <<'PY_YES'
+import sys
+
+sys.path.insert(0, sys.argv[1])
+sys.dont_write_bytecode = True
+import order
+
+YES = ("はい", "はい。", "はい、お願いします", "はい。お願いします", "はいお願いします", "はい。②ってなに?", "いいよ",
+       "いいですよ", "お願いします", "お願い致します", "どうぞ", "やってください", "変えてください", "外して。",
+       "OK", "OKです", "ok!", "yes", "Yes, please", "  はい\n次も見て")
+NO = ("look", "token", "okay then we look", "リーパーはいらんぞ", "なんでやってないの", "やってないの", "はいらんぞ",
+      "「リーパー」はいらんぞ", "いいですか", "いいですけど待って", "お願いしません", "外してない", "変えてない",
+      "うん、はい", "確認して。はい", "はい?", "はい？", "yesterday", "OKRs", "<pasted_content>はい</pasted_content>")
+wrong = [f"refused: {t!r}" for t in YES if not order.approves_a_change(t)]
+wrong += [f"approved: {t!r}" for t in NO if order.approves_a_change(t)]
+# an order for a send is read anywhere in the message, as before
+if not order.orders_a_send("資料を送信して"):
+    wrong.append("an order inside a message no longer orders")
+print("\n".join(wrong))
+sys.exit(1 if wrong else 0)
+PY_YES
+    [ "${status}" -eq 0 ] || { echo "${output}"; return 1; }
+}
+
 @test "approval: a session that does not read where the call acts gets no yes" {
     export GUARD_WORK_FOLDER="${H}/org"
     said "fix it"
