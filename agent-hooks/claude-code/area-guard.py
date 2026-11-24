@@ -831,6 +831,7 @@ VARIABLE_TEST = re.compile(r"\$(?:\{([A-Za-z_]\w*)(?::?-)?\}|([A-Za-z_]\w*))")
 RUNS_HERE = {"source", ".", "eval", "exec"}
 # Variables that make a shell read a file of code before the script: the script is then not all it runs.
 STARTUP_FILES = ("BASH_ENV", "ENV")
+STARTUP_NAMED = re.compile(r"(?<![\w$])(?:BASH_)?ENV(?!\w)")
 # What makes the test of an if mean something else than the shell's own: an alias, a function named so.
 REDEFINES_TEST = re.compile(r"(?m)^\s*(?:alias\b|function\s+(?:test|\[)(?:\s|\()|(?:test|\[)\s*\(\s*\))")
 # A value the test reads the same quoted or not: not empty, no blank, no glob.
@@ -1911,7 +1912,10 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
         def inner(code: str) -> None:
             if depth >= NESTED:
                 return
-            sends, unreadable, skips, forces = send_places(code, str(here), depth + 1, tuple(sorted(gives.items())))
+            # A line that names BASH_ENV or ENV anywhere (`export BASH_ENV=…; X=… bash s.sh`) may have the
+            # shell read a file of code first: the script is then not all it runs, and gets no value.
+            handed = () if STARTUP_NAMED.search(command) else tuple(sorted(gives.items()))
+            sends, unreadable, skips, forces = send_places(code, str(here), depth + 1, handed)
             found.extend([] if lost else sends)
             unread.extend([lost] * len(sends) if lost else [])
             unread.extend(unreadable)

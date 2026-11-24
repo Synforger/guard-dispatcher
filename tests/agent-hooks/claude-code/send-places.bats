@@ -170,7 +170,14 @@ pick_script() {
     bash_in "${TOOL}" "DEST= bash pick.sh"; unread
     bash_in "${TOOL}" "DEST=\$ELSEWHERE bash pick.sh"; unread
     bash_in "${TOOL}" "DEST='${TOOL} x' bash pick.sh"; unread
-    bash_in "${TOOL}" "BASH_ENV=/dev/null DEST=${TOOL} bash pick.sh"; unread
+    local line
+    for line in "BASH_ENV=/dev/null DEST=${TOOL} bash pick.sh" "export BASH_ENV=/dev/null; DEST=${TOOL} bash pick.sh" \
+                "B=/dev/null; BASH_ENV=\$B; export BASH_ENV; DEST=${TOOL} bash pick.sh" \
+                "declare -x BASH_ENV=/dev/null; DEST=${TOOL} bash pick.sh" \
+                "export BASH_ENV=/dev/null && DEST=${TOOL} bash pick.sh" "export ENV=/dev/null; DEST=${TOOL} sh pick.sh"; do
+        bash_in "${TOOL}" "${line}"
+        unread || { echo "not read whole: ${line}"; return 1; }
+    done
     local change
     for change in 'DEST=/tmp' 'unset DEST' 'read -r DEST' ': "${DEST:=/tmp}"' 'source ./env.sh' 'export DEST=/tmp' \
                   '(( DEST = 1 ))' 'declare -n R=DEST' 'trap "DEST=/tmp" EXIT' 'DEST[0]=/tmp' 'test() { true; }' \
