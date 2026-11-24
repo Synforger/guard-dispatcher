@@ -129,6 +129,7 @@ import orders_edit  # noqa: E402
 import service_reads  # noqa: E402
 import ticket_places  # noqa: E402
 import work_reads  # noqa: E402
+from shell_commands import with_inner_first  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
 
 CONFIG = guard_places.settings_folder()
@@ -240,11 +241,17 @@ def shell_words(command: str) -> list[str]:
     a `;` glued to a word is still a break, and a heredoc's body is not words of the command
     unless the program it feeds runs it (strip_heredocs). Falls back to plain spaces on an
     unclosed quote."""
+    return list(split_words(command))
+
+
+@functools.lru_cache(maxsize=None)
+def split_words(command: str) -> tuple[str, ...]:
+    """shell_words, split once a call of the hook for each command line."""
     command = strip_heredocs(command)
     try:
-        return outgoing_module().shell_words(command)
+        return tuple(outgoing_module().shell_words(command))
     except ValueError:
-        return command.split()
+        return tuple(command.split())
 
 
 def service_areas(tool: str, args: dict, cwd: str, tabs: dict) -> tuple[set[str], list[str]]:
@@ -546,20 +553,41 @@ class CaseLabels:
         return ended_by
 
 
+def distinct(found: list) -> tuple:
+    """Each thing found once, in the order it was first found: a line written once more ahead of what
+    holds it, or a script reached by several ways, names the same thing again."""
+    return tuple({repr(item): item for item in found}.values())
+
+
+@functools.lru_cache(maxsize=256)
+def in_run_order(command: str) -> str:
+    """The command with what runs inside its words written ahead of them (shell_commands), for the
+    readers here, which take quoted text as one word: what it writes, sends and switches off."""
+    return with_inner_first(command)
+
+
+@functools.lru_cache(maxsize=None)
+def line_tokens(line: str) -> tuple[str, ...]:
+    """The tokens of a command line, split once a call of the hook however many judgements read it.
+    Raises ValueError on an unclosed quote."""
+    lexer = shlex.shlex(with_line_breaks(line), posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""      # with_line_breaks left the comments out: a `#` inside a word (`$#`) is no comment
+    return tuple(lexer)
+
+
 def stepped_commands(line: str):
     """The simple commands of a command line whose heredoc bodies are taken out, in order:
     (its words, its redirections as (operator, word), its here-string or None, the control operator
     that ends it, "" for the last). `2>&1` names no file and is left out. Raises ValueError on an
     unclosed quote, as `shlex.split` does. A line break that ends a command is a `;`."""
-    lexer = shlex.shlex(with_line_breaks(line), posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    lexer.commenters = ""      # with_line_breaks left the comments out: a `#` inside a word (`$#`) is no comment
+    tokens = line_tokens(line)
     breaks = outgoing_module().SHELL_BREAK
     words: list[str] = []
     redirects: list[tuple[str, str]] = []
     here = operator = None
     labels = CaseLabels()
-    for token in list(lexer):
+    for token in tokens:
         if operator is not None:
             if operator == "<<<":
                 here = token
@@ -674,9 +702,11 @@ def mentioned_paths(command: str, areas, cwd: str) -> list[Path]:
     return [path for path in named_paths(command, cwd) if area_of(path, areas)]
 
 
-def named_paths(command: str, cwd: str, depth: int = 0) -> list[Path]:
+@functools.lru_cache(maxsize=None)
+def named_paths(command: str, cwd: str, depth: int = 0) -> tuple[Path, ...]:
     """Every path a Bash command names standing by themselves, globs matched (mentioned_paths), and
-    every path the code of a file it runs names (ran_scripts), as that code written into the command."""
+    every path the code of a file it runs names (ran_scripts), as that code written into the command.
+    A call of the hook reads each command line from each folder once, and names each path once."""
     stretches = list(said(command))
     for program, code, here in ran_scripts(command, cwd) if depth < NESTED else []:
         if SHELL_CODE.fullmatch(program):
@@ -684,14 +714,14 @@ def named_paths(command: str, cwd: str, depth: int = 0) -> list[Path]:
         else:
             stretches += [stretch for stretch, _ in literals(code)]
     found = []
-    for stretch in stretches:
+    for stretch in dict.fromkeys(stretches):
         for name in standing(stretch):
             try:
                 matches = list(itertools.islice(glob.iglob(name), GLOB_MATCHES)) if GLOB.search(name) else []
                 found += [real(match) for match in [name, *matches]]
             except (OSError, ValueError, re.error):
                 continue
-    return found
+    return tuple(dict.fromkeys(found))
 
 
 def record_areas(tool: str, args: dict, cwd: str) -> set[str]:
@@ -927,10 +957,13 @@ def unpacks_into(tool: str, args: list[str]) -> str | None:
 def named(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path]]:
     """(paths a Bash command names as a place it writes, paths it names as removed): see
     named_with_folders, which also tells what each order does to a folder."""
-    return named_with_folders(command, cwd, depth)[:2]
+    written, removed, _ = named_with_folders(command, cwd, depth)
+    return list(written), list(removed)
 
 
-def named_with_folders(command: str, cwd: str, depth: int = 0) -> tuple[list[Path], list[Path], list[FolderOrder]]:
+@functools.lru_cache(maxsize=None)
+def named_with_folders(command: str, cwd: str,
+                       depth: int = 0) -> tuple[tuple[Path, ...], tuple[Path, ...], tuple[FolderOrder, ...]]:
     """(paths a Bash command names as a place it writes, paths it names as removed, the orders that
     replace, empty or fill a folder: see FolderOrder).
 
@@ -951,8 +984,10 @@ def named_with_folders(command: str, cwd: str, depth: int = 0) -> tuple[list[Pat
     A relative name is a file of the folder the command stands in when it reaches that word: `cd`,
     `pushd` / `popd` move it and a subshell gives the place back. A variable the command line set to
     a literal before (`D=/a/b; echo x > $D/out`) is written out. Where neither can be read (`cd $X`,
-    a value from a substitution), the name is judged as it was written, from where the command stood."""
-    line, fed = split_heredocs(spell_home(command))
+    a value from a substitution), the name is judged as it was written, from where the command stood.
+
+    A call of the hook reads each command line from each folder once, and names each path once."""
+    line, fed = split_heredocs(spell_home(in_run_order(command)))
     try:
         commands = list(stepped_commands(line))
     except ValueError:
@@ -963,13 +998,17 @@ def named_with_folders(command: str, cwd: str, depth: int = 0) -> tuple[list[Pat
     found: tuple[list[Path], list[Path], list[FolderOrder]] = ([], [], [])
     standing = Standing(cwd)
     values: dict[str, str] = {}
+    handed: set[tuple[str, str, str]] = set()
 
     def filled(word: str) -> str:
         """The word with the variables this command line set to a literal written out."""
         return VARIABLE.sub(lambda m: values.get(m.group(1) or m.group(2), m.group(0)), word)
 
     def run(tool: str, code: str, base: str) -> None:
-        """Code handed to a program that runs it."""
+        """Code handed to a program that runs it: read once, however often the line hands it on."""
+        if (tool, code, base) in handed:
+            return
+        handed.add((tool, code, base))
         if SHELL_CODE.fullmatch(tool):
             if depth >= NESTED:
                 return
@@ -1088,11 +1127,11 @@ def named_with_folders(command: str, cwd: str, depth: int = 0) -> tuple[list[Pat
         return (glob.glob(base) if GLOB.search(name) else []) or [base]
 
     def spelled(names: list[tuple[str, str]]) -> list[Path]:
-        return [real(m) for name, stood in names for m in matched(name, stood)]
+        return [real(m) for name, stood in distinct(names) for m in matched(name, stood)]
 
     ordered = [FolderOrder(real(m), Path(os.path.normpath(m)), reach)
-               for name, stood, reach in folder_orders for m in matched(name, stood)]
-    return spelled(written) + found[0], spelled(removed) + found[1], ordered + found[2]
+               for name, stood, reach in distinct(folder_orders) for m in matched(name, stood)]
+    return distinct(spelled(written) + found[0]), distinct(spelled(removed) + found[1]), distinct(ordered + found[2])
 
 
 def fed_files(redirects: list[tuple[str, str]], previous: tuple | None) -> list[str]:
@@ -1114,14 +1153,16 @@ def ran_scripts(command: str, cwd: str, depth: int = 0, *, fed_only: bool = Fals
     return [found[:3] for found in ran_scripts_with_arguments(command, cwd, depth, fed_only=fed_only)]
 
 
+@functools.lru_cache(maxsize=None)
 def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
-                               fed_only: bool = False) -> list[tuple[str, str, str, list[str]]]:
-    """ran_scripts, and the words the command hands each file as its arguments."""
-    line, _ = split_heredocs(spell_home(command))
+                               fed_only: bool = False) -> tuple[tuple[str, str, str, list[str]], ...]:
+    """ran_scripts, and the words the command hands each file as its arguments. A call of the hook
+    reads each command line from each folder once, and names each file run the same way once."""
+    line, _ = split_heredocs(spell_home(in_run_order(command)))
     try:
         steps = list(stepped_commands(line))
     except ValueError:
-        return []
+        return ()
     found: list[tuple[str, str, str, list[str]]] = []
     standing = Standing(cwd)
     for index, (words, redirects, _, ended_by) in enumerate(steps):
@@ -1143,7 +1184,7 @@ def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
             standing.open()
         elif ended_by == ")":
             standing.close()
-    return found
+    return distinct(found)
 
 
 def write_targets(command: str, cwd: str) -> list[Path]:
@@ -1579,11 +1620,12 @@ WRAPPERS = {"sudo", "env", "command", "exec", "builtin", "nohup", "nice", "caffe
 
 def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
     """Every send in a command whose folder can be read (see send_places)."""
-    return send_places(command, cwd)[0]
+    return list(send_places(command, cwd)[0])
 
 
-def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path, list[str]]], list[str], list[str],
-                                                                list[tuple[Path, str, str]]]:
+@functools.lru_cache(maxsize=None)
+def send_places(command: str, cwd: str, depth: int = 0) -> tuple[
+        tuple[tuple[Path, list[str]], ...], tuple[str, ...], tuple[str, ...], tuple[tuple[Path, str, str], ...]]:
     """(every send in a command -- git commit / push, a sending gh call -- as (repository it runs
     in, arguments naming its destination for corpus-scan), the words that leave a send's folder
     to be known only as the command runs, the commits whose options switch their hooks off
@@ -1600,11 +1642,14 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
     A variable the command line set to a literal before (`W=/a/b; cd $W`) is written out, and one
     of the session's environment (`$HOME`) too. A folder still spelled with a variable or a
     substitution after that (`cd $W` with W set elsewhere, `git -C "$(...)"`) cannot be read: a
-    send that stands there goes to the second list, until a `cd` to a folder written out."""
+    send that stands there goes to the second list, until a `cd` to a folder written out.
+
+    A call of the hook reads each command line from each folder once, and names each send once."""
+    command = in_run_order(command)
     try:
         words = shell_words(command)
     except ValueError:
-        return [], [], [], []
+        return (), (), (), ()
     breaks = outgoing_module().SHELL_BREAK
     found: list[tuple[Path, list[str]]] = []
     unread: list[str] = []
@@ -1746,7 +1791,7 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[list[tuple[Path
             standing.open(lost)
         elif w == ")" and standing.inside():
             lost = standing.close()
-    return found, unread, skipping, forcing
+    return distinct(found), distinct(unread), distinct(skipping), distinct(forcing)
 
 
 def push_url(repo: Path, named: str | None) -> str:
@@ -2245,7 +2290,8 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
         return "switches the entry guard off"
     if re.search(r"\b(rm|mv|unlink|ln)\b[^|;&]*\.git-hooks(/agent-hooks)?/?(\s|$|[;&|])", expanded):
         return "removes the guards' installed hooks"
-    if config_writes_guard_key(command) and not writes_derived_scope(command, cwd):
+    ordered_line = in_run_order(command)
+    if config_writes_guard_key(ordered_line) and not writes_derived_scope(ordered_line, cwd):
         return "a git config that switches the hooks off"
     sends, _, skipping, _ = send_places(command, cwd)
     if not sends and not skipping:
@@ -2477,7 +2523,7 @@ def main() -> int:
     if tool == "Bash" and (why := forced_push_refusal(tool, args, event, cwd, areas, approved)):
         deny(why)
         return 0
-    if tool == "Bash" and children.rules.runs_registration(args.get("command", "")):
+    if tool == "Bash" and children.rules.runs_registration(in_run_order(args.get("command", ""))):
         deny("area-guard: an agent does not register a child: the client does, once it has opened the child's tab")
         return 0
     written = str(real(args.get("file_path") or args.get("notebook_path") or "", cwd)) if tool in WRITES else ""
