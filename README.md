@@ -857,7 +857,16 @@ step earlier, before each tool call, from the same `areas.txt`:
   `#!` line names, the shell when it has none) and `uv run fix.py`. It is
   followed where the command stands (`cd`, a subshell, `-c`, `eval`, a
   substitution the shell runs, in double quotes and heredocs too), and a
-  script that runs another is followed a few steps. A syntax check at
+  script that runs another is followed a few steps. A Python file differs in
+  one thing: the program only starts there, so a relative name in it is a file
+  of the command's folder only where it reaches a call known to write it (an
+  `open` in a writing mode, a path's method that writes, `os` and `shutil`
+  writes) or one that runs a command (`subprocess`, `os.system`), through the
+  names, operators and pure calls it is built from (`os.path.join("d", "a")`,
+  `Path("d", "a")`, `d + "/" + n`). A name handed to a call the guard does not
+  know (`setting("areas.txt")`) is that call's to place, and a piece joined
+  onto a value the code does not hold (`Path(__file__).parent / "config"`) is a
+  path under that value. Its absolute and home paths count as before. A syntax check at
   the head of the call runs none of it, so `bash -n run.sh` there is judged
   as `cat run.sh`: only `sh`, `bash`, `zsh`, `dash` or `ksh` (bare, or in
   `/bin` or `/usr/bin`) with `-n` or `-o noexec` and one file written out,

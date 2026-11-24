@@ -271,6 +271,88 @@ open('out/report.md', 'w').write('x')"
     bash_call "python3 note.py"; passed
 }
 
+# --- a relative name in a program read from a file ------------------------------------------------
+
+@test "script files: a relative name a program hands to a call the guard does not know is that call's to place" {
+    # Run from inside the tickets folder: a file written there by its relative name is refused.
+    script tool.py 'from pathlib import Path
+import json
+CONFIG = Path(__file__).resolve().parent / "config"
+def setting(name):
+    return CONFIG / name
+print(setting("areas.txt"), (CONFIG / "destinations.txt").read_text())
+json.dump({}, open(setting("state.json"), "w"))'
+    bash_in "${PLACE}" "python3 ${TOOL}/tool.py"; passed
+    # the guard's own send check, run from another folder, names none of its settings there
+    bash_in "${PLACE}" "python3 ${GUARD_ROOT}/scanners/destinations/send-scan.py --where tabs >/dev/null; echo rc=\$?"; passed
+    # the same call written into the command is read as before: its strings are files of the folder
+    bash_in "${PLACE}" "python3 -c 'setting(\"a.jsonl\")'"; denied
+}
+
+@test "script files: a relative name handed as it stands to a call that writes is a file of the command's folder" {
+    local body
+    for body in 'open("a.jsonl", "w").write("{}")' \
+                'from pathlib import Path
+Path("a.jsonl").write_text("{}")' \
+                'from pathlib import Path
+P = Path("sub")
+(P / "a.jsonl").write_text("{}")' \
+                'import shutil
+shutil.copy("/etc/hosts", "a.jsonl")'; do
+        script rel.py "${body}"
+        bash_in "${PLACE}" "python3 ${TOOL}/rel.py"
+        denied || { echo "not refused: ${body}"; return 1; }
+        says 'a ticket is written with `tabs ticket`'
+    done
+}
+
+@test "script files: a relative name a call that writes is handed counts however the target is put together" {
+    local body
+    for body in 'import os
+open(os.path.join("sub", "a.jsonl"), "w")' \
+                'import os
+d = "sub"
+open(os.path.join(d, "a.jsonl"), "w")' \
+                'from pathlib import Path
+Path("sub", "a.jsonl").write_text("{}")' \
+                'from pathlib import Path
+Path("sub").joinpath("a.jsonl").write_text("{}")' \
+                'import os, shutil
+src = "/etc/hosts"
+shutil.copy(src, os.path.join("sub", "a.jsonl"))' \
+                'import subprocess
+src = "/etc/hosts"
+subprocess.run(["cp", src, "sub/a.jsonl"])' \
+                'd = "sub"
+n = "a.jsonl"
+open(d + "/" + n, "w")'; do
+        script rel.py "${body}"
+        bash_in "${PLACE}" "python3 ${TOOL}/rel.py"
+        denied || { echo "not refused: ${body}"; return 1; }
+    done
+    # A move into the folder first: the relative name written after it lands there.
+    for body in 'import os
+os.chdir("tickets")
+open("a.jsonl", "w")' \
+                'import contextlib
+with contextlib.chdir("tickets"):
+    open("a.jsonl", "w")'; do
+        script rel.py "${body}"
+        bash_in "$(dirname "${PLACE}")" "python3 ${TOOL}/rel.py"
+        denied || { echo "not refused: ${body}"; return 1; }
+    done
+    # Handed to a call the guard does not know, even inside the target of one that writes: that call places it.
+    for body in 'import mylib
+mylib.put("sub/a.jsonl")' \
+                'def setting(name):
+    return "/tmp/" + name
+open(setting("sub/a.jsonl"), "w")'; do
+        script rel.py "${body}"
+        bash_in "${PLACE}" "python3 ${TOOL}/rel.py"
+        passed || { echo "refused: ${body}"; return 1; }
+    done
+}
+
 # --- a script that writes where its arguments say ------------------------------------------------
 
 # What the guard judges from, and what it keeps for the operator: its settings and a session's transcript.

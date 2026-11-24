@@ -147,7 +147,7 @@ guard = importlib.util.module_from_spec(spec)
 sys.modules["guard"] = guard
 spec.loader.exec_module(guard)
 read, paths = [], guard.code_paths
-guard.code_paths = lambda code, base: read.append(code) or paths(code, base)
+guard.code_paths = lambda code, base, **options: read.append(code) or paths(code, base, **options)
 written = guard.named_with_folders("v=$(python3 w.py)", sys.argv[2])[0]
 print(len(read), any(path.name == "out.txt" for path in written))' "${HOOK}" "${REPO}"
     [ "${output}" = "1 True" ]
