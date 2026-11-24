@@ -206,9 +206,34 @@ for arg in "$@"; do
     prev="${arg}"
 done
 
+# The call's arguments, NUL-separated: where it sends is read from them by the word list's
+# choice below and by the corpus scan.
+argv_file="$(mktemp)"
+trap 'cleanup; rm -f "${argv_file}"' EXIT
+printf '%s\0' "$@" > "${argv_file}"
+
+# The word list follows the repository the call sends to, as a push's does: the git settings of
+# that repository's clone name it (gh-shim/_internal/words_folder.py). With no clone to read, the
+# operator's whole list. A list the caller names (ANON_WORDS_FILE) is kept.
+words_dir="${PWD}"
+if [ -z "${ANON_WORDS_FILE:-}" ]; then
+    words_dir="$(python3 "${GUARD_ROOT}/gh-shim/_internal/words_folder.py" "${argv_file}" "${PWD}")" || {
+        printf '[gh-guard] could not tell which word list this command is scanned with — refusing to send.\n' >&2
+        exit 1
+    }
+    if [ -z "${words_dir}" ]; then
+        words_dir="${PWD}"
+        master="$(python3 "${GUARD_ROOT}/_common/guard_places.py" master-words)"
+        if [ -f "${master}" ]; then
+            ANON_WORDS_FILE="${master}"
+            export ANON_WORDS_FILE
+        fi
+    fi
+fi
+
 # ⚠ 走査の報告は stderr へ。stdout は本物の CLI のもの (= `$(gh api ...)` を jq に
 # 渡す呼び手が、先頭に混ざった「clean」の 1 行で JSON を読めなくなった)。
-if ! ANON_SCAN_PATHS="${payload}" bash "${SCANNER}" >&2; then
+if ! (cd "${words_dir}" && ANON_SCAN_PATHS="${payload}" bash "${SCANNER}") >&2; then
     printf '\n[gh-guard] refusing to send: this command carries a flagged identifier.\n' >&2
     printf '           Fix the text (or the file it points at) and run it again.\n' >&2
     exit 1
@@ -224,9 +249,6 @@ if [ "${GUARD_CORPUS_SKIP:-0}" != "1" ]; then
         printf '[gh-guard] corpus scanner not found at %s — refusing to send.\n' "${CORPUS}" >&2
         exit 1
     fi
-    argv_file="$(mktemp)"
-    trap 'cleanup; rm -f "${argv_file}"' EXIT
-    printf '%s\0' "$@" > "${argv_file}"
     corpus_status=0
     python3 "${CORPUS}" --text "${payload}" --gh-argv "${argv_file}" || corpus_status=$?
     if [ "${corpus_status}" -eq 2 ]; then
