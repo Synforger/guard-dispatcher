@@ -700,9 +700,13 @@ step earlier, before each tool call, from the same `areas.txt`:
   syntax tree, and counts only the parts that reach a call that writes (an
   `open` in a writing mode, `Path.write_text` and the other methods of a path
   that write it, the destination of a rename) or a call the guard does not
-  know (`shutil.copy`, `subprocess.run`, a library's `save`), following a name
+  know (`shutil.copy`, a library's `save`), following a name
   back to the values it was given: a path handed to `os.path.relpath`, a
-  string's methods, `print` or an `open` that reads is text. A name the code
+  string's methods, `print` or an `open` that reads is text. A call that runs a
+  command (`subprocess.run`, `os.system`) writes what that command line writes,
+  read as one typed into Bash, and where it runs (`cwd=`); the variables it sets
+  (`env=`) and what the command gave back (`.stdout`, `.returncode`) name no file.
+  A part of it the code does not hold counts as below. A name the code
   rebinds (loops over, takes as a parameter, binds twice) is a call the guard
   does not know, whatever it is spelled; a name one plain assignment alone
   binds is read as what it is given (`esc = html.escape` is `html.escape`,
@@ -935,7 +939,7 @@ step earlier, before each tool call, from the same `areas.txt`:
   one thing: the program only starts there, so a relative name in it is a file
   of the command's folder only where it reaches a call known to write it (an
   `open` in a writing mode, a path's method that writes, `os` and `shutil`
-  writes) or one that runs a command (`subprocess`, `os.system`), through the
+  writes) or the folder a command it runs runs in (`cwd=`), through the
   names, operators and pure calls it is built from (`os.path.join("d", "a")`,
   `Path("d", "a")`, `d + "/" + n`). A name handed to a call the guard does not
   know (`setting("areas.txt")`) is that call's to place, and a piece joined

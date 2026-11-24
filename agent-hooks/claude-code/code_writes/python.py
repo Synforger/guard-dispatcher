@@ -153,8 +153,6 @@ LOCAL_WRITES = frozenset({"os.makedirs", "os.mkdir", "os.remove", "os.unlink", "
                           "os.rmdir", "os.removedirs", "shutil.copy", "shutil.copy2", "shutil.copyfile",
                           "shutil.copytree", "shutil.move", "shutil.rmtree"})
 WRITING_MODE = re.compile(r"[wax+]")
-#: Functions that run a command: whatever they are handed is a command line, which writes where its
-#: words say, so the names in it are counted as a call known to write counts them.
 #: Calls that run a command besides RUNS_COMMAND: a terminal's child and asyncio's subprocesses.
 RUNS_COMMAND_TOO = re.compile(r"pty\.\w*spawn|asyncio\.create_subprocess_\w+")
 #: git, as a word, and the ways to run it without its hooks (an option, a setting given a value, a variable).
@@ -169,15 +167,20 @@ BUILT_OF = (ast.Constant, ast.List, ast.Tuple, ast.Set, ast.Dict, ast.BinOp, ast
 #: Functions that move the code to the folder they are handed: a relative name written after them lands
 #: there, so that folder is counted as a call known to write counts its target.
 FOLDER_MOVES = frozenset({"os.chdir", "contextlib.chdir"})
+#: Functions that run a command. What they run is a command line, read for what it writes as one
+#: (commands_run); of what they are handed, the folder it runs in (`cwd=`) is counted as a call known to
+#: write counts its target, and so is any part the code does not hold. The variables they set (`env=`)
+#: name no file it writes.
 RUNS_COMMAND = re.compile(r"subprocess\.\w+|os\.(?:system|popen|exec\w*|spawn\w*|posix_spawnp?)")
-#: Attributes of the values known calls give (a path, a match, a date, a stat, an open file, a number)
+#: Attributes of the values known calls give (a path, a match, a date, a stat, an open file, a number,
+#: what a command that ran gave back)
 #: that hold data and run nothing: handed on as a value, they are not a method a known call may call.
 VALUE_ATTRIBUTES = frozenset({
     "name", "stem", "suffix", "suffixes", "parent", "parents", "parts", "anchor", "root", "drive", "path",
     "string", "pos", "endpos", "lastindex", "lastgroup", "pattern", "flags", "groupindex",
     "year", "month", "day", "hour", "minute", "second", "microsecond", "tzinfo", "days", "seconds",
     "st_size", "st_mtime", "st_atime", "st_ctime", "st_mode", "mode", "closed", "encoding",
-    "real", "imag", "numerator", "denominator",
+    "real", "imag", "numerator", "denominator", "stdout", "stderr", "returncode",
 })
 #: Builtins that run, or reach, code or objects the tree does not show: named anywhere (a call, or a
 #: value handed on, `sorted(xs, key=eval)`), they make the code one this module does not know.
@@ -202,6 +205,15 @@ def written_code(code: str, *, known_writes_only: bool = False) -> str:
     except (SyntaxError, ValueError):
         return code
     return _Reader(code, tree).written(known_writes_only=known_writes_only)
+
+
+def with_arguments(code: str, words: list[str]) -> str:
+    """`code` with `sys.argv[n]` (and a slice of it) written out as the word of `words` it stands for, or
+    `code` as it is when it does not parse."""
+    try:
+        return ast.unparse(_Arguments(words).visit(ast.parse(code)))
+    except (SyntaxError, ValueError, RecursionError):
+        return code
 
 
 def written_with_arguments(code: str, words: list[str]) -> str:
@@ -527,7 +539,11 @@ class _Reader:
             return [*call.args[:1], *(k.value for k in call.keywords if k.arg == "file")] if _writes(call, 1) else []
         if name is not None and (name in self._functions or _pure(name)):
             return []
-        if known_writes_only and name not in LOCAL_WRITES | FOLDER_MOVES and not (name and RUNS_COMMAND.fullmatch(name)):
+        if name is not None and (RUNS_COMMAND.fullmatch(name) or RUNS_COMMAND_TOO.fullmatch(name)):
+            handed = [*call.args, *(k.value for k in call.keywords if k.arg not in ("cwd", "env"))]
+            return [*(k.value for k in call.keywords if k.arg == "cwd"),
+                    *(part for part in handed if not self._held(part, frozenset()))]
+        if known_writes_only and name not in LOCAL_WRITES | FOLDER_MOVES:
             return []
         return args
 
