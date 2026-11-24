@@ -88,6 +88,8 @@ PIPES = frozenset({"|", "|&"})
 # Characters that end a word outside quotes.
 WORD_END = frozenset(" \t\n;&|()<>")
 SPECIAL_PARAMETER = frozenset("@*#?$!-0123456789")
+# What opens a command line inside a word.
+INNER_OPENS = re.compile(r"\$\(|`|[<>]\(")
 # How deep a command line inside a command line is followed.
 NESTED = 4
 # What makes a word known only as the command runs, for a word whose quoting is not known, and a
@@ -164,6 +166,26 @@ def simple_commands(line: str, depth: int = 0, values: dict[str, str] | None = N
     return out
 
 
+def with_inner_first(line: str, depth: int = 0) -> str:
+    """The line with each command line inside its words (a substitution that runs, also within double
+    quotes and an unquoted heredoc body) written once more, in parentheses, ahead of the command that
+    holds it: for a reader that takes quoted text as one word. Nothing of the line is left out, and
+    the parentheses give back the folder and the variables, as a substitution does. A line this
+    reader cannot read is returned as it is."""
+    if depth >= NESTED or not INNER_OPENS.search(line):
+        return line
+    held: list[tuple[int, str]] = []
+    try:
+        _tokens(line, held)
+    except ValueError:
+        return line
+    out, done = [], 0
+    for start, code in held:     # in the order of the commands that hold them
+        out += [line[done:start], f" ( {with_inner_first(code, depth + 1)}\n); "]
+        done = start
+    return "".join(out) + line[done:]
+
+
 def _run(words: list[Word], stdin: tuple[str, str] | None, depth: int, values: dict[str, str]) -> list[Command]:
     """The command these words run, after the command lines and the commands its leading words hand on."""
     program, lines, nested = _program(words)
@@ -182,20 +204,33 @@ def _run(words: list[Word], stdin: tuple[str, str] | None, depth: int, values: d
 # line break; a heredoc's redirect is followed by ("heredoc", [body]), filled when its line ends.
 # Each command line inside a word or a heredoc body follows it as ("inner", code).
 
-def _tokens(line: str) -> list[tuple]:
+def _tokens(line: str, held: list[tuple[int, str]] | None = None) -> list[tuple]:
+    """The line's tokens. `held` takes each command line inside, with where the command holding it starts."""
     tokens: list[tuple] = []
     inner: list[str] = []
     pending: list[tuple[bool, str, bool, list]] = []   # (tabs stripped, delimiter, quoted, body)
     at, size = 0, len(line)
     word_end = -1
+    opened: int | None = None     # where the simple command being read starts
+
+    def hold(codes: list[str]) -> None:
+        if held is not None and opened is not None:
+            held.extend((opened, code) for code in codes)
+
     while at < size:
         char = line[at]
         if char in " \t":
             at += 1
-        elif char == "\\" and line[at + 1:at + 2] == "\n":
+            continue
+        if char == "\\" and line[at + 1:at + 2] == "\n":
             at += 2
-        elif char == "\n":
+            continue
+        if opened is None and char not in "\n#":
+            opened = at
+        if char == "\n":
             at = _bodies(line, at + 1, pending, inner) if pending else at + 1
+            hold(inner)
+            opened = None
             pending = []
             tokens += [*(("inner", code) for code in inner), ("break",)]   # the bodies' command is still open
             inner.clear()
@@ -205,6 +240,7 @@ def _tokens(line: str) -> list[tuple]:
         elif char in "<>" and line[at + 1:at + 2] == "(":
             end = _closing(line, at + 2)
             tokens += [("word", Word(line[at:end + 1], expands=True)), ("inner", line[at + 2:end])]
+            hold([line[at + 2:end]])
             at = end + 1
         elif (op := next((r for r in REDIRECTS if line.startswith(r, at)), None)) and \
                 (char != "&" or op.startswith("&>")):
@@ -224,9 +260,11 @@ def _tokens(line: str) -> list[tuple]:
         elif op := next((c for c in CONTROLS if line.startswith(c, at)), None):
             tokens.append(("control", op))
             at += len(op)
+            opened = None
         else:
             word, at = _word(line, at, inner)
             tokens += [("word", word), *(("inner", code) for code in inner)]
+            hold(inner)
             inner.clear()
             word_end = at
     return tokens

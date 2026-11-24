@@ -271,6 +271,9 @@ BUILD_POLL = 0.1
 # An area this small has its table merged anew within the scan that sees one of its documents
 # rewritten or deleted (well under a second); a larger one gets a full walk started apart.
 SMALL_AREA = int(os.environ.get("GUARD_CORPUS_SMALL_AREA", "1000"))
+# Bringing the tables up to date past this many seconds says where the time went: about 2.5 times
+# the 4s it takes on a machine of 110,000 documents.
+SLOW_SAY = float(os.environ.get("GUARD_CORPUS_SLOW_SAY", "10"))
 # One PDF's extractor gets far less than the judgement's own budget (send-scan.py's 120s for the
 # whole scan): a single huge attachment must not eat that budget, so it is marked unreadable
 # instead, on its own, well before the outer timeout could fire.
@@ -1842,6 +1845,7 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
     with lock_file(wait=False) as acquired:
         if not acquired:
             return summary
+        began = time.time()
         index = json.loads(INDEX.read_text()) if INDEX.is_file() else {}
         roots = [r for n, rs in areas.items() if n not in UNSCANNED for r in rs]
         changed = spotlight_changes(roots, summary["checked"], index)
@@ -1856,6 +1860,7 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
             changed += [p for root in roots if not any(k.startswith(f"{root}{os.sep}") for k in index)
                         for p in unvouched_changes(root, index)]
         started = time.time()
+        found_in = started - began
         # Many documents, or a long read, before the scan answers: say so with the time the reads so
         # far give it, then how long they took and on what.
         try:
@@ -1916,6 +1921,7 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
         if loud:
             slowest = ", ".join(f"{kind} {seconds:.0f}s ({counted[kind]})" for kind, seconds in spent.most_common(3))
             say(f"read {len(changed)} changed documents in {time.time() - started:.0f}s; most of it on {slowest}")
+        read_in = time.time() - started
         deltas = {n: [v[1] for v in index.values() if v[2] == n and v[-1] == "delta"] for n in touched}
         if sum(len(f) for f in deltas.values()) > MAX_DELTA:
             # The delta is written all the same (= what changed is seen now); the full walk that
@@ -1947,6 +1953,12 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
             atomic_write(INDEX, json.dumps(index))
         summary["checked"] = started
         atomic_write(CACHE / "summary.json", json.dumps(summary, indent=1))
+        took = time.time() - began
+        if took > SLOW_SAY:
+            read = sum(counted.values())
+            say(f"brought the tables up to date in {took:.0f}s: finding what changed {found_in:.0f}s, "
+                f"reading {read} document{'' if read == 1 else 's'} {read_in:.0f}s, "
+                f"merging {max(took - found_in - read_in, 0):.0f}s")
         return summary
 
 
@@ -1974,8 +1986,12 @@ def walk_apart(summary: dict, wait: float = WALK_WAIT) -> dict:
     try:
         code = walk.wait(timeout=wait)
     except subprocess.TimeoutExpired:
-        say(f"the walk takes longer than {wait:g}s: it goes on apart from this scan, which uses the "
-            "tables brought up to date just now")
+        if wait:
+            say(f"the walk takes longer than {wait:g}s: it goes on apart from this scan, which uses the "
+                "tables brought up to date just now")
+        else:
+            say("a document of a large area was rewritten: its walk goes on apart from this scan, which "
+                "uses the tables brought up to date just now")
         return summary
     built = built_summary()
     if code != 0 or built is None or built["built"] <= summary["built"]:

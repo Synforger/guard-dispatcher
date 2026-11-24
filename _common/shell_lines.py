@@ -35,6 +35,7 @@ def with_line_breaks(command: str) -> str:
     out: list[str] = []
     pending: list[tuple[bool, str]] = []        # the heredocs opened on this line: (tabs stripped, delimiter)
     at, size = 0, len(command)
+    last, settled = "", 0       # the last character that is no blank among out[:settled]
     while at < size:
         char = command[at]
         if char == "'":
@@ -66,7 +67,10 @@ def with_line_breaks(command: str) -> str:
                 at = _body_end(command, at + 1, pending, out)
                 pending = []
                 continue
-            last = "".join(out).rstrip(" \t")[-1:]
+            for piece in out[settled:]:
+                if kept := piece.rstrip(" \t"):
+                    last = kept[-1]
+            settled = len(out)
             out.append(" " if not last or last in CONTINUES else " ; ")
             at += 1
         else:
