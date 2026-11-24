@@ -2642,6 +2642,30 @@ def handed_code(command: str, cwd: str) -> list[tuple[str, str, str]]:
     return found
 
 
+def command_texts(command: str, depth: int = 0) -> list[str]:
+    """Each simple command of a line as one text, home written out: its words and its redirections
+    (`> file`), so a check matched on text reads one command at a time. A heredoc's body is no command
+    unless it is fed to a shell; that, a shell's `-c` string and a command line handed on (`eval`,
+    `trap`, `find -exec`) are read as commands of their own. A line that cannot be split is one text."""
+    line, fed = split_heredocs(spell_home(in_run_order(command)))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return [spell_home(command)]
+    texts: list[str] = []
+    inner = [body for program, body in fed if SHELL_CODE.fullmatch(program)]
+    for words, redirects, here_string, _ in steps:
+        texts.append(" ".join([*words, *(f"{operator} {target}" for operator, target in redirects)]))
+        head, lines, nested = program_words(words)
+        inner += [*lines, *map(shlex.join, nested)]
+        if head and SHELL_CODE.fullmatch(os.path.basename(head[0])):
+            inner += [head[at + 1] for at, word in enumerate(head[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
+            inner += [here_string] if here_string is not None else []
+    for code in inner if depth < NESTED else []:
+        texts += command_texts(code, depth + 1)
+    return texts
+
+
 # Any interpreter's code that names git together with a way to switch its hooks off. Only Python is
 # read for the command lines it runs; another language's code is held by these words alone.
 CODE_GIT_BYPASS = re.compile(r"--no-ver(?:i|if|ify)?\b|core\.hookspath|GIT_CONFIG_(?:PARAMETERS|COUNT|GLOBAL|SYSTEM)"
@@ -2667,13 +2691,14 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
                 return f"Python code that runs git with {found}"
         elif re.search(r"\bgit\b", code) and (m := CODE_GIT_BYPASS.search(code)):
             return f"{program} code that runs git with {m.group(0)} (only Python's commands are read)"
-    expanded = spell_home(command)
+    texts = command_texts(command)
     marks = "|".join(re.escape(name) for name in sorted(marks_names()))
-    if re.search(rf"\b(rm|mv|cp|truncate|tee|touch|ln)\b[^|;&]*(?:{marks})|>\s*\S*(?:{marks})", expanded):
+    if any(re.search(rf"\b(rm|mv|cp|truncate|tee|touch|ln)\b[^|;&]*(?:{marks})|>\s*\S*(?:{marks})", text)
+           for text in texts):
         return MARKS_REWRITE
-    if re.search(r"\b(mv|cp|tee|touch|ln|install)\b[^|;&]*agent-off|>\s*\S*agent-off", expanded):
+    if any(re.search(r"\b(mv|cp|tee|touch|ln|install)\b[^|;&]*agent-off|>\s*\S*agent-off", text) for text in texts):
         return "switches the entry guard off"
-    if re.search(r"\b(rm|mv|unlink|ln)\b[^|;&]*\.git-hooks(/agent-hooks)?/?(\s|$|[;&|])", expanded):
+    if any(re.search(r"\b(rm|mv|unlink|ln)\b[^|;&]*\.git-hooks(/agent-hooks)?/?(\s|$|[;&|])", text) for text in texts):
         return "removes the guards' installed hooks"
     ordered_line = in_run_order(command)
     if config_writes_guard_key(ordered_line) and not writes_derived_scope(ordered_line, cwd):
