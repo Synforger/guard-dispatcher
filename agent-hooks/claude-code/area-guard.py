@@ -150,6 +150,9 @@ GRANT = guard_places.setting("agent-writes.txt")
 OPERATOR_ONLY = (GRANT.name, "orders.txt", OFF.name)
 CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus/corpus-scan.py"
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/destinations/send-scan.py"
+ANON_SCAN = Path(__file__).resolve().parents[2] / "scanners/words/anon-scan.sh"
+# How many word-list hits a refusal of a write shows; the rest are counted.
+SHOWN_WORD_HITS = 5
 EXEMPT = area_roles.EXEMPT
 NO_AREA = area_roles.NO_AREA
 READS = {"Read", "Grep", "Glob"}
@@ -2058,6 +2061,72 @@ def written_text(tool: str, args: dict) -> str:
     return "\n".join(str(args.get(k) or "") for k in WRITTEN_TEXT.get(tool, ()))
 
 
+def area_word_lists(targets: list[Path], areas) -> dict[str, tuple[Path, Path]]:
+    """area -> (its word list, the first target inside it) for the areas whose folders hold a
+    target and that keep a list of their own beside the operator's (`company.txt`): the words that
+    area's readers must not meet. A target in an agent's own folder is the agent's notes, which
+    hold its own names, and is left out."""
+    lists = guard_places.words_folder()
+    agents = guard_places.agents_folder()
+    found: dict[str, tuple[Path, Path]] = {}
+    for target in targets:
+        if agents is not None and (target == agents or agents in target.parents):
+            continue
+        for name, folder in areas:
+            if name not in found and (target == folder or folder in target.parents) \
+                    and (words := lists / f"{name}.txt").is_file():
+                found[name] = (words, target)
+    return found
+
+
+def area_words_refusal(tool: str, args: dict, cwd: str, areas) -> str | None:
+    """Why what a call writes into an area's folders may not go there, or None: it holds a word of
+    that area's own list (area_word_lists), as a send to that area would. What is read is what the
+    call puts there: the text an Edit or a Write writes, and for a command its line and the code of
+    the scripts it runs (a heredoc, a `sed` expression, a program's strings). What a program reads
+    from elsewhere and writes is not seen."""
+    if tool in WRITES:
+        targets = [real(args.get("file_path") or args.get("notebook_path") or "", cwd)]
+        text = written_text(tool, args)
+    elif tool == "Bash":
+        command = args.get("command", "")
+        targets = write_targets(command, cwd)
+        text = "\n".join([command, *(code for _, code, _ in ran_scripts(command, cwd))])
+    else:
+        return None
+    lists = area_word_lists(targets, areas) if text.strip() else {}
+    if not lists or not ANON_SCAN.is_file():
+        return None
+    import subprocess
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fh:
+        fh.write(text)
+    try:
+        for area, (words, target) in lists.items():
+            try:
+                r = subprocess.run(["bash", str(ANON_SCAN)], capture_output=True, text=True, timeout=60,
+                                   env={**os.environ, "ANON_WORDS_FILE": str(words), "ANON_SHOW_MATCH": "1",
+                                        "ANON_SCAN_PATHS": fh.name})
+            except (OSError, subprocess.TimeoutExpired) as error:
+                return (f"area-guard: what this call writes into {target} could not be held to {area}'s word list "
+                        f"({error}), so it is not written")
+            if r.returncode == 0:
+                continue
+            hits = []
+            for line in r.stdout.splitlines():
+                if line.startswith(f"{fh.name}:"):
+                    where, _, rest = line[len(fh.name) + 1:].partition(":")
+                    word, _, around = rest.partition("\t")
+                    hits.append(f"line {where}: {word!r} in {around[:80]!r}")
+            shown = hits[:SHOWN_WORD_HITS] + ([f"... and {len(hits) - SHOWN_WORD_HITS} more"]
+                                              if len(hits) > SHOWN_WORD_HITS else [])
+            return (f"area-guard: this call writes into {target}, in {area}, a word {area}'s readers must not "
+                    f"meet ({words.name}): rewrite it" + "".join(f"\n    {hit}" for hit in shown))
+    finally:
+        os.unlink(fh.name)
+    return None
+
+
 def has_head(repo: Path) -> bool:
     import subprocess
     return subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "-q", "HEAD"],
@@ -2699,6 +2768,10 @@ def main() -> int:
                  f"(code written into a command counts as writing every path it names)"
                  + (f": {why}" if why else ""))
             return 0
+
+    if areas and (why := area_words_refusal(tool, args, cwd, areas)):
+        deny(why)
+        return 0
 
     if tool == "Bash" and ticket_places.lists_every_place(args.get("command", "")):
         deny("area-guard: `peers.py --places` without `--session` prints the folder of every area's tickets, "
