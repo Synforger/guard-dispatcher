@@ -125,3 +125,9 @@ EDIT_STRINGS=$'python3 - <<\'PY\'\ns = open("t.sh").read()\ns = s.replace("A", \
     bash_in "${TOOL}" $'cat <<\'NOTE\'\ncd $ELSEWHERE\ngit commit -m x\nNOTE'; passed
     bash_in "${TOOL}" $'bash <<\'SH\'\ncd $ELSEWHERE\nSH\ngit commit -m x'; passed
 }
+
+@test "send places: a substitution in a heredoc the shell fills in runs before the program it feeds, and is read" {
+    bash_in "${TOOL}" $'node <<JS\nconsole.log("$(cd $ELSEWHERE && git commit -m x)")\nJS'; unread
+    bash_in "${TOOL}" $'python3 <<PY\nprint("`cd $ELSEWHERE && git push`")\nPY'; unread
+    bash_in "${TOOL}" $'node <<\'JS\'\nconsole.log("$(cd $ELSEWHERE && git commit -m x)")\nJS'; passed
+}
