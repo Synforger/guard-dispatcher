@@ -827,9 +827,10 @@ DECLARES = {"export", "local", "declare", "typeset", "readonly"}
 VARIABLE_TEST = re.compile(r"\$(?:\{([A-Za-z_]\w*)(?::?-)?\}|([A-Za-z_]\w*))")
 
 
-# Builtins that may give a variable named among their words a value.
-WRITES_VARIABLE = {"unset", "read", "getopts", "mapfile", "readarray", "declare", "typeset", "local", "export",
-                   "readonly", "printf", "for", "select", "eval", "source", ".", "let", "trap"}
+# Commands that run other code in this shell, where any variable may change: what they run is not read.
+RUNS_HERE = {"source", ".", "eval", "exec"}
+# Variables that make a shell read a file of code before the script: the script is then not all it runs.
+STARTUP_FILES = ("BASH_ENV", "ENV")
 # What makes the test of an if mean something else than the shell's own: an alias, a function named so.
 REDEFINES_TEST = re.compile(r"(?m)^\s*(?:alias\b|function\s+(?:test|\[)(?:\s|\()|(?:test|\[)\s*\(\s*\))")
 # A value the test reads the same quoted or not: not empty, no blank, no glob.
@@ -837,28 +838,31 @@ PLAIN_VALUE = re.compile(r"[^\s*?\[\]]+")
 
 
 def rebinds(code: str, name: str) -> bool:
-    """Whether shell code may give `name` another value than the one it came with, read on its words: an
-    assignment (alone or before a command), a default that assigns (`${X:=…}`), a builtin that writes a
-    variable named among its words (unset, read, printf -v, declare and its kin, a nameref to it, a
-    for or select loop, let, an arithmetic assignment, eval, trap), or code it reads from another file
-    (`source`, `.`). Code that cannot be split may."""
+    """Whether shell code may give `name` another value than the one it came with. Rather than know every
+    way (an assignment, unset, read, wait -p, a nameref, an arithmetic one, a builtin put before any of
+    them), it may whenever the name stands anywhere but inside an expansion (`$X`, `${X:-…}`) or among
+    the words echo prints, whenever it runs other code in this shell (source, `.`, eval, exec, put
+    after builtin or command too), and when a default assigns it (`${X:=…}`). Code that cannot be
+    split may."""
     word = re.escape(name)
-    if re.search(rf"\$\{{{word}:?=|\(\([^)]*(?<![\w$]){word}\s*(?:\[[^]]*\])?\s*[-+*/%&|^<>]*=(?!=)", code):
+    if re.search(rf"\$\{{{word}:?=", code):
         return True
     try:
         commands = list(stepped_commands(split_heredocs(code)[0]))
     except ValueError:
         return True
-    for words, _, _, _ in commands:
+    expansion = re.compile(rf"\$\{{{word}(?:[^}}]*)\}}|\${word}(?!\w)")
+    bare = re.compile(rf"(?<![\w$]){word}(?!\w)")
+    for words, redirects, _, _ in commands:
         rest = words
-        while rest and (rest[0] in KEYWORDS or ASSIGNMENT.fullmatch(rest[0])
-                        or re.fullmatch(r"[A-Za-z_]\w*\[[^]]*\]\+?=.*", rest[0])):
-            if re.fullmatch(rf"{word}(?:\[[^]]*\])?\+?=.*", rest[0]):
+        while rest and (rest[0] in KEYWORDS or ASSIGNMENT.fullmatch(rest[0]) or rest[0] in ("builtin", "command")):
+            if bare.search(expansion.sub("", rest[0].partition("=")[0])):
                 return True
             rest = rest[1:]
-        if rest and rest[0] in WRITES_VARIABLE and (
-                rest[0] in ("source", ".", "eval")
-                or any(re.search(rf"(?<![\w$]){word}(?!\w)", argument) for argument in rest[1:])):
+        if any(word_ in RUNS_HERE for word_ in rest[:1]):
+            return True
+        checked = rest[:1] if rest[:1] == ["echo"] else rest
+        if any(bare.search(expansion.sub("", part)) for part in [*checked, *(target for _, target in redirects)]):
             return True
     return False
 
@@ -1819,7 +1823,9 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
             forcing += forces
     standing = Standing(cwd, unknown_stays=False)
     # What the command that runs this code gave its variables (`X=/a bash s.sh`), unless the code may change it.
-    head = {name: value for name, value in given if not rebinds(command, name)}
+    # A shell that reads a file of code first (BASH_ENV, ENV) may change any of them before the script runs.
+    starts_elsewhere = any(name in STARTUP_FILES for name, _ in given) or any(os.environ.get(n) for n in STARTUP_FILES)
+    head = {} if starts_elsewhere else {name: value for name, value in given if not rebinds(command, name)}
     redefined = bool(REDEFINES_TEST.search(command))
     values: dict[str, str] = dict(head)
     branches = Branches({} if redefined else head)

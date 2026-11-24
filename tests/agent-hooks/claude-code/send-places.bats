@@ -170,10 +170,12 @@ pick_script() {
     bash_in "${TOOL}" "DEST= bash pick.sh"; unread
     bash_in "${TOOL}" "DEST=\$ELSEWHERE bash pick.sh"; unread
     bash_in "${TOOL}" "DEST='${TOOL} x' bash pick.sh"; unread
+    bash_in "${TOOL}" "BASH_ENV=/dev/null DEST=${TOOL} bash pick.sh"; unread
     local change
     for change in 'DEST=/tmp' 'unset DEST' 'read -r DEST' ': "${DEST:=/tmp}"' 'source ./env.sh' 'export DEST=/tmp' \
                   '(( DEST = 1 ))' 'declare -n R=DEST' 'trap "DEST=/tmp" EXIT' 'DEST[0]=/tmp' 'test() { true; }' \
-                  'alias test=true'; do
+                  'alias test=true' 'wait -p DEST' 'exec env -u DEST bash "$0"' 'builtin source ./env.sh' \
+                  'command unset DEST' 'builtin eval true'; do
         pick_script "${change}"
         bash_in "${TOOL}" "DEST=${TOOL} bash pick.sh"
         unread || { echo "not read whole after: ${change}"; return 1; }
