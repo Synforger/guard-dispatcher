@@ -768,6 +768,13 @@ step earlier, before each tool call, from the same `areas.txt`:
   environment (`$HOME`) written out. A folder still only known as the command runs
   (`cd $W` with `W` set elsewhere, `git -C "$(…)"`) is refused, with the reason asking for the
   folder written out: the guard cannot tell which repository's hooks and areas the send meets.
+  A literal the command gives a variable before a script it runs (`BASE=/a/b bash run.sh`) is
+  known inside the script, unless the script may change it: the name stands anywhere but inside
+  an expansion (`$BASE`, `${BASE:-…}`) or among the words `echo` prints, the script runs other code
+  in its shell (`source`, `.`, `eval`, `exec`), or a file of code may run first (`BASH_ENV` or `ENV`
+  named anywhere on the line, or set in the guard's own environment). An `if` whose condition is only a test of whether that variable is set
+  (`[ -n "${BASE:-}" ]`, `[[ -z $BASE ]]`, `test -n "$BASE"`) is read as the shell runs it, its
+  other branches left out; an `if` any of whose conditions holds more is read whole.
 - What an agent writes into an area's folders is held to that area's word list when the area keeps
   one of its own beside the operator's (`company.txt` in the word lists' folder), as a send to that
   area is: the text an Edit or a Write puts there, and of a command line the commands that write
