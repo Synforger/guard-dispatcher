@@ -711,6 +711,8 @@ step earlier, before each tool call, from the same `areas.txt`:
   compared as well, keep the repository out of `_exempt`.
 - On every machine, areas or not, a `Bash` command that switches the guards off
   or around is refused: `--no-verify`, `git commit -n`, the skip variables,
+  clearing or changing `CLAUDECODE` on a line that sends (`unset CLAUDECODE`, `env -u CLAUDECODE`,
+  `CLAUDECODE=0`, `env -i`, `env -`: the pre-push check below reads only the agent's shell),
   `git -c core.hooksPath=…`, setting `core.hooksPath` / `guard.scope` /
   `guard.exemptPrefix`, clearing the marks, creating the off switch, removing
   the installed hooks, or sending from a repository the git hooks do not reach. Each passes on
@@ -725,6 +727,10 @@ step earlier, before each tool call, from the same `areas.txt`:
   which git refuses) do not. A heredoc's body that is not shell (python with a quote the shell
   would leave open) is read as its words, so it does not change how the rest of the command
   is read.
+  A command that runs the next one (`env`, `sudo`, `nice`, `xargs`, …) is read past its options,
+  and an option that takes a value takes the next word (`env -u NAME`, `sudo -u USER`,
+  `nice -n 10`), so the send after it is still seen. `env -S '…'` is read as the words it splits,
+  and `env -C DIR cmd` as `( cd DIR; cmd )`.
   Taking a repository's own `core.hooksPath` away (`--unset` in the repository's config) is not
   refused at all: it puts the repository back under the machine's hooks. The same unset in the
   global or system config, or in a file named with `--file`, is refused like any other change.
@@ -805,12 +811,14 @@ step earlier, before each tool call, from the same `areas.txt`:
      rewrite; a new branch, a fast-forward and a deletion are not. A force set in
      a config, an alias or code never shows on the command line, so only this
      check sees it. A rewrite passes only while the grant of the yes in 1 stands.
+     Clearing `CLAUDECODE` to step round this check is refused as switching the guards off.
      A push the operator makes by hand is not read.
 
   The yes in 1 leaves a grant for the repository, in `force-grants/` beside the
   folder of the marks (`<state folder>/force-grants/<hash of the repository's top
   folder>.json`): the URLs it covers and the time it ends, ten minutes after the
-  yes. The first push that rewrites a ref to a covered URL uses it up. A push that
+  yes, written only once every other check has passed the call (a call refused later
+  leaves none). The first push that rewrites a ref to a covered URL uses it up. A push that
   rewrites nothing leaves it. The agent writes that folder through neither Edit /
   Write nor the shell, as it writes none of the marks. When the hook stops a push, it
   says to write `--force-with-lease` on the command line and show it.

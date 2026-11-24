@@ -164,6 +164,17 @@ unheld() {
     [ ! -d "${H}/force-grants" ]
 }
 
+@test "force push: a yes to a call that a later judgement refuses leaves no grant" {
+    local command="git push --force origin main; python3 peers.py --places"
+    said "push it"
+    shown "${command}"
+    said "はい"
+    bash_in "${HELD}" "${command}"
+    denied
+    [[ "${output}" == *"--places"* ]]
+    [ ! -d "${H}/force-grants" ]
+}
+
 @test "force push: the call that also goes around the hooks is covered by the same yes" {
     local command="GUARD_CORPUS_SKIP=1 git push --force origin main"
     said "push it"

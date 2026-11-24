@@ -1616,6 +1616,21 @@ def upto_break(words: list[str]) -> list[str]:
 GIT_VALUED = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
 SHELLS = {"bash", "sh", "zsh", "dash"}
 WRAPPERS = {"sudo", "env", "command", "exec", "builtin", "nohup", "nice", "caffeinate", "xargs"}
+# The options of a wrapper that take the next word as their value (`env -u NAME`, `sudo -u USER`,
+# `nice -n 10`): that word is no command. `env -C DIR` also runs the command in DIR.
+WRAPPER_VALUED = {
+    "env": {"-u", "--unset", "-P", "-C", "--chdir", "-S", "--split-string"},
+    "sudo": {"-u", "--user", "-g", "--group", "-C", "--close-from", "-D", "--chdir", "-h", "--host", "-p",
+             "--prompt", "-r", "--role", "-t", "--type", "-U", "--other-user", "-T", "--command-timeout",
+             "-R", "--chroot"},
+    "nice": {"-n", "--adjustment"},
+    "caffeinate": {"-t", "-w"},
+    "exec": {"-a"},
+    "xargs": {"-I", "-L", "-n", "-P", "-s", "-E", "-d", "-a", "--max-args", "--max-procs", "--max-chars",
+              "--delimiter", "--arg-file", "--max-lines", "--replace", "--eof"},
+}
+ENV_CHDIR = {"-C", "--chdir"}
+ENV_SPLIT = {"-S", "--split-string"}
 
 
 def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
@@ -1693,16 +1708,37 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[
             return
         # Skip what stands before the command: shell keywords (`do git push`), assignments
         # (`FOO=1 git ...`) and commands that run the next one (`sudo`, `env`, `nohup`, ...).
+        chdir = None
         while argv:
             if argv[0] in KEYWORDS or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0]):
                 argv = argv[1:]
-            elif os.path.basename(argv[0]) in WRAPPERS:
+            elif (wrapper := os.path.basename(argv[0])) in WRAPPERS:
                 argv = argv[1:]
-                while argv and argv[0].startswith("-"):
+                while argv and argv[0].startswith("-") and argv[0] != "-":
+                    flag, eq, value = argv[0].partition("=")
+                    if flag in WRAPPER_VALUED.get(wrapper, ()) and not eq and len(argv) > 1:
+                        value, argv = argv[1], argv[1:]
+                    if wrapper == "env" and flag in ENV_CHDIR and value:
+                        chdir = value
+                    argv = argv[1:]
+                    if wrapper == "env" and flag in ENV_SPLIT and value:
+                        # `env -S "git push"` splits its value into the words it runs.
+                        try:
+                            argv = shlex.split(value) + argv
+                        except ValueError:
+                            argv = value.split() + argv
+                if wrapper == "env" and argv[:1] == ["-"]:
                     argv = argv[1:]
             else:
                 break
         if not argv:
+            return
+        if chdir is not None:
+            # `env -C DIR cmd` runs cmd in DIR and leaves the line where it stood: `( cd DIR; cmd )`.
+            standing.open(lost)
+            run(["cd", chdir])
+            run(argv)
+            lost = standing.close()
             return
         name, args = os.path.basename(argv[0]), argv[1:]
         if name in ("cd", "pushd"):
@@ -2083,6 +2119,11 @@ def may_write(target: Path, marks: set[str], areas) -> bool:
 
 BYPASS_ENV = re.compile(r"(?<![\w-])(GH_GUARD_SKIP|GUARD_[A-Z_]+|ANON_WORDS_FILE|HUSKY"
                         r"|GIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+|VALUE_\d+|GLOBAL|SYSTEM|NOSYSTEM))=")
+# The pre-push layer holds a forced push only for the agent's shell (`CLAUDECODE=1`): a line that
+# sends with that variable unset, changed or the whole environment emptied has stepped round it.
+AGENT_SHELL_CLEARED = re.compile(r"(?<![\w-])CLAUDECODE=|\bunset\b[^|;&\n]*\bCLAUDECODE\b"
+                                 r"|\benv(?:\s+(?:-u\s+\S+|-\S*|[A-Za-z_]\w*=\S*))*?"
+                                 r"\s+(?:-u\s*CLAUDECODE|--unset[= ]CLAUDECODE|-[a-zA-Z]*i|--ignore-environment|-)(?=\s|$)")
 GUARD_KEYS = re.compile(r"\b(core\.hookspath|guard\.scope|guard\.exemptprefix)\b", re.I)
 
 
@@ -2298,6 +2339,8 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
         return None
     if m := BYPASS_ENV.search(command):
         return f"sends with {m.group(1)} set"
+    if AGENT_SHELL_CLEARED.search(command):
+        return "sends with the agent's shell variable CLAUDECODE cleared or changed"
     if re.search(r"(^|\s)--no-ver(i|if|ify)?(\s|$)", command):
         return "--no-verify"
     if re.search(r"\bgit\b[^|;&]*\s-c\s*core\.hookspath", command, re.I):
@@ -2330,23 +2373,23 @@ def forced_push_needs_order(url: str) -> bool:
     return r.returncode != 0 or r.stdout.strip() == corpus_module().ORDER
 
 
-def forced_push_refusal(tool: str, args: dict, event: dict, cwd: str, areas, approved: bool) -> str | None:
-    """Why a command's forced push does not pass, or None. A push that forces its refs
-    (push_options) to a repository marked `order` passes on the operator's yes to this very call,
-    shown in a ```guard block (`approval`, which `approved` says the call has had already), and
-    that yes is kept for the pre-push hook as a grant of each such repository (force_push.give):
-    the hook stops a rewrite the command line did not show."""
+def forced_push_refusal(tool: str, args: dict, event: dict, cwd: str, areas,
+                        approved: bool) -> tuple[str | None, list[tuple[Path, str]]]:
+    """(why a command's forced push does not pass, or None; the grants it earns). A push that forces
+    its refs (push_options) to a repository marked `order` passes on the operator's yes to this very
+    call, shown in a ```guard block (`approval`, which `approved` says the call has had already), and
+    that yes is kept for the pre-push hook as a grant of each such repository (force_push.give): the
+    hook stops a rewrite the command line did not show. The caller gives the grants only once every
+    other judgement has passed the call, so a call refused later leaves none behind."""
     held = [(repo, url, form) for repo, url, form in send_places(args.get("command", ""), cwd)[3]
             if forced_push_needs_order(url)]
     if not held:
-        return None
+        return None, []
     if not approved and (why := approval(tool, args, event, [repo for repo, _, _ in held], areas)):
         named = ", ".join(f"{form} to {url}" for _, url, form in held)
         return (f"area-guard: an agent does not push with {named}: the destination's history is held to the "
-                f"operator's approval (`order` on its repo: line in destinations.txt): {why}")
-    for repo, url, _ in held:
-        force_push.give(repo_root(repo) or repo, url)
-    return None
+                f"operator's approval (`order` on its repo: line in destinations.txt): {why}"), []
+    return None, [(repo_root(repo) or repo, url) for repo, url, _ in held]
 
 
 def ask(argv: list[str]) -> int:
@@ -2520,9 +2563,17 @@ def main() -> int:
         approved = True
     # A push that rewrites the history of a repository whose destination line says `order` is the
     # operator's to approve, on every machine, as a change of the guards is.
-    if tool == "Bash" and (why := forced_push_refusal(tool, args, event, cwd, areas, approved)):
+    why, grants = forced_push_refusal(tool, args, event, cwd, areas, approved) if tool == "Bash" else (None, [])
+    if why:
         deny(why)
         return 0
+
+    def passed() -> int:
+        """The call passes every judgement: the forced pushes it was approved for are granted now."""
+        for repo, url in grants:
+            force_push.give(repo, url)
+        return 0
+
     if tool == "Bash" and children.rules.runs_registration(in_run_order(args.get("command", ""))):
         deny("area-guard: an agent does not register a child: the client does, once it has opened the child's tab")
         return 0
@@ -2608,7 +2659,7 @@ def main() -> int:
         tabs.update({tab: host for tab in outgoing_module().tab_ids(args)})
         save_state(session, state)
     if not areas:
-        return 0
+        return passed()
     touched: list[Path] = []
     remote: set[str] = set()
 
@@ -2683,7 +2734,7 @@ def main() -> int:
     if new - marks:
         state["areas"] = sorted(read_marks | new)
         save_state(session, state)
-    return 0
+    return passed()
 
 
 if __name__ == "__main__":
