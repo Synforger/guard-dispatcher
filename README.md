@@ -777,10 +777,12 @@ step earlier, before each tool call, from the same `areas.txt`:
   other branches left out; an `if` any of whose conditions holds more is read whole.
 - What an agent writes into an area's folders is held to that area's word list when the area keeps
   one of its own beside the operator's (`company.txt` in the word lists' folder), as a send to that
-  area is: the text an Edit or a Write puts there, and of a command line the commands that write
-  there (a redirection, `sed -i`, a program's code): their words but paths, what is fed to them and
-  the code of the scripts they run. Another command of the line, which writes nothing there, is not
-  read for the list. A word of
+  area is: the text an Edit or a Write puts there, and of a command line every command up to the
+  last one that writes there (a redirection, `sed -i`, a program's code) and to the close of the loop
+  or group around it: their words, what is fed to them and the code of the scripts they run. A copy's
+  paths are read by their last name, the folder a `cd` goes to not at all. The commands after, which
+  put nothing there, are not read for the list; a line with a command in that stretch that acts later
+  (sent to the background, a trap, a function, an `exec` that opens a file) is read whole. A word of
   the list is refused before it is written, with the words it met. A file in an agent's own folder
   (`<platform root>/agents/…`) is the agent's notes and is not held to it. What a program reads
   from elsewhere and writes is not seen.

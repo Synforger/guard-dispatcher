@@ -2202,55 +2202,110 @@ def area_word_lists(targets: list[Path], areas) -> dict[str, tuple[Path, Path]]:
     return found
 
 
-# A word that names a place, not what is written: an absolute, home or relative path (alone or after
-# `--out=`). Its folders may carry names of their own (an agent's folder, a tool's).
-PATH_WORD = re.compile(r"(?:(?<=^)|(?<==))(?:~|\.{1,2})?/\S*")
+# Words at the head of a command that open and close a compound command. What feeds a loop or a group
+# is written after its close (`done <<< x`, `} < f`), so a write inside one is read up to the close.
+COMPOUND_OPENS = {"if", "while", "until", "for", "select", "case", "{"}
+COMPOUND_CLOSES = {"fi", "done", "esac", "}"}
+# Commands whose effect comes later in the line than where they stand: a trap runs when the shell
+# ends, a coprocess reads what is written to it afterwards.
+DEFERRED = {"trap", "coproc"}
+
+
+def compound_nesting(words: list[str]) -> int:
+    """How many compound commands the head of a command opens (> 0) or closes (< 0)."""
+    change = 0
+    for word in words:
+        if word in COMPOUND_OPENS:
+            change += 1
+        elif word in COMPOUND_CLOSES:
+            change -= 1
+        elif word not in KEYWORDS:
+            break
+        if word in ("for", "select", "case"):
+            break
+    return change
+
+
+def put_words(words: list[str], head: list[str]) -> list[str]:
+    """The words of a command that can be put where it writes. A copy (cp, mv, install, ln) puts the
+    last name of each path it is handed, not the folders above it; any other command its words whole
+    (an `echo /x` writes `/x`)."""
+    if not head or os.path.basename(head[0]) not in COPIES:
+        return list(words)
+    lead = words[:len(words) - len(head)]
+    return lead + [head[0]] + [word if word.startswith("-") else os.path.basename(word.rstrip("/"))
+                               for word in head[1:]]
 
 
 def writing_parts(command: str, cwd: str, holds) -> list[str]:
-    """What the commands of a line that write where `holds` says yes put there, read command by
-    command as the shell runs them (a `cd` moves the rest, a subshell gives the place back): the words
-    of such a command but its paths, the heredocs and here-strings fed to it, and the code of the
-    script it runs. The other commands of the line (a tool run after, a path it is handed) are not
-    what is written. A line that cannot be split is taken whole."""
+    """What a command line puts where `holds` says yes, read command by command as the shell runs
+    them (a `cd` moves the rest, a subshell gives the place back): every command from the head of the
+    line up to the last one that writes there, and up to the close of the loop or group around it.
+    What is written comes in through those commands: a variable set before, an earlier stage of a
+    pipe, a file written first and then moved. Of each, its words (a copy's paths by their last name,
+    a `cd` not at all), the heredocs and here-strings fed to it and the code of the scripts it runs.
+    The commands after are not what is written. The whole line and the code it runs are read when the
+    line cannot be split, when nothing in it is seen to write there command by command, when its
+    loops and groups do not close, and when a command within that stretch acts later in the line
+    (one sent to the background, a trap, a function defined, an `exec` that only opens a file)."""
+    whole = [command, *(code for _, code, _ in ran_scripts(command, cwd))]
     line, fed = split_heredocs(spell_home(in_run_order(command)))
     try:
         steps = list(stepped_commands(line))
     except ValueError:
-        return [command]
+        return whole
     standing = Standing(cwd)
     bodies = list(fed)
-    parts: list[str] = []
-    for words, redirects, here_string, ended_by in steps:
+    puts: list[list[str]] = []
+    writes: list[bool] = []
+    acts_later: list[bool] = []
+    depths: list[int] = []
+    depth = 0
+    for at, (words, redirects, here_string, ended_by) in enumerate(steps):
         count = sum(1 for operator, _ in redirects if operator in ("<<", "<<-"))
         mine, bodies = bodies[:count], bodies[count:]
-        rest = words
-        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT or rest[0] in KEYWORDS):
-            rest = rest[1:]
-        if rest and standing.move(os.path.basename(rest[0]), rest[1:]):
+        head = words
+        while head and (ASSIGNMENT.fullmatch(head[0]) or os.path.basename(head[0]) in RUNS_NEXT or head[0] in KEYWORDS):
+            head = head[1:]
+        defines = bool(words) and ended_by == "(" and at + 1 < len(steps) \
+            and not steps[at + 1][0] and steps[at + 1][3] == ")"
+        opens_only = not head and bool(redirects) and any(os.path.basename(word) == "exec" for word in words)
+        acts_later.append(ended_by == "&" or defines or opens_only or "function" in words[:1]
+                          or (bool(head) and os.path.basename(head[0]) in DEFERRED))
+        put: list[str] = []
+        writing = False
+        if head and standing.move(os.path.basename(head[0]), head[1:]):
             pass
-        elif words:
+        elif words or redirects or mine or here_string is not None:
             step = " ".join(shlex.quote(word) for word in words) + "".join(
                 f" {operator} {shlex.quote(target)}" for operator, target in redirects if operator not in ("<<", "<<-"))
-            step += "".join(f" <<'GUARD_BODY_{at}'\n{body}\nGUARD_BODY_{at}" for at, (_, body) in enumerate(mine))
+            step += "".join(f" <<'GUARD_BODY_{n}'\n{body}\nGUARD_BODY_{n}" for n, (_, body) in enumerate(mine))
             if here_string is not None:
                 step += f" <<< {shlex.quote(here_string)}"
-            if any(holds(target) for target in write_targets(step, standing.here)):
-                parts += [PATH_WORD.sub("", word) for word in words]
-                parts += [body for _, body in mine] + ([here_string] if here_string is not None else [])
-                parts += [code for _, code, _ in ran_scripts(step, standing.here)]
+            writing = any(holds(target) for target in write_targets(step, standing.here))
+            put = put_words(words, head) + [body for _, body in mine] \
+                + ([here_string] if here_string is not None else []) \
+                + [code for _, code, _ in ran_scripts(step, standing.here)]
+        puts.append(put)
+        writes.append(writing)
+        depth += compound_nesting(words) + (ended_by == "(") - (ended_by == ")")
+        depths.append(depth)
         if ended_by == "(":
             standing.open()
         elif ended_by == ")":
             standing.close()
-    return parts
+    last = max((at for at, writing in enumerate(writes) if writing), default=None)
+    end = None if last is None else next((at for at in range(last, len(steps)) if depths[at] == 0), None)
+    if end is None or min(depths) < 0 or any(acts_later[:end + 1]):
+        return whole
+    return [part for put in puts[:end + 1] for part in put]
 
 
 def area_words_refusal(tool: str, args: dict, cwd: str, areas) -> str | None:
     """Why what a call writes into an area's folders may not go there, or None: it holds a word of
     that area's own list (area_word_lists), as a send to that area would. What is read is what the
-    call puts there: the text an Edit or a Write writes, and for a command the commands of its line
-    that write there (writing_parts: their words but paths, what is fed to them, the code of the
+    call puts there: the text an Edit or a Write writes, and for a command its line up to the last
+    command that writes there (writing_parts: their words, what is fed to them, the code of the
     scripts they run). What a program reads from elsewhere and writes is not seen."""
     if tool in WRITES:
         targets = [real(args.get("file_path") or args.get("notebook_path") or "", cwd)]

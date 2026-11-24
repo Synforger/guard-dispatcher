@@ -1824,7 +1824,7 @@ area_words() {
     passed
 }
 
-@test "area-guard: only the commands that write into the area are read for its words, their paths left out" {
+@test "area-guard: the commands after the last write into the area and a copy's folders are not read for its words" {
     area_words
     mkdir -p "${H}/tmp/agents-handlename"
     local command
@@ -1836,9 +1836,47 @@ area_words() {
         [ "${status}" -eq 0 ] && [[ "${output}" != *"word list"* && "${output}" != *"readers must not"* ]] \
             || { echo "held: ${command} -> ${output}"; return 1; }
     done
+}
+
+@test "area-guard: a word the writing command itself puts into the area is refused, a path-like one too" {
+    area_words
+    local command
     for command in "handlename-build --out ${H}/tmp/y.pptx && sed -i '' 's/internal/handlename/' ${COMPANY_REPO}/notes.md" \
                    "cd ${COMPANY_REPO} && printf 'handlename\n' > m.toml" \
-                   $'echo ok; python3 - <<\'PY\'\nopen("'"${COMPANY_REPO}"$'/m.toml", "w").write("handlename")\nPY'; do
+                   $'echo ok; python3 - <<\'PY\'\nopen("'"${COMPANY_REPO}"$'/m.toml", "w").write("handlename")\nPY' \
+                   "echo /handlename > ${COMPANY_REPO}/f" \
+                   "echo ~/handlename > ${COMPANY_REPO}/f" \
+                   "printf '%s' ./handlename > ${COMPANY_REPO}/f" \
+                   "echo --x=/handlename/y > ${COMPANY_REPO}/f"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: a word that reaches the area through an earlier command of the line is refused" {
+    area_words
+    local command
+    for command in "X=handlename; echo \$X > ${COMPANY_REPO}/f" \
+                   "export X=handlename && echo \"\$X\" >> ${COMPANY_REPO}/f" \
+                   "printf handlename | tee ${COMPANY_REPO}/f" \
+                   "echo handlename | cat > ${COMPANY_REPO}/f" \
+                   "echo handlename > ${H}/tmp/t; mv ${H}/tmp/t ${COMPANY_REPO}/f" \
+                   "echo handlename > ${H}/tmp/t && cp ${H}/tmp/t ${COMPANY_REPO}/" \
+                   $'cat > '"${H}"$'/tmp/t <<EOF\nhandlename\nEOF\nmv '"${H}/tmp/t ${COMPANY_REPO}"$'/f' \
+                   "cp ${H}/tmp/handlename.txt ${COMPANY_REPO}/"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: a word fed to a loop that writes into the area, or written after a command that acts later, is refused" {
+    area_words
+    local command
+    for command in "while read l; do echo \"\$l\" >> ${COMPANY_REPO}/f; done <<< handlename" \
+                   $'while read l; do echo "$l" >> '"${COMPANY_REPO}"$'/f; done <<EOF\nhandlename\nEOF' \
+                   "tail -f ${H}/tmp/t >> ${COMPANY_REPO}/f & echo handlename >> ${H}/tmp/t" \
+                   "exec 3>> ${COMPANY_REPO}/f; echo handlename >&3" \
+                   "f() { cp ${H}/tmp/t ${COMPANY_REPO}/f; }; echo handlename > ${H}/tmp/t; f"; do
         bash_in "${H}" "${command}"
         denied || { echo "not refused: ${command}"; return 1; }
     done
