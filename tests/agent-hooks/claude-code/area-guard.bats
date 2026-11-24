@@ -1850,3 +1850,41 @@ area_words() {
     call Write "$(jq -n --arg f "${COMPANY_REPO}/m.toml" '{file_path: $f, content: "handlename\n"}')"
     denied
 }
+
+@test "area-guard: a path into an agent's folder that a command only reads or runs does not write the agent's name" {
+    area_words
+    export AGENT_PLATFORM_ROOT="${H}/platform"
+    local S="${H}/platform/agents/handlename/_scratch"
+    mkdir -p "${S}"
+    printf "print('ok')\n" > "${S}/gen.py"
+    printf 'echo ok\n' > "${S}/run.sh"
+    printf '#!/bin/sh\necho ok\n' > "${S}/tool.sh"
+    chmod +x "${S}/tool.sh"
+    printf 'plain\n' > "${S}/a.txt"
+    local scratch c
+    scratch="/tmp/claude-$(id -u)/$(printf '%s' "${H}/platform/agents/handlename" | sed 's/[^A-Za-z0-9]/-/g')-projects-x/s1/scratchpad"
+    for c in "python3 ${S}/gen.py > ${COMPANY_REPO}/out.txt" \
+             "python3 ${S}/gen.py ${S}/a.txt > ${COMPANY_REPO}/out.txt" \
+             "cd ${COMPANY_REPO} && bash ${S}/run.sh > out.txt" \
+             "cat ${S}/a.txt > ${COMPANY_REPO}/a.txt" \
+             "cp ${S}/a.txt ${COMPANY_REPO}/a.txt" \
+             "${S}/tool.sh > ${COMPANY_REPO}/o.txt" \
+             "sort < ${S}/a.txt > ${COMPANY_REPO}/o.txt" \
+             "cd ${S} && python3 gen.py > ${COMPANY_REPO}/o.txt" \
+             "python3 ~/platform/agents/handlename/_scratch/gen.py > ${COMPANY_REPO}/o.txt" \
+             "cd ${scratch} && sort a.txt > ${COMPANY_REPO}/o.txt"; do
+        bash_in "${H}" "${c}"
+        passed || { echo "refused: ${c}: ${output}"; return 1; }
+    done
+    # the folder's name where the command may write it: printed, beside a path read, in a heredoc, as a word
+    for c in "echo ${S}/a.txt > ${COMPANY_REPO}/o.txt" \
+             "python3 ${S}/gen.py > ${COMPANY_REPO}/o.txt; echo ${S} >> ${COMPANY_REPO}/o.txt" \
+             "wc -l ${S}/a.txt > ${COMPANY_REPO}/o.txt" \
+             "grep -H plain ${S}/a.txt > ${COMPANY_REPO}/o.txt" \
+             $'cat > '"${COMPANY_REPO}"$'/o.txt <<\'EOF\'\n'"${S}"$'/a.txt\nEOF' \
+             "python3 ${S}/gen.py handlename > ${COMPANY_REPO}/o.txt" \
+             "printf handlename > ${COMPANY_REPO}/o.txt"; do
+        bash_in "${H}" "${c}"
+        denied || { echo "not refused: ${c}"; return 1; }
+    done
+}

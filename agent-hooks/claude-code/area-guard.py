@@ -113,6 +113,7 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "git-hooks" / "_internal"))
+import agent_roots  # noqa: E402
 import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
@@ -1508,6 +1509,54 @@ def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
     return distinct(found)
 
 
+#: Programs that copy what files hold and print none of their names: the files `cat` is given, and
+#: all but the last that `cp` and `mv` are given, are read.
+COPIERS = {"cat", "cp", "mv"}
+
+
+@functools.lru_cache(maxsize=None)
+def read_or_run_paths(command: str, cwd: str, depth: int = 0) -> tuple[str, ...]:
+    """The words of a command that stand where a path is only read or run, following where the
+    command stands and the command lines it hands on, as ran_scripts does: each program, the file of
+    code it runs and the files that code is handed, the file of a `<` redirection, the folder of a
+    `cd`, and the files `cat`, `cp` and `mv` copy. A program or a script that prints its own path or
+    the names of the files it is handed is not told apart from one that does not."""
+    line, _ = split_heredocs(spell_home(in_run_order(command)))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return ()
+    found: list[str] = []
+    standing = Standing(cwd)
+    for index, (words, redirects, _, ended_by) in enumerate(steps):
+        rest, lines, nested = program_words(words)
+        for code in [*lines, *map(shlex.join, nested)] if depth < NESTED else []:
+            found += read_or_run_paths(code, standing.here, depth + 1)
+        found += [target for operator, target in redirects if operator == "<"]
+        if rest and standing.move(os.path.basename(rest[0]), rest[1:]):
+            found += rest[1:]
+        elif rest:
+            tool, here = os.path.basename(rest[0]), standing.here
+            found.append(rest[0])
+            fed = fed_files(redirects, steps[index - 1] if index else None)
+            if (script := script_files.ran_with_arguments(rest, here, fed)) is not None:
+                at = len(rest) - len(script[2]) - 1
+                handed = [rest[at]] if at > 0 else []
+                found += [word for word in [*handed, *script[2]] if os.path.isfile(os.path.join(here, word))]
+            elif depth < NESTED and SHELL_CODE.fullmatch(tool):
+                codes = [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
+                for code in codes:
+                    found += read_or_run_paths(code, here, depth + 1)
+            elif tool in COPIERS:
+                files = [word for word in rest[1:] if not word.startswith("-")]
+                found += files if tool == "cat" else files[:-1]
+        if ended_by == "(":
+            standing.open()
+        elif ended_by == ")":
+            standing.close()
+    return tuple(found)
+
+
 def write_targets(command: str, cwd: str) -> list[Path]:
     """Paths a Bash command names as a place it writes (see named)."""
     return named(command, cwd)[0]
@@ -2467,7 +2516,13 @@ def area_words_refusal(tool: str, args: dict, cwd: str, areas) -> str | None:
     elif tool == "Bash":
         command = args.get("command", "")
         targets = write_targets(command, cwd)
-        text = "\n".join([command, *(code for _, code, _ in ran_scripts(command, cwd))])
+        # A path into an agent's folder that the command only reads or runs names the folder, not
+        # what is written: the folder's name is left out of the line there (agent_roots).
+        spellings = agent_roots.pattern(guard_places.agents_folder())
+        read_or_run = sum(len(spellings.findall(word)) for word in read_or_run_paths(command, cwd)) \
+            if spellings is not None else 0
+        line = agent_roots.masked(command, spellings, read_or_run)
+        text = "\n".join([line, *(code for _, code, _ in ran_scripts(command, cwd))])
     else:
         return None
     lists = area_word_lists(targets, areas) if text.strip() else {}
