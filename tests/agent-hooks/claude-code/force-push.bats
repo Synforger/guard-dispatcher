@@ -86,12 +86,19 @@ unheld() {
     [[ "${reason}" == *'```guard'* ]]
 }
 
-@test "force push: a push that forces nothing goes as before, and a value is not read as an option" {
+@test "force push: a push that forces nothing goes as before" {
     local command
     for command in "git push" "git push origin main" "git push -u origin main" "git push --tags" \
-        "git push origin :old-branch" "git push --delete origin old" "git push -o -f origin main" \
-        "git push --push-option=-f origin main" "git push --no-force-with-lease origin main" \
-        "git push -- origin main" "git push origin refs/heads/a:refs/heads/b" "git push --repo origin main"; do
+        "git push origin :old-branch" "git push --delete origin old"; do
+        unheld "${command}"
+    done
+}
+
+@test "force push: a value is not read as an option, nor a word after --" {
+    local command
+    for command in "git push -o -f origin main" "git push --push-option=-f origin main" \
+        "git push --no-force-with-lease origin main" "git push -- origin main" \
+        "git push origin refs/heads/a:refs/heads/b" "git push --repo origin main"; do
         unheld "${command}"
     done
 }

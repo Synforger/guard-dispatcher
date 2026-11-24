@@ -145,3 +145,59 @@ EDIT_STRINGS=$'python3 - <<\'PY\'\ns = open("t.sh").read()\ns = s.replace("A", \
     bash_in "${TOOL}" $'python3 <<PY\nprint("`cd $ELSEWHERE && git push`")\nPY'; unread
     bash_in "${TOOL}" $'node <<\'JS\'\nconsole.log("$(cd $ELSEWHERE && git commit -m x)")\nJS'; passed
 }
+
+# --- a value the command line gives a script it runs ---------------------------------------------
+
+# pick.sh sends from the folder DEST names, else from one only known as it runs.
+pick_script() {
+    printf '%s\n' "${1:-}" \
+        'if [ -n "${DEST:-}" ]; then' '    D="$DEST"' \
+        'elif [ -n "$OTHER" ] && true; then' '    D="$OTHER/x"' \
+        'else' '    D="$(mktemp -d)"' 'fi' \
+        'cd "$D" && git commit -m x' > "${TOOL}/pick.sh"
+}
+
+@test "send places: a value the command line gives a script picks the branch its if tests, and the folder it names" {
+    pick_script
+    bash_in "${TOOL}" "DEST=${TOOL} bash pick.sh"; passed
+    bash_in "${TOOL}" "DEST=${AGENT} bash pick.sh"; denied
+    [[ "${output}" == *"guard.scope = exempt"* ]]
+}
+
+@test "send places: without a value written out, or with a script that may change it, every branch is read" {
+    pick_script
+    bash_in "${TOOL}" "bash pick.sh"; unread
+    bash_in "${TOOL}" "DEST= bash pick.sh"; unread
+    bash_in "${TOOL}" "DEST=\$ELSEWHERE bash pick.sh"; unread
+    bash_in "${TOOL}" "DEST='${TOOL} x' bash pick.sh"; unread
+    local line
+    for line in "BASH_ENV=/dev/null DEST=${TOOL} bash pick.sh" "export BASH_ENV=/dev/null; DEST=${TOOL} bash pick.sh" \
+                "B=/dev/null; BASH_ENV=\$B; export BASH_ENV; DEST=${TOOL} bash pick.sh" \
+                "declare -x BASH_ENV=/dev/null; DEST=${TOOL} bash pick.sh" \
+                "export BASH_ENV=/dev/null && DEST=${TOOL} bash pick.sh" "export ENV=/dev/null; DEST=${TOOL} sh pick.sh"; do
+        bash_in "${TOOL}" "${line}"
+        unread || { echo "not read whole: ${line}"; return 1; }
+    done
+    local change
+    for change in 'DEST=/tmp' 'unset DEST' 'read -r DEST' ': "${DEST:=/tmp}"' 'source ./env.sh' 'export DEST=/tmp' \
+                  '(( DEST = 1 ))' 'declare -n R=DEST' 'trap "DEST=/tmp" EXIT' 'DEST[0]=/tmp' 'test() { true; }' \
+                  'alias test=true' 'wait -p DEST' 'exec env -u DEST bash "$0"' 'builtin source ./env.sh' \
+                  'command unset DEST' 'builtin eval true'; do
+        pick_script "${change}"
+        bash_in "${TOOL}" "DEST=${TOOL} bash pick.sh"
+        unread || { echo "not read whole after: ${change}"; return 1; }
+    done
+}
+
+@test "send places: an if that tests more than the given value is read whole, and its condition is always read" {
+    printf '%s\n' 'if [ -n "${DEST:-}" ] && true; then' '    D="$DEST"' 'else' '    D="$(mktemp -d)"' 'fi' \
+        'cd "$D" && git commit -m x' > "${TOOL}/more.sh"
+    bash_in "${TOOL}" "DEST=${TOOL} bash more.sh"; unread
+    printf '%s\n' 'if git -C "$DEST" commit -m x; then :; fi' > "${TOOL}/cond.sh"
+    bash_in "${TOOL}" "DEST=${AGENT} bash cond.sh"; denied
+    printf '%s\n' 'if [ -z "${DEST:-}" ]; then' '    cd "$(mktemp -d)" && git commit -m x' 'fi' \
+        'git -C "$DEST" commit -m y' > "${TOOL}/skip.sh"
+    bash_in "${TOOL}" "DEST=${TOOL} bash skip.sh"; passed
+    bash_in "${TOOL}" "DEST=${AGENT} bash skip.sh"; denied
+    [[ "${output}" == *"guard.scope = exempt"* ]]
+}

@@ -757,24 +757,38 @@ AREAS
     done
 }
 
-@test "area-guard: anything more than a lone check on an area path still marks" {
-    local c="~/org/clients/acme" n=0 command
-    for command in "ls ${c}" "ls -l ${c}" "ls -dR ${c}" "ls -d ${c}/*" "ls -d ${c}/re?eived" \
-                   "cat ${c}/received/memo.md" "test -d ${c} && cat ${c}/received/memo.md" \
-                   "test -d ${c}; cat ${c}/received/memo.md" "stat ${c}/received/memo.md | head" \
-                   "stat \$(cat ${c}/received/memo.md)" "test -n \`cat ${c}/received/memo.md\`" \
-                   "stat ${c}/received/memo.md > out.txt" "test -d ${c} || cat ${c}/received/memo.md" \
-                   "FOO=1 test -d ${c}" "test -d ${c}
-cat ${c}/received/memo.md" "[ -d ${c} ] && cat ${c}/received/memo.md" "stat ${c}/{received,x}" \
-                   "[ -d ${c}" "realpath ${c}/[r]eceived" "cd ${c}" "file ${c}/received/memo.md" \
-                   "stat ${c}/received/\$NAME" "test -d ${c} -a -n \$X" "/bin/ls -d ${c}" \
-                   "ls -d ${c} --color" "ls -d -R ${c}" "head ${c}/received/memo.md"; do
+# marked_by <command>... — each command, in a session of its own, marks the client's area: that
+# session then does not write the company's repository. Three tests share the forms, each within
+# one test's time.
+marked_by() {
+    local n=0 command
+    for command in "$@"; do
         n=$((n + 1))
         bash_in "${H}" "${command}" "m${n}"
-        # a session that read the client does not write the company's repository
         write_to "${COMPANY_REPO}/c.py" "m${n}"
         denied || { echo "not marked by: ${command}"; return 1; }
     done
+}
+
+@test "area-guard: anything more than a lone check on an area path still marks: listing it" {
+    local c="~/org/clients/acme"
+    marked_by "ls ${c}" "ls -l ${c}" "ls -dR ${c}" "ls -d ${c}/*" "ls -d ${c}/re?eived" "/bin/ls -d ${c}" \
+              "ls -d ${c} --color" "ls -d -R ${c}" "cd ${c}"
+}
+
+@test "area-guard: anything more than a lone check on an area path still marks: a check with more" {
+    local c="~/org/clients/acme"
+    marked_by "test -d ${c} && cat ${c}/received/memo.md" "test -d ${c}; cat ${c}/received/memo.md" \
+              "test -d ${c} || cat ${c}/received/memo.md" "FOO=1 test -d ${c}" "test -d ${c}
+cat ${c}/received/memo.md" "[ -d ${c} ] && cat ${c}/received/memo.md" "[ -d ${c}" \
+              "test -d ${c} -a -n \$X" "test -n \`cat ${c}/received/memo.md\`"
+}
+
+@test "area-guard: anything more than a lone check on an area path still marks: reading a file in it" {
+    local c="~/org/clients/acme"
+    marked_by "cat ${c}/received/memo.md" "stat ${c}/received/memo.md | head" "stat \$(cat ${c}/received/memo.md)" \
+              "stat ${c}/received/memo.md > out.txt" "stat ${c}/{received,x}" "realpath ${c}/[r]eceived" \
+              "file ${c}/received/memo.md" "stat ${c}/received/\$NAME" "head ${c}/received/memo.md"
 }
 
 # --- a name inside text is not a read ---------------------------------------
