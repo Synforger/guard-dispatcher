@@ -2297,7 +2297,7 @@ print('ALL_OK' if not failures else f'FAILED: {failures}')
 
 @test "corpus: a repository line with a stray third word still holds a push to the place it declares" {
     seed_visibility acme/pipeline private
-    printf 'repo:acme/* outside order\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    printf 'repo:acme/* outside now\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
     mk_clone_at "${CLIENT}/repos/pipeline" acme/pipeline
     commit_line "${CLIENT_TEXT}"
     run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" --range HEAD~1..HEAD --dest git@github.com:acme/pipeline.git

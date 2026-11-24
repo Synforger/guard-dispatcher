@@ -146,3 +146,37 @@ m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
 print(' '.join(sorted(m.load_areas(Path('${BATS_TEST_TMPDIR}/config-link/areas.txt')))))"
     [[ "$output" == *"lab"* ]]
 }
+
+@test "area settings: --force-order names a repository whose first fitting line ends with order" {
+    corpus --force-order --dest git@github.com:acme/tool.git
+    [ "$status" -eq 0 ] && [ -z "$output" ]
+    printf 'repo:acme/tool company order\nrepo:acme/* company\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    corpus --force-order --dest git@github.com:acme/tool.git
+    [ "$status" -eq 0 ] && [ "$output" = "order" ]
+    corpus --force-order --dest https://github.com/Acme/Tool
+    [ "$output" = "order" ]
+    # the first line that fits decides: another repository of the account, or one declared another way
+    corpus --force-order --dest git@github.com:acme/other.git
+    [ "$status" -eq 0 ] && [ -z "$output" ]
+    printf 'repo:acme/* company\nrepo:acme/tool company order\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    corpus --force-order --dest git@github.com:acme/tool.git
+    [ "$status" -eq 0 ] && [ -z "$output" ]
+    # not a GitHub address: no `repo:` line fits it
+    corpus --force-order --dest /srv/git/tool.git
+    [ "$status" -eq 0 ] && [ -z "$output" ]
+}
+
+@test "area settings: a repo: line an area keeps may end with order, and send-scan reads one of the machine's" {
+    printf 'repo:acme/tool    company order\n' > "${OWN}/destinations.txt"
+    corpus --force-order --dest git@github.com:acme/tool.git
+    [ "$output" = "order" ]
+    corpus --settings
+    [[ "$output" != *"repo:acme/tool"* ]]
+    printf 'repo:acme/tool    company order\n' > "${GUARD_CONFIG_DIR}/destinations.txt"
+    send --where mcp__x__tool
+    [ "$output" = "undeclared" ]
+    # `order` stays out of a line that cannot be ordered, and any other third word is still refused
+    printf 'repo:acme/tool    block order\n' > "${OWN}/destinations.txt"
+    corpus --settings
+    [[ "$output" == *"repo:acme/tool"*"only for a send that can be ordered"* ]]
+}

@@ -87,6 +87,20 @@ unread() { denied && [[ "${output}" == *"sends from a folder only known as it ru
     bash_in "${TOOL}" "cd \$ELSEWHERE && ls && cat notes.md"; passed
 }
 
+@test "send places: a wrapper's option that takes a value hides no send, and env -C runs it in that folder" {
+    # From the tool's repository a commit passes; each send below stands in the agent's own one.
+    for command in "env -u HOME git -C ${AGENT} commit -m x" "sudo -u me git -C ${AGENT} commit -m x" \
+                   "nice -n 10 git -C ${AGENT} commit -m x" "env -C ${AGENT} git commit -m x" \
+                   "env --chdir=${AGENT} git commit -m x" "env -S 'git -C ${AGENT} commit -m x'" \
+                   "xargs -I {} git -C ${AGENT} commit -m x"; do
+        bash_in "${TOOL}" "${command}"
+        denied || { echo "not judged: ${command}"; return 1; }
+    done
+    # env -C moves only the command it runs: the line stands where it stood after it.
+    bash_in "${AGENT}" "env -C ${TOOL} true; cd ${TOOL} && git commit -m x"; passed
+    bash_in "${TOOL}" "env -C ${AGENT} true; git commit -m x"; passed
+}
+
 # --- code written into the command is not a command line ---------------------------------------
 
 # A python (or node) heredoc that rewrites a test script holds shell lines as strings. A quote it

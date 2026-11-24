@@ -110,13 +110,16 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "git-hooks" / "_internal"))
 import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
 import commit_options  # noqa: E402
 import commit_scope  # noqa: E402
+import force_push  # noqa: E402
 import guard_places  # noqa: E402
 import monitor_calls  # noqa: E402
+import push_options  # noqa: E402
 import records  # noqa: E402
 import script_arguments  # noqa: E402
 import script_files  # noqa: E402
@@ -134,6 +137,9 @@ CONFIG = guard_places.settings_folder()
 AREAS = guard_places.setting("areas.txt")
 HANDOFF = guard_places.setting("handoff.txt")
 STATE = guard_places.marks_folder()
+# The operator's approvals of forced pushes (git-hooks' force_push.py): what lets a push that rewrites
+# history through the pre-push hook. Kept like the marks: an agent that wrote it would approve its own push.
+GRANTS = force_push.grants_folder()
 # The operator's switch: while this file exists the entry guard passes every call. Installing or
 # updating the guard leaves it as it is, so switching off holds until the operator removes it.
 OFF = guard_places.setting("agent-off")
@@ -1645,6 +1651,21 @@ def upto_break(words: list[str]) -> list[str]:
 GIT_VALUED = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
 SHELLS = {"bash", "sh", "zsh", "dash"}
 WRAPPERS = {"sudo", "env", "command", "exec", "builtin", "nohup", "nice", "caffeinate", "xargs"}
+# The options of a wrapper that take the next word as their value (`env -u NAME`, `sudo -u USER`,
+# `nice -n 10`): that word is no command. `env -C DIR` also runs the command in DIR.
+WRAPPER_VALUED = {
+    "env": {"-u", "--unset", "-P", "-C", "--chdir", "-S", "--split-string"},
+    "sudo": {"-u", "--user", "-g", "--group", "-C", "--close-from", "-D", "--chdir", "-h", "--host", "-p",
+             "--prompt", "-r", "--role", "-t", "--type", "-U", "--other-user", "-T", "--command-timeout",
+             "-R", "--chroot"},
+    "nice": {"-n", "--adjustment"},
+    "caffeinate": {"-t", "-w"},
+    "exec": {"-a"},
+    "xargs": {"-I", "-L", "-n", "-P", "-s", "-E", "-d", "-a", "--max-args", "--max-procs", "--max-chars",
+              "--delimiter", "--arg-file", "--max-lines", "--replace", "--eof"},
+}
+ENV_CHDIR = {"-C", "--chdir"}
+ENV_SPLIT = {"-S", "--split-string"}
 
 
 def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
@@ -1653,12 +1674,14 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
 
 
 @functools.lru_cache(maxsize=None)
-def send_places(command: str, cwd: str,
-                depth: int = 0) -> tuple[tuple[tuple[Path, list[str]], ...], tuple[str, ...], tuple[str, ...]]:
+def send_places(command: str, cwd: str, depth: int = 0) -> tuple[
+        tuple[tuple[Path, list[str]], ...], tuple[str, ...], tuple[str, ...], tuple[tuple[Path, str, str], ...]]:
     """(every send in a command -- git commit / push, a sending gh call -- as (repository it runs
     in, arguments naming its destination for corpus-scan), the words that leave a send's folder
     to be known only as the command runs, the commits whose options switch their hooks off
-    (commit_options), wherever they stand). A commit stays local, so its arguments are empty.
+    (commit_options), the pushes that force their refs (push_options) as (repository it runs in,
+    the URL it sends to, the form that forces it), wherever they stand). A commit stays local, so
+    its arguments are empty.
 
     The command is read in order, following where it stands: `cd`, `pushd` / `popd` and a
     `( ... )` subshell move it, and each git runs where the command stands at that point, moved
@@ -1678,18 +1701,20 @@ def send_places(command: str, cwd: str,
         # into plain spaces, and a shell line quoted inside it would be read as a send.
         words = shell_words(shell_heredocs_as_code(command), shell_only=True)
     except ValueError:
-        return (), (), ()
+        return (), (), (), ()
     breaks = outgoing_module().SHELL_BREAK
     found: list[tuple[Path, list[str]]] = []
     unread: list[str] = []
     skipping: list[str] = []
+    forcing: list[tuple[Path, str, str]] = []
     # A shell script read from standard input (`bash < run.sh`): the words below drop redirections.
     for program, code, here in ran_scripts(command, cwd, fed_only=True) if depth < NESTED else []:
         if SHELL_CODE.fullmatch(program):
-            sends, unreadable, skips = send_places(code, here, depth + 1)
+            sends, unreadable, skips, forces = send_places(code, here, depth + 1)
             found += sends
             unread += unreadable
             skipping += skips
+            forcing += forces
     standing = Standing(cwd, unknown_stays=False)
     values: dict[str, str] = {}
     lost: str | None = None            # the word that took the command where it cannot be read
@@ -1720,16 +1745,37 @@ def send_places(command: str, cwd: str,
             return
         # Skip what stands before the command: shell keywords (`do git push`), assignments
         # (`FOO=1 git ...`) and commands that run the next one (`sudo`, `env`, `nohup`, ...).
+        chdir = None
         while argv:
             if argv[0] in KEYWORDS or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0]):
                 argv = argv[1:]
-            elif os.path.basename(argv[0]) in WRAPPERS:
+            elif (wrapper := os.path.basename(argv[0])) in WRAPPERS:
                 argv = argv[1:]
-                while argv and argv[0].startswith("-"):
+                while argv and argv[0].startswith("-") and argv[0] != "-":
+                    flag, eq, value = argv[0].partition("=")
+                    if flag in WRAPPER_VALUED.get(wrapper, ()) and not eq and len(argv) > 1:
+                        value, argv = argv[1], argv[1:]
+                    if wrapper == "env" and flag in ENV_CHDIR and value:
+                        chdir = value
+                    argv = argv[1:]
+                    if wrapper == "env" and flag in ENV_SPLIT and value:
+                        # `env -S "git push"` splits its value into the words it runs.
+                        try:
+                            argv = shlex.split(value) + argv
+                        except ValueError:
+                            argv = value.split() + argv
+                if wrapper == "env" and argv[:1] == ["-"]:
                     argv = argv[1:]
             else:
                 break
         if not argv:
+            return
+        if chdir is not None:
+            # `env -C DIR cmd` runs cmd in DIR and leaves the line where it stood: `( cd DIR; cmd )`.
+            standing.open(lost)
+            run(["cd", chdir])
+            run(argv)
+            lost = standing.close()
             return
         name, args = os.path.basename(argv[0]), argv[1:]
         if name in ("cd", "pushd"):
@@ -1746,11 +1792,12 @@ def send_places(command: str, cwd: str,
         def inner(code: str) -> None:
             if depth >= NESTED:
                 return
-            sends, unreadable, skips = send_places(code, str(here), depth + 1)
+            sends, unreadable, skips, forces = send_places(code, str(here), depth + 1)
             found.extend([] if lost else sends)
             unread.extend([lost] * len(sends) if lost else [])
             unread.extend(unreadable)
             skipping.extend(skips)
+            forcing.extend([] if lost else forces)
 
         script = script_files.ran(argv, str(here))
         if script is not None and SHELL_CODE.fullmatch(script[0]):
@@ -1778,8 +1825,10 @@ def send_places(command: str, cwd: str,
             elif sub == "commit":
                 found.append((repo, []))
             elif sub == "push":
-                named = next((a for a in rest if not a.startswith("-")), None)
-                found.append((repo, ["--dest", push_url(repo, named)]))
+                url = push_url(repo, push_options.remote(rest))
+                found.append((repo, ["--dest", url]))
+                if form := push_options.forces(rest):
+                    forcing.append((repo, url, form))
         elif name == "gh":
             rest = [a for a in args if not a.startswith("-")]
             if rest[:1] == ["api"]:   # GET by default; it sends only with a body or a method
@@ -1815,7 +1864,7 @@ def send_places(command: str, cwd: str,
             standing.open(lost)
         elif w == ")" and standing.inside():
             lost = standing.close()
-    return distinct(found), distinct(unread), distinct(skipping)
+    return distinct(found), distinct(unread), distinct(skipping), distinct(forcing)
 
 
 def push_url(repo: Path, named: str | None) -> str:
@@ -2267,8 +2316,11 @@ def has_remote(repo: Path) -> bool:
 
 
 def marks_names() -> set[str]:
-    """How a path to the folder of marks may be spelled: the usual tails, and this machine's folder itself."""
-    return {".cache/area-guard", "state/guard/marks", str(STATE), str(real(STATE))}
+    """How a path to the folder of marks, or to the one of forced-push grants beside it, may be spelled:
+    the usual tails, and this machine's folders themselves."""
+    return {".cache/area-guard", "state/guard/marks", str(STATE), str(real(STATE)),
+            f".cache/{force_push.GRANTS_FOLDER}", f"state/guard/{force_push.GRANTS_FOLDER}",
+            str(GRANTS), str(real(GRANTS))}
 
 
 MARKS_REWRITE = "removes or rewrites the entry guard's marks"
@@ -2314,7 +2366,7 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
     ordered_line = in_run_order(command)
     if config_writes_guard_key(ordered_line) and not writes_derived_scope(ordered_line, cwd):
         return "a git config that switches the hooks off"
-    sends, _, skipping = send_places(command, cwd)
+    sends, _, skipping, _ = send_places(command, cwd)
     if not sends and not skipping:
         return None
     if m := BYPASS_ENV.search(command):
@@ -2336,6 +2388,38 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
         if reason := unguarded(target, scope=bool(areas)):
             return f"{repo_root(target)}: {reason}"
     return None
+
+
+def forced_push_needs_order(url: str) -> bool:
+    """Whether the repository a push goes to is one whose forced pushes wait for the operator
+    (`repo:` line ending `order`, corpus-scan.py --force-order). A scan that cannot answer holds
+    the push: a forced push is let through only on a clear answer."""
+    import subprocess
+    try:
+        r = subprocess.run(["python3", str(CORPUS), "--force-order", "--dest", url],
+                           capture_output=True, text=True, timeout=60, env=dict(os.environ))
+    except (subprocess.TimeoutExpired, OSError):
+        return True
+    return r.returncode != 0 or r.stdout.strip() == corpus_module().ORDER
+
+
+def forced_push_refusal(tool: str, args: dict, event: dict, cwd: str, areas,
+                        approved: bool) -> tuple[str | None, list[tuple[Path, str]]]:
+    """(why a command's forced push does not pass, or None; the grants it earns). A push that forces
+    its refs (push_options) to a repository marked `order` passes on the operator's yes to this very
+    call, shown in a ```guard block (`approval`, which `approved` says the call has had already), and
+    that yes is kept for the pre-push hook as a grant of each such repository (force_push.give): the
+    hook stops a rewrite the command line did not show. The caller gives the grants only once every
+    other judgement has passed the call, so a call refused later leaves none behind."""
+    held = [(repo, url, form) for repo, url, form in send_places(args.get("command", ""), cwd)[3]
+            if forced_push_needs_order(url)]
+    if not held:
+        return None, []
+    if not approved and (why := approval(tool, args, event, [repo for repo, _, _ in held], areas)):
+        named = ", ".join(f"{form} to {url}" for _, url, form in held)
+        return (f"area-guard: an agent does not push with {named}: the destination's history is held to the "
+                f"operator's approval (`order` on its repo: line in destinations.txt): {why}"), []
+    return None, [(repo_root(repo) or repo, url) for repo, url, _ in held]
 
 
 def ask(argv: list[str]) -> int:
@@ -2501,6 +2585,7 @@ def main() -> int:
         return 0
     # Switching the guards off or around is refused even on a machine with no areas, but on the
     # operator's yes to this very call: the marks, which keep areas apart, never.
+    approved = False
     if tool == "Bash" and (reason := bypass(args.get("command", ""), cwd, areas)):
         command = args.get("command", "")
         places = [real(cwd), *mentioned_paths(command, areas, cwd), *(t for t, _ in sends_of(command, cwd))]
@@ -2508,6 +2593,20 @@ def main() -> int:
             deny(f"area-guard: an agent does not switch the guards off or around ({reason})"
                  + ("" if reason == MARKS_REWRITE else f": {why}"))
             return 0
+        approved = True
+    # A push that rewrites the history of a repository whose destination line says `order` is the
+    # operator's to approve, on every machine, as a change of the guards is.
+    why, grants = forced_push_refusal(tool, args, event, cwd, areas, approved) if tool == "Bash" else (None, [])
+    if why:
+        deny(why)
+        return 0
+
+    def passed() -> int:
+        """The call passes every judgement: the forced pushes it was approved for are granted now."""
+        for repo, url in grants:
+            force_push.give(repo, url)
+        return 0
+
     if tool == "Bash" and children.rules.runs_registration(in_run_order(args.get("command", ""))):
         deny("area-guard: an agent does not register a child: the client does, once it has opened the child's tab")
         return 0
@@ -2593,7 +2692,7 @@ def main() -> int:
         tabs.update({tab: host for tab in outgoing_module().tab_ids(args)})
         save_state(session, state)
     if not areas:
-        return 0
+        return passed()
     touched: list[Path] = []
     remote: set[str] = set()
 
@@ -2668,7 +2767,7 @@ def main() -> int:
     if new - marks:
         state["areas"] = sorted(read_marks | new)
         save_state(session, state)
-    return 0
+    return passed()
 
 
 if __name__ == "__main__":
