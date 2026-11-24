@@ -68,6 +68,50 @@ judged() {
         "echo \"\$(cd \$ELSEWHERE && git push)\""
 }
 
+@test "command reading: a write is found behind every program that runs another, and in a command line handed on" {
+    judged denied \
+        "eval 'echo x >> ${KEPT}'" \
+        "command eval 'echo x >> ${KEPT}'" \
+        "trap 'echo x >> ${KEPT}' EXIT" \
+        "builtin trap -- 'rm ${KEPT}' EXIT" \
+        "timeout 5 bash -c 'echo x >> ${KEPT}'" \
+        "timeout -s KILL 5 tee -a ${KEPT} <<< x" \
+        "sudo -u root tee -a ${KEPT} <<< x" \
+        "nice -n 5 tee -a ${KEPT} <<< x" \
+        "ionice -c3 tee -a ${KEPT} <<< x" \
+        "stdbuf -o0 tee -a ${KEPT} <<< x" \
+        "doas tee -a ${KEPT} <<< x" \
+        "chronic tee -a ${KEPT} <<< x" \
+        "coproc tee -a ${KEPT}" \
+        "env -S 'tee -a ${KEPT}' <<< x" \
+        "watch -n1 'echo x >> ${KEPT}'" \
+        "find . -maxdepth 0 -exec touch ${KEPT} \;" \
+        "find . -maxdepth 0 -exec sh -c 'echo x >> ${KEPT}' \;" \
+        "echo x | xargs -I{} sh -c 'echo {} >> ${KEPT}'" \
+        "echo ${KEPT} | xargs touch" \
+        "printf '%s\n' ${KEPT} | xargs rm"
+}
+
+@test "command reading: the hooks and a send are held behind every program that runs another" {
+    judged denied \
+        "timeout 60 git commit -n -m x" \
+        "ionice -c3 git commit --no-verify -m x" \
+        "eval 'git commit -n -m x'" \
+        "trap 'git commit -n -m x' EXIT" \
+        "find . -maxdepth 0 -exec git commit -n -m x \;" \
+        "stdbuf -o0 git config core.hooksPath .husky"
+}
+
+@test "command reading: everyday programs that run another pass where they write nothing kept" {
+    judged passed \
+        "timeout 60 git status" \
+        "nice -n 5 tee -a ${REPO}/build.log <<< x" \
+        "eval 'echo x > ${REPO}/out.txt'" \
+        "trap 'rm -f ${REPO}/tmp.txt' EXIT; echo x > ${REPO}/tmp.txt" \
+        "find ${REPO} -name '*.txt' -exec cat {} \;" \
+        "echo ${REPO}/a.txt | xargs touch"
+}
+
 @test "command reading: text the shell does not run, and everyday substitutions, pass" {
     judged passed \
         "echo '\$(echo x > ${KEPT})'" \
