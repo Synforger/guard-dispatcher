@@ -768,6 +768,13 @@ step earlier, before each tool call, from the same `areas.txt`:
   environment (`$HOME`) written out. A folder still only known as the command runs
   (`cd $W` with `W` set elsewhere, `git -C "$(…)"`) is refused, with the reason asking for the
   folder written out: the guard cannot tell which repository's hooks and areas the send meets.
+- What an agent writes into an area's folders is held to that area's word list when the area keeps
+  one of its own beside the operator's (`company.txt` in the word lists' folder), as a send to that
+  area is: the text an Edit or a Write puts there, and for a command that writes there (a
+  redirection, `sed -i`, a program's code) its line and the code of the scripts it runs. A word of
+  the list is refused before it is written, with the words it met. A file in an agent's own folder
+  (`<platform root>/agents/…`) is the agent's notes and is not held to it. What a program reads
+  from elsewhere and writes is not seen.
 - On every machine too, the agent writes nothing in the guard's settings folder
   (`~/.config/guard/`: `areas.txt`, `allow.txt`, `background.txt`, `ignore.txt`,
   `patterns/`, `destinations.txt`, `orders.txt`, `handoff.txt`, and a file put there tomorrow),
