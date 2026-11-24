@@ -154,6 +154,9 @@ LOCAL_WRITES = frozenset({"os.makedirs", "os.mkdir", "os.remove", "os.unlink", "
 WRITING_MODE = re.compile(r"[wax+]")
 #: Functions that run a command: whatever they are handed is a command line, which writes where its
 #: words say, so the names in it are counted as a call known to write counts them.
+#: Functions that move the code to the folder they are handed: a relative name written after them lands
+#: there, so that folder is counted as a call known to write counts its target.
+FOLDER_MOVES = frozenset({"os.chdir", "contextlib.chdir"})
 RUNS_COMMAND = re.compile(r"subprocess\.\w+|os\.(?:system|popen|exec\w*|spawn\w*|posix_spawnp?)")
 #: Attributes of the values known calls give (a path, a match, a date, a stat, an open file, a number)
 #: that hold data and run nothing: handed on as a value, they are not a method a known call may call.
@@ -176,7 +179,7 @@ def written_code(code: str, *, known_writes_only: bool = False) -> str:
     """The source of every part of `code` that can name a file it writes, one part a line, or the
     whole code when it does not parse. With `known_writes_only`, only the names a call known to
     write the file it is given (an `open` in a writing mode, a path's method that writes, one of
-    LOCAL_WRITES, a call that runs a command) is handed, each as a string literal on a line of its own:
+    LOCAL_WRITES, a call that runs a command, a move to another folder: `os.chdir`) is handed, each as a string literal on a line of its own:
     every string its target is made of, through the values its names were given and the calls known
     to only turn values into others (`os.path.join("d", "a")`, `Path("d", "a")`, `d + "/" + n`), and
     a path made of strings joined by `/` as one name too (`Path("d") / "a"` is also `d/a`). A string
@@ -484,7 +487,7 @@ class _Reader:
             return [*call.args[:1], *(k.value for k in call.keywords if k.arg == "file")] if _writes(call, 1) else []
         if name is not None and (name in self._functions or _pure(name)):
             return []
-        if known_writes_only and name not in LOCAL_WRITES and not (name and RUNS_COMMAND.fullmatch(name)):
+        if known_writes_only and name not in LOCAL_WRITES | FOLDER_MOVES and not (name and RUNS_COMMAND.fullmatch(name)):
             return []
         return args
 

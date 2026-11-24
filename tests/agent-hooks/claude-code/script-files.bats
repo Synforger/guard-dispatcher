@@ -330,6 +330,17 @@ open(d + "/" + n, "w")'; do
         bash_in "${PLACE}" "python3 ${TOOL}/rel.py"
         denied || { echo "not refused: ${body}"; return 1; }
     done
+    # A move into the folder first: the relative name written after it lands there.
+    for body in 'import os
+os.chdir("tickets")
+open("a.jsonl", "w")' \
+                'import contextlib
+with contextlib.chdir("tickets"):
+    open("a.jsonl", "w")'; do
+        script rel.py "${body}"
+        bash_in "$(dirname "${PLACE}")" "python3 ${TOOL}/rel.py"
+        denied || { echo "not refused: ${body}"; return 1; }
+    done
     # Handed to a call the guard does not know, even inside the target of one that writes: that call places it.
     for body in 'import mylib
 mylib.put("sub/a.jsonl")' \
