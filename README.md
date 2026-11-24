@@ -730,7 +730,7 @@ step earlier, before each tool call, from the same `areas.txt`:
   compared as well, keep the repository out of `_exempt`.
 - On every machine, areas or not, a `Bash` command that switches the guards off
   or around is refused: `--no-verify`, `git commit -n`, the skip variables,
-  clearing or changing `CLAUDECODE` on a line that sends (`unset CLAUDECODE`, `env -u CLAUDECODE`,
+  clearing or changing `CLAUDECODE` on a line that pushes (`unset CLAUDECODE`, `env -u CLAUDECODE`,
   `CLAUDECODE=0`, `env -i`, `env -`: the pre-push check below reads only the agent's shell),
   `git -c core.hooksPath=…`, setting `core.hooksPath` / `guard.scope` /
   `guard.exemptPrefix`, clearing the marks, creating the off switch, removing

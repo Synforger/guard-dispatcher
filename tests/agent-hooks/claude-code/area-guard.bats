@@ -298,7 +298,7 @@ hub_repo() {
     done
     # Not a send, or the variable left as it is: nothing steps round the pre-push layer.
     for command in "unset CLAUDECODE; echo x" "env -i PATH=/usr/bin python3 -c 'print(1)'" \
-                   "env GIT_TRACE=1 git add -i" "env -u HOME git status"; do
+                   "env GIT_TRACE=1 git add -i" "env -u HOME git status" "env -i PATH=/usr/bin git commit -m x"; do
         bash_in "${PERSONAL}" "${command}"
         passed || { echo "refused: ${command}"; return 1; }
     done

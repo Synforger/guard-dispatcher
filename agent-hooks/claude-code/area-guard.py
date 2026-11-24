@@ -2144,8 +2144,8 @@ def may_write(target: Path, marks: set[str], areas) -> bool:
 
 BYPASS_ENV = re.compile(r"(?<![\w-])(GH_GUARD_SKIP|GUARD_[A-Z_]+|ANON_WORDS_FILE|HUSKY"
                         r"|GIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+|VALUE_\d+|GLOBAL|SYSTEM|NOSYSTEM))=")
-# The pre-push layer holds a forced push only for the agent's shell (`CLAUDECODE=1`): a line that
-# sends with that variable unset, changed or the whole environment emptied has stepped round it.
+# The pre-push layer holds a forced push only for the agent's shell (`CLAUDECODE=1`): a line that pushes
+# with that variable unset, changed or the whole environment emptied has stepped round it.
 AGENT_SHELL_CLEARED = re.compile(r"(?<![\w-])CLAUDECODE=|\bunset\b[^|;&\n]*\bCLAUDECODE\b"
                                  r"|\benv(?:\s+(?:-u\s+\S+|-\S*|[A-Za-z_]\w*=\S*))*?"
                                  r"\s+(?:-u\s*CLAUDECODE|--unset[= ]CLAUDECODE|-[a-zA-Z]*i|--ignore-environment|-)(?=\s|$)")
@@ -2364,7 +2364,7 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
         return None
     if m := BYPASS_ENV.search(command):
         return f"sends with {m.group(1)} set"
-    if AGENT_SHELL_CLEARED.search(command):
+    if AGENT_SHELL_CLEARED.search(command) and any(dest_args[:1] == ["--dest"] for _, dest_args in sends):
         return "sends with the agent's shell variable CLAUDECODE cleared or changed"
     if re.search(r"(^|\s)--no-ver(i|if|ify)?(\s|$)", command):
         return "--no-verify"
