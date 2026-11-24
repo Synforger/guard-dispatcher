@@ -30,6 +30,9 @@ used when the guard runs on its own; under a platform root the same files sit in
                                        be committed to with the text of the areas named
                                        (a glob names several: `client-*`). Only a commit:
                                        whatever leaves that repository is judged as before
+        _shows <area> <name> ...       names of <area>'s folders that may be said to any
+                                       session (a folder named by an ordinary word). Only
+                                       the machine's own file gives one
     ~/.config/guard/patterns/<name>.txt
         one regular expression per line (case-insensitive) for identifiers of
         that area that follow a shape: product codes, client names
@@ -223,6 +226,8 @@ NO_AREA = "_outside"
 UNSCANNED = {EXEMPT, NO_AREA}
 #: Not an area: a line of areas.txt that says which other areas' text an area's repositories may hold.
 CARRIES = "_carries"
+#: Not an area: a line of areas.txt that says which names of an area are no secret.
+SHOWS = "_shows"
 #: A root on another machine: `host:<host>:<absolute path>` (read by load_remote_areas, not load_areas).
 REMOTE = "host:"
 OFFICE = {".pptx", ".docx", ".xlsx", ".pptm", ".docm", ".xlsm"}
@@ -431,7 +436,8 @@ def _areas_of(lines: list[str]) -> dict[str, list[Path]]:
     templates: list[tuple[str, list[Path]]] = []
     for line in lines:
         parts = shlex.split(line, comments=True)
-        if len(parts) < 2 or parts[0] == CARRIES:       # `_carries` names areas, not paths: load_carries
+        # `_carries` and `_shows` give names, not paths: load_carries, load_shown
+        if len(parts) < 2 or parts[0] in (CARRIES, SHOWS):
             continue
         # A relative path would resolve against wherever the scan runs -- an `_exempt .` would
         # exempt every folder. A line that is not a definition is a broken file, not a pass.
@@ -484,6 +490,8 @@ def area_lines(source: Path | None = None) -> list[str]:
             skip(own, line, "is not a line of areas.txt")
         elif parts[0] == CARRIES:
             carries.append((owner, own, parts, line))
+        elif parts[0] == SHOWS:
+            skip(own, line, "only the machine's own areas.txt shows an area's name outside it")
         elif parts[0].startswith("_"):
             skip(own, line, "only the machine's own areas.txt sets a folder apart from every area")
         elif parts[0] in top and not within(parts[0], owner, top):
@@ -779,13 +787,41 @@ def unknown_areas(read_inside: list[str], areas: dict[str, list[Path]]) -> list[
             and not any(outer(n, r, areas) for r in read_inside)]
 
 
+def load_shown(words: dict[str, set[str]]) -> dict[str, set[str]]:
+    """The names of each area that may be said to any session: the `_shows <area> <name> ...` lines,
+    `words` being the names each area goes by (`area_words`).
+
+    A folder named by an ordinary word would make that word unsayable in every message. A line
+    shows the names it gives and no more: another name of the area, the same name of another
+    area, and the area's text are judged as before. Only the machine's own file is read, since a
+    shown name reaches outside its area. A line that gives no name of an area is a broken file,
+    not a pass."""
+    shown: dict[str, set[str]] = {}
+    for line in read_lines(guard_places.setting("areas.txt")):
+        parts = shlex.split(line, comments=True)
+        if not parts or parts[0] != SHOWS:
+            continue
+        if len(parts) < 3:
+            raise ValueError(f"areas.txt: {line!r} is not `{SHOWS} <area> <name> ...`")
+        if parts[1] not in words:
+            raise ValueError(f"areas.txt: {line!r} names {parts[1]!r}, which is no area")
+        for name in parts[2:]:
+            matched = {word for word in words[parts[1]] if word.casefold() == name.casefold()}
+            if not matched:
+                raise ValueError(f"areas.txt: {line!r} names {name!r}, no name {parts[1]} goes by")
+            shown.setdefault(parts[1], set()).update(matched)
+    return shown
+
+
 def named_areas(text: str, read_inside: list[str]) -> list[tuple[str, str]]:
-    """(area, name) for each name of an area unknown to the session that the text carries."""
+    """(area, name) for each name of an area unknown to the session that the text carries, but
+    the names a `_shows` line shows."""
     areas = load_areas()
     words = area_words(areas)
+    shown = load_shown(words)
     found = []
     for area in unknown_areas(read_inside, areas):
-        for word in sorted(words.get(area, ())):
+        for word in sorted(words.get(area, set()) - shown.get(area, set())):
             shape = (rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])" if word.isascii() else re.escape(word))
             if re.search(shape, text, re.IGNORECASE):
                 found.append((area, word))
