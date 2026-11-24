@@ -1043,7 +1043,24 @@ SH
     commit_line "nothing private either"
     PATH="${STUB}:${PATH}" scan_last
     [ "$status" -eq 0 ]
-    [[ "$output" == *"takes longer than 0s: it goes on apart"* ]]
+    [[ "$output" == *"a document of a large area was rewritten: its walk goes on apart from this scan"* ]]
+    [[ "$output" != *"longer than 0s"* ]]
+}
+
+@test "corpus: bringing the tables up to date says what took the time when it took long" {
+    export GUARD_CORPUS_MAX_AGE=3600 GUARD_CORPUS_SLOW_SAY=0
+    spotlight_stub ""
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    printf 'the order is settled with the mill in the north by friday\n' > "${CLIENT}/received/late.md"
+    SPOTLIGHT_REPORTS="$(python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "${CLIENT}/received/late.md")"
+    export SPOTLIGHT_REPORTS
+    commit_line "nothing private either"
+    PATH="${STUB}:${PATH}" scan_last
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "brought the tables up to date in "[0-9]+s": finding what changed "[0-9]+s", reading 1 document "[0-9]+s", merging "[0-9]+s ]]
 }
 
 # index_has <path> — the index (docs/index.json) still names <path> as a document. The index
