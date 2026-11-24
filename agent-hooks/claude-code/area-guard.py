@@ -130,7 +130,7 @@ import service_reads  # noqa: E402
 import syntax_checks  # noqa: E402
 import ticket_places  # noqa: E402
 import work_reads  # noqa: E402
-from shell_commands import with_inner_first  # noqa: E402
+from shell_commands import program_of, with_inner_first  # noqa: E402
 from shell_lines import with_line_breaks  # noqa: E402
 
 CONFIG = guard_places.settings_folder()
@@ -575,6 +575,18 @@ def in_run_order(command: str) -> str:
     return with_inner_first(command)
 
 
+def program_words(words: list[str]) -> tuple[list[str], list[str], list[list[str]]]:
+    """(the words of a command from its program on, the command lines its leading words hand on to
+    run, the commands they hand on as words), as the shell reads them (shell_commands.program_of):
+    past keywords, assignments and every program that runs the words after it (`sudo -u root`,
+    `timeout 5`, `ionice -c3`, `xargs`, ...). `eval`, `trap`, `env -S` and `watch` hand on a command
+    line, `find -exec` the words up to its `;`. The program's words are the ones of `words`, as the
+    readers here hold them."""
+    program, lines, nested = program_of(list(words))
+    at = next((i for i in range(len(words) + 1) if list(words[i:]) == list(program[:len(words) - i])), len(words))
+    return list(words[at:]), list(lines), [list(inner) for inner in nested]
+
+
 @functools.lru_cache(maxsize=None)
 def line_tokens(line: str) -> tuple[str, ...]:
     """The tokens of a command line, split once a call of the hook however many judgements read it.
@@ -694,9 +706,7 @@ def said(command: str, depth: int = 0):
         commands = []
     for words, redirects, here in commands:
         yield from (target for _, target in redirects)
-        rest = words
-        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT or rest[0] in KEYWORDS):
-            rest = rest[1:]
+        rest, lines, nested = program_words(words)
         tool = os.path.basename(rest[0]) if rest else ""
         shell, flags = bool(SHELL_CODE.fullmatch(tool)), code_flags(tool)
         first = len(words) - len(rest) + 1      # where the tool's own arguments begin
@@ -709,8 +719,8 @@ def said(command: str, depth: int = 0):
                 for m in SUBSTITUTION.finditer(word) if depth < NESTED else []:
                     yield from said(m.group(1) or m.group(2) or "", depth + 1)
             code = not code and at >= first and (word in flags or (shell and bool(re.fullmatch(r"-[A-Za-z]*c", word))))
-        if tool == "eval" and depth < NESTED:
-            yield from said(" ".join(rest[1:]), depth + 1)
+        for code in [*lines, *map(shlex.join, nested)] if depth < NESTED else []:
+            yield from said(code, depth + 1)
         if here is not None:
             yield from handed(tool, here)
     for program, body in fed:
@@ -818,8 +828,6 @@ SHELL_CODE = re.compile(r"(?:ba|z|da|k)?sh")
 # The option that hands each interpreter its code.
 CODE_FLAGS = {"python": {"-c"}, "node": {"-e", "--eval", "-p", "--print"}, "perl": {"-e", "-E"},
               "ruby": {"-e"}, "bun": {"-e", "--eval"}, "php": {"-r"}, "osascript": {"-e"}}
-# What stands before a command and runs it (`sudo tee f`), and a variable set for it (`A=1 cp a b`).
-RUNS_NEXT = {"sudo", "env", "command", "exec", "builtin", "nohup", "nice", "time", "caffeinate"}
 # Words of the shell that stand before a command and run it (`do rm x`, `then rm x`, `! rm x`, `{ rm x; }`).
 KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}", "time"}
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
@@ -1169,7 +1177,7 @@ def named_with_folders(command: str, cwd: str,
                 # code that only looks the config folders up (`glob(home / ".claude*")`) changes none of them
                 folder_orders.append((path, base, RECORDS))
 
-    def one(words: list[str], stdin: str | None, fed: list[str]) -> None:
+    def one(words: list[str], stdin: str | None, fed: list[str], piped: list[str] | None = None) -> None:
         if words and all(ASSIGNMENT.fullmatch(w) for w in words[words[0] in DECLARES:]):
             # `D=/a/b` alone on its command (or after export / local): later words may spell it $D.
             # A value this line cannot know (a substitution, a variable set elsewhere) is forgotten.
@@ -1181,11 +1189,14 @@ def named_with_folders(command: str, cwd: str,
                 else:
                     values[name] = value
             return
-        while words and (ASSIGNMENT.fullmatch(words[0]) or os.path.basename(words[0]) in RUNS_NEXT or words[0] in KEYWORDS):
-            wrapper = not ASSIGNMENT.fullmatch(words[0])
-            words = words[1:]
-            while wrapper and words and (words[0].startswith("-") or ASSIGNMENT.fullmatch(words[0])):
-                words = words[1:]
+        leading = words
+        words, lines, nested = program_words(words)
+        if piped and any(os.path.basename(word) == "xargs" for word in leading[:len(leading) - len(words)]):
+            words = [*words, *piped]        # xargs adds the words it reads to the command
+        for code in lines:
+            run("bash", code, standing.here)
+        for inner in nested:
+            one(inner, None, [])
         if not words:
             return
         tool, args = os.path.basename(words[0]), [filled(a) for a in words[1:]]
@@ -1250,7 +1261,8 @@ def named_with_folders(command: str, cwd: str,
     waiting = list(fed)
     for index, (words, redirects, stdin, ended_by) in enumerate(commands):
         written.extend((filled(target), standing.here) for operator, target in redirects if ">" in operator)
-        one(words, stdin, fed_files(redirects, commands[index - 1] if index else None))
+        one(words, stdin, fed_files(redirects, commands[index - 1] if index else None),
+            echoed(commands[index - 1]) if index else [])
         for operator, _ in redirects:
             if operator in ("<<", "<<-") and waiting:
                 run(*waiting.pop(0), standing.here)
@@ -1277,6 +1289,20 @@ def named_with_folders(command: str, cwd: str,
     ordered = [FolderOrder(real(m), Path(os.path.normpath(m)), reach)
                for name, stood, reach in distinct(folder_orders) for m in matched(name, stood)]
     return distinct(spelled(written) + found[0]), distinct(spelled(removed) + found[1]), distinct(ordered + found[2])
+
+
+# Programs that write their words to their standard output.
+ECHOES = {"echo", "printf"}
+
+
+def echoed(previous: tuple) -> list[str]:
+    """The words a command piped into the next one writes out, when it is an `echo` or a `printf` of
+    words the line spells (`previous` is a step as stepped_commands gives it): what an `xargs` after
+    the pipe hands on as words."""
+    words, _, _, ended_by = previous
+    if ended_by not in ("|", "|&") or not words or os.path.basename(words[0]) not in ECHOES:
+        return []
+    return [word for word in words[1:] if not word.startswith("-")]
 
 
 def fed_files(redirects: list[tuple[str, str]], previous: tuple | None) -> list[str]:
@@ -1311,18 +1337,17 @@ def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
     found: list[tuple[str, str, str, list[str]]] = []
     standing = Standing(cwd)
     for index, (words, redirects, _, ended_by) in enumerate(steps):
-        rest = words
-        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT or rest[0] in KEYWORDS):
-            rest = rest[1:]
+        rest, lines, nested = program_words(words)
+        for code in [*lines, *map(shlex.join, nested)] if depth < NESTED else []:
+            found += ran_scripts_with_arguments(code, standing.here, depth + 1, fed_only=fed_only)
         if rest and not standing.move(os.path.basename(rest[0]), rest[1:]):
             tool, here = os.path.basename(rest[0]), standing.here
             fed = fed_files(redirects, steps[index - 1] if index else None)
             if (script := script_files.ran_with_arguments(rest, here, fed)) is not None:
                 if not fed_only or script_files.ran(rest, here) is None:
                     found.append((*script[:2], here, script[2]))
-            elif depth < NESTED and (tool == "eval" or SHELL_CODE.fullmatch(tool)):
-                codes = [" ".join(rest[1:])] if tool == "eval" else \
-                    [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
+            elif depth < NESTED and SHELL_CODE.fullmatch(tool):
+                codes = [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
                 for code in codes:
                     found += ran_scripts_with_arguments(code, here, depth + 1, fed_only=fed_only)
         if ended_by == "(":
@@ -1673,10 +1698,17 @@ def recursive_reads(command: str, cwd: str, depth: int = 0) -> list[tuple[Path, 
 
 
 def _walked(words: list[str], steps: list, index: int, standing: Standing, depth: int) -> list[tuple[Path, list[str]]]:
-    """The folders one command of a command line reads every file under (see recursive_reads)."""
-    rest = words
-    while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT or rest[0] in KEYWORDS):
-        rest = rest[1:]
+    """The folders one command of a command line reads every file under (see recursive_reads), and
+    those of the command lines it hands on (`eval`, `trap`, `env -S`, `watch`). What `find -exec`
+    runs is read with the find."""
+    rest, lines, _ = program_words(words)
+    handed = [read for code in (lines if depth < NESTED else []) for read in recursive_reads(code, standing.here, depth + 1)]
+    return handed + _program_walked(rest, steps, index, standing, depth)
+
+
+def _program_walked(rest: list[str], steps: list, index: int, standing: Standing,
+                    depth: int) -> list[tuple[Path, list[str]]]:
+    """The folders a command reads every file under, its words taken from its program on."""
     if not rest:
         return []
     tool, args = os.path.basename(rest[0]), rest[1:]
@@ -1900,7 +1932,8 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
             run(argv)
             lost = standing.close()
             return
-        name, args = os.path.basename(argv[0]), argv[1:]
+        argv, lines, nested = program_words(argv)     # past the programs the loop above does not know
+        name, args = (os.path.basename(argv[0]), argv[1:]) if argv else ("", [])
         if name in ("cd", "pushd"):
             target = next((a for a in args if not a.startswith("-") or a == "-"), None)
             if name == "pushd":
@@ -1925,13 +1958,15 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
             skipping.extend(skips)
             forcing.extend([] if lost else forces)
 
+        for code in [*lines, *map(shlex.join, nested)]:
+            inner(code)
+        if not argv:
+            return
         script = script_files.ran(argv, str(here))
         if script is not None and SHELL_CODE.fullmatch(script[0]):
             inner(script[1])
         elif name in SHELLS and "-c" in args[:-1]:
             inner(args[args.index("-c") + 1])
-        elif name == "eval" and args:
-            inner(" ".join(args))
         elif name == "git":
             repo, i, place = here, 0, lost
             hooks_off = None
@@ -2666,9 +2701,9 @@ def handed_code(command: str, cwd: str) -> list[tuple[str, str, str]]:
     except ValueError:
         return found
     for words, _, here_string in steps:
-        rest = words
-        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT):
-            rest = rest[1:]
+        rest, lines, nested = program_words(words)
+        for code in [*lines, *map(shlex.join, nested)]:
+            found += [handed for handed in handed_code(code, cwd) if handed not in found]
         tool = os.path.basename(rest[0]) if rest else ""
         if script_files.kind_of(tool) in (None, "shell"):
             continue
