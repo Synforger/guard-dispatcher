@@ -1748,6 +1748,13 @@ def kept_by(command: str, cwd: str, transcript: str | None,
             if what[1].endswith(ADDS_ONLY) and search_call.searches_only(command):
                 continue
             return what
+    # A folder written as itself takes a file under a name the command does not say (`curl -OJ`), so
+    # the folder of a setting only the operator writes is that setting's to keep.
+    operator_folders = {real(guard_places.setting(name)).parent for name in OPERATOR_ONLY}
+    for path in written:
+        if path in operator_folders:
+            return (f"the folder of a setting only the operator writes ({path})",
+                    f"{SETTINGS_WHY}; a file written into it under a name not known may be that setting")
     for path in removed:
         if path in real(CONFIG).parents or path in CONFIG.parents:
             return "the folder holding the guard's settings", SETTINGS_WHY
