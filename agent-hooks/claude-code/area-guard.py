@@ -1512,19 +1512,16 @@ def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
 #: Programs that copy what files hold and print none of their names: the files `cat` is given, and
 #: all but the last that `cp` and `mv` are given, are read.
 COPIERS = {"cat", "cp", "mv"}
-#: What prints the folder a command stands in: after a `cd` into an agent's folder, the folder's path
-#: (and so the agent's name) is what it writes, so the folder of a `cd` is not read.
-CWD_SHOWN = re.compile(r"\b(?:pwd|PWD|OLDPWD|dirs|realpath|readlink|getcwd|cwd|abspath|absolute)\b"
-                       r"|--show-(?:toplevel|prefix)")
 
 
 @functools.lru_cache(maxsize=None)
-def read_or_run_paths(command: str, cwd: str, depth: int = 0, *, with_cd: bool = True) -> tuple[str, ...]:
+def read_or_run_paths(command: str, cwd: str, depth: int = 0) -> tuple[str, ...]:
     """The words of a command that stand where a path is only read or run, following where the
     command stands and the command lines it hands on, as ran_scripts does: each program, the file of
-    code it runs and the files that code is handed, the file of a `<` redirection, the folder of a
-    `cd` (unless not `with_cd`), and the files `cat`, `cp` and `mv` copy. A program or a script that
-    prints its own path or the names of the files it is handed is not told apart from one that does not."""
+    code it runs and the files that code is handed, the file of a `<` redirection, and the files
+    `cat`, `cp` and `mv` copy. The folder of a `cd` is not one: whatever the command runs there can
+    print where it stands (`pwd`, `env`, `ls ..`). A program or a script that prints its own path or
+    the names of the files it is handed is not told apart from one that does not."""
     line, _ = split_heredocs(spell_home(in_run_order(command)))
     try:
         steps = list(stepped_commands(line))
@@ -1535,11 +1532,9 @@ def read_or_run_paths(command: str, cwd: str, depth: int = 0, *, with_cd: bool =
     for index, (words, redirects, _, ended_by) in enumerate(steps):
         rest, lines, nested = program_words(words)
         for code in [*lines, *map(shlex.join, nested)] if depth < NESTED else []:
-            found += read_or_run_paths(code, standing.here, depth + 1, with_cd=with_cd)
+            found += read_or_run_paths(code, standing.here, depth + 1)
         found += [target for operator, target in redirects if operator == "<"]
-        if rest and standing.move(os.path.basename(rest[0]), rest[1:]):
-            found += rest[1:] if with_cd else []
-        elif rest:
+        if rest and not standing.move(os.path.basename(rest[0]), rest[1:]):
             tool, here = os.path.basename(rest[0]), standing.here
             found.append(rest[0])
             fed = fed_files(redirects, steps[index - 1] if index else None)
@@ -1550,7 +1545,7 @@ def read_or_run_paths(command: str, cwd: str, depth: int = 0, *, with_cd: bool =
             elif depth < NESTED and SHELL_CODE.fullmatch(tool):
                 codes = [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
                 for code in codes:
-                    found += read_or_run_paths(code, here, depth + 1, with_cd=with_cd)
+                    found += read_or_run_paths(code, here, depth + 1)
             elif tool in COPIERS:
                 files = [word for word in rest[1:] if not word.startswith("-")]
                 found += files if tool == "cat" else files[:-1]
@@ -2524,8 +2519,7 @@ def area_words_refusal(tool: str, args: dict, cwd: str, areas) -> str | None:
         # what is written: the folder's name is left out of the line there (agent_roots).
         codes = [code for _, code, _ in ran_scripts(command, cwd)]
         spellings = agent_roots.pattern(guard_places.agents_folder())
-        with_cd = not CWD_SHOWN.search("\n".join([command, *codes]))
-        read_or_run = agent_roots.inside(spellings, read_or_run_paths(command, cwd, with_cd=with_cd))
+        read_or_run = agent_roots.inside(spellings, read_or_run_paths(command, cwd))
         line = agent_roots.masked(command, spellings, read_or_run)
         text = "\n".join([line, *codes])
     else:

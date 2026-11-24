@@ -1871,13 +1871,13 @@ area_words() {
              "cp ${S}/a.txt ${COMPANY_REPO}/a.txt" \
              "${S}/tool.sh > ${COMPANY_REPO}/o.txt" \
              "sort < ${S}/a.txt > ${COMPANY_REPO}/o.txt" \
-             "cd ${S} && python3 gen.py > ${COMPANY_REPO}/o.txt" \
              "python3 ~/platform/agents/handlename/_scratch/gen.py > ${COMPANY_REPO}/o.txt" \
-             "cd ${scratch} && sort a.txt > ${COMPANY_REPO}/o.txt"; do
+             "sort < ${scratch}/a.txt > ${COMPANY_REPO}/o.txt"; do
         bash_in "${H}" "${c}"
         passed || { echo "refused: ${c}: ${output}"; return 1; }
     done
-    # the folder's name where the command may write it: printed, beside a path read, in a heredoc, as a word
+    # the folder's name where the command may write it: printed, beside a path read, in a heredoc, as a word,
+    # copied as the folder itself, or as the folder a command stands in (it can print where it stands)
     for c in "echo ${S}/a.txt > ${COMPANY_REPO}/o.txt" \
              "python3 ${S}/gen.py > ${COMPANY_REPO}/o.txt; echo ${S} >> ${COMPANY_REPO}/o.txt" \
              "wc -l ${S}/a.txt > ${COMPANY_REPO}/o.txt" \
@@ -1890,7 +1890,10 @@ area_words() {
              "cd ${H}/platform/agents/handlename && pwd > ${COMPANY_REPO}/f" \
              "cd ${S} && echo \$PWD > ${COMPANY_REPO}/f" \
              "cd ${S} && python3 where.py > ${COMPANY_REPO}/f" \
-             "cd ${S} && git rev-parse --show-toplevel > ${COMPANY_REPO}/f"; do
+             "cd ${S} && git rev-parse --show-toplevel > ${COMPANY_REPO}/f" \
+             "cd ${S} && python3 gen.py > ${COMPANY_REPO}/o.txt" \
+             "cd ${S} && env > ${COMPANY_REPO}/f" \
+             "cd ${S} && ls ../../.. > ${COMPANY_REPO}/f"; do
         bash_in "${H}" "${c}"
         denied || { echo "not refused: ${c}"; return 1; }
     done

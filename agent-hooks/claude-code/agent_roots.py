@@ -47,7 +47,7 @@ def pattern(agents: Path | None) -> re.Pattern[str] | None:
 def inside(spellings: re.Pattern[str] | None, words: tuple[str, ...] | list[str]) -> int:
     """How many spellings of an agent's folder in `words` go on to a file or folder inside it. One
     that ends the word (`<folder>`, `<folder>/`, `<folder>/.`, `<folder>/..`) names the folder itself,
-    whose name a copy or the folder a command stands in carries on, so it is not counted."""
+    whose name a copy of it carries on, so it is not counted."""
     if spellings is None:
         return 0
     return sum(1 for word in words for found in spellings.finditer(word) if word[found.end():].strip("/."))
