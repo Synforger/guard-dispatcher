@@ -395,3 +395,208 @@ open(sys.argv[1], "a").write("x")'
     bash_call "python3 -c \"open('${SETTING}', 'a').write('x')\""; denied
     says "an agent does not write or remove the guard's settings (orders.txt)"
 }
+
+# --- the words a script hands on, spells another way, or takes in another language -----------------
+
+@test "script files: a script that hands its word to another script is read through to the write" {
+    keep_files
+    script put.py 'import sys
+open(sys.argv[1], "a").write("x")'
+    script nested.sh 'python3 put.py "$1"'
+    script outer.sh 'bash nested.sh "$1"'
+    script relay.sh 'bash -c "python3 put.py $1"'
+    local target command
+    for target in "${SETTING}" "${TRANSCRIPT}"; do
+        for command in "bash nested.sh ${target}" "bash outer.sh ${target}" "bash relay.sh ${target}"; do
+            bash_call "${command}"
+            denied || { echo "not refused: ${command}"; return 1; }
+        done
+    done
+    script look.py 'import sys
+print(open(sys.argv[1]).read())'
+    script look.sh 'python3 look.py "$1"'
+    bash_call "bash look.sh ${SETTING}"; passed
+}
+
+@test "script files: a shell script that loops over its words, shifts them or defaults one is read with the words in place" {
+    keep_files
+    script loop.sh 'for f in "$@"; do
+  echo x >> "$f"
+done'
+    script loop_in.sh 'for f in "$@"; do echo x >> "$f"; done'
+    script bare.sh 'for f; do tee -a "$f" < /dev/null; done'
+    script skip.sh 'shift
+echo x >> "$1"'
+    script skip_two.sh 'shift 2
+echo x >> "$1"'
+    script default.sh 'echo x >> "${1:-/tmp/log.txt}"'
+    script braced.sh 'echo x >> "${2}"'
+    script rest.sh 'cp /etc/hosts ${@:2}'
+    script counted.sh 'while [ $# -gt 0 ]; do
+  echo x >> "$1"
+  shift
+done'
+    script options.sh 'while getopts o: flag; do
+  echo x >> "$OPTARG"
+done'
+    local target command
+    for target in "${SETTING}" "${TRANSCRIPT}"; do
+        for command in "bash loop.sh a ${target}" "bash loop_in.sh ${target}" "bash bare.sh ${target}" \
+                       "bash skip.sh a ${target}" "bash skip_two.sh a b ${target}" "bash default.sh ${target}" \
+                       "bash braced.sh a ${target}" "bash rest.sh a ${target}" "bash counted.sh a ${target}" \
+                       "bash options.sh -o ${target}"; do
+            bash_call "${command}"
+            denied || { echo "not refused: ${command}"; return 1; }
+        done
+    done
+    # the word the script shifts away, or only reads, is no write
+    bash_call "bash skip.sh ${SETTING} ${H}/notes.txt"; passed
+    bash_call "bash default.sh ${H}/notes.txt"; passed
+    script reading.sh 'for f in "$@"; do
+  cat "$f"
+done
+while [ $# -gt 0 ]; do
+  wc -l "$1"
+  shift
+done'
+    bash_call "bash reading.sh ${SETTING} ${TRANSCRIPT}"; passed
+}
+
+@test "script files: a # in a word is no comment: what follows on the line is read" {
+    keep_files
+    bash_call "echo \$# ; echo x >> ${SETTING}"; denied
+    bash_call "echo a#b; echo x >> ${SETTING}"; denied
+    bash_call "echo \$#
+echo x >> ${TRANSCRIPT}"; denied
+    bash_call "echo \$# ; echo x >> ${H}/notes.txt"; passed
+    bash_call "echo x # echo y >> ${SETTING}"; passed
+}
+
+@test "script files: node, ruby, perl and php code that takes its arguments and writes is refused, one that only reads passes" {
+    keep_files
+    script put.js "require('fs').appendFileSync(process.argv[2], 'x')"
+    script put.rb "File.write(ARGV[0], 'x')"
+    script put.pl 'open(my $out, ">>", $ARGV[0]); print $out "x";'
+    script put.php '<?php file_put_contents($argv[1], "x", FILE_APPEND);'
+    script run.js "require('child_process').execSync('tee -a ' + process.argv[2])"
+    script look.js "console.log(require('fs').readFileSync(process.argv[2], 'utf8'))"
+    script look.rb 'puts File.read(ARGV[0])'
+    script look.pl 'open(my $in, "<", $ARGV[0]); print <$in>;'
+    script look.php '<?php echo file_get_contents($argv[1]);'
+    script fixed.js "require('fs').writeFileSync('${H}/notes.txt', 'x')"
+    local target command
+    for target in "${SETTING}" "${TRANSCRIPT}"; do
+        for command in "node put.js a ${target}" "ruby put.rb ${target}" "perl put.pl ${target}" "php put.php ${target}" \
+                       "node run.js ${target}"; do
+            bash_call "${command}"
+            denied || { echo "not refused: ${command}"; return 1; }
+        done
+        for command in "node look.js ${target}" "ruby look.rb ${target}" "perl look.pl ${target}" "php look.php ${target}" \
+                       "node fixed.js ${target}"; do
+            bash_call "${command}"
+            passed || { echo "refused: ${command}"; return 1; }
+        done
+    done
+}
+
+@test "script files: a folder of transcripts handed to a script that takes it away or fills it is refused" {
+    keep_files
+    local records="${H}/.claude/projects"
+    script drop.sh 'rm -rf "$1"'
+    script move.sh 'mv "$1" /tmp/gone'
+    script fill.sh 'cp -r /etc/hosts "$1"/'
+    script wipe.py 'import shutil, sys
+shutil.rmtree(sys.argv[1])'
+    script via.sh 'bash drop.sh "$1"'
+    local folder command
+    for folder in "${records}" "${records}/-w" "${H}/.claude/projects/"; do
+        for command in "bash drop.sh ${folder}" "bash move.sh ${folder}" "python3 wipe.py ${folder}" "bash via.sh ${folder}"; do
+            bash_call "${command}"
+            denied || { echo "not refused: ${command}"; return 1; }
+            says "the folder holding a session's transcripts" || { echo "reason: ${command}"; return 1; }
+        done
+    done
+    script look.sh 'ls "$1"
+cp -r "$1" /tmp/copy'
+    script look.py 'import os, sys
+print(os.listdir(sys.argv[1]))'
+    bash_call "bash look.sh ${records}"; passed
+    bash_call "python3 look.py ${records}"; passed
+    bash_call "bash drop.sh ${H}/notes.txt"; passed
+}
+
+@test "script files: a command behind a shell keyword is read as the command it is" {
+    keep_files
+    local command
+    for command in "for f in a; do tee -a ${SETTING} < /dev/null; done" "for f in a; do rm ${SETTING}; done" \
+                   "if true; then rm ${SETTING}; fi" "while true; do cp /etc/hosts ${SETTING}; break; done" \
+                   "{ rm ${SETTING}; }" "! rm ${SETTING}" "until false; do mv ${TRANSCRIPT} ${H}/gone; done"; do
+        bash_call "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    script put.sh 'echo x >> "$1"'
+    bash_call "for f in a; do bash put.sh ${SETTING}; done"; denied
+    bash_call "for f in a; do rm ${H}/notes.txt; done"; passed
+}
+
+# --- a case statement, and a script that moves to the folder it is given ---------------------------
+
+@test "script files: the commands in the branches of a case are read, a label's ) closing no subshell" {
+    keep_files
+    local folder
+    folder="$(dirname "${SETTING}")"
+    local command
+    for command in "case \"\$x\" in a) rm ${SETTING};; esac" \
+                   "case \"\$x\" in
+  a) echo hi ;;
+  b|c) rm ${SETTING} ;;
+esac" \
+                   "case \"\$x\" in (a) rm ${SETTING};; esac" \
+                   "(cd ${folder}; case \"\$x\" in a) rm orders.txt;; esac)" \
+                   "(cd ${folder} && case \"\$x\" in (a) rm orders.txt;; esac)" \
+                   "(cd ${folder}; case \"\$x\" in a) true;; b) rm orders.txt;; esac)" \
+                   "(cd ${folder}; for f in a; do case \"\$f\" in a) rm orders.txt;; esac; done)"; do
+        bash_call "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    bash_call "(cd ${H}; case \"\$x\" in a) rm orders.txt;; esac)"; passed
+    bash_call "case \"\$x\" in a) rm ${H}/notes.txt;; *) cat ${SETTING};; esac"; passed
+    # a send in a branch is read from where the command stands there
+    bash_call "(cd \$ELSEWHERE; case \"\$x\" in a) git commit -m x;; esac)"; denied
+    says "only known as it runs"
+    bash_call "case \"\$x\" in a) cd \$ELSEWHERE && git push;; esac"; denied
+    says "only known as it runs"
+    bash_call "(cd ${TOOL}; case \"\$x\" in a) git commit -m x;; esac)"; passed
+}
+
+@test "script files: a script that moves to the folder it is given writes its relative names there" {
+    keep_files
+    local settings records
+    settings="$(dirname "${SETTING}")"
+    records="$(dirname "${TRANSCRIPT}")"
+    script cdwrite.sh 'cd "$1" && echo x >> orders.txt'
+    script cdrm.sh 'cd "$1"
+rm abc.jsonl'
+    script cdcase.sh 'cd "$1"
+case "$2" in a) rm orders.txt;; esac'
+    script chdir.py 'import os, sys
+os.chdir(sys.argv[1])
+open("orders.txt", "a").write("x")'
+    script cdlist.sh 'cd "$1" && ls && cat orders.txt'
+    local command
+    for command in "bash cdwrite.sh ${settings}" "bash cdrm.sh ${records}" "bash cdcase.sh ${settings} a" \
+                   "python3 chdir.py ${settings}" "bash -c 'bash cdwrite.sh ${settings}'"; do
+        bash_call "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    bash_call "bash cdlist.sh ${settings}"; passed
+    bash_call "bash cdwrite.sh ${H}"; passed
+    bash_call "python3 chdir.py ${H}"; passed
+}
+
+@test "script files: code that only looks at a link or whether a path is there writes neither" {
+    bash_call "cat ~/org/clients/acme/received/memo.md"; passed
+    bash_call "python3 -c \"import os; p = os.path.join('${PLACE}', 'a.jsonl'); print(os.path.lexists(p))\""; passed
+    bash_call "python3 -c \"import os; p = os.path.join('${PLACE}', 'a.jsonl'); print(os.readlink(p))\""; passed
+    bash_call "python3 -c \"import os; p = os.path.join('${PLACE}', 'a.jsonl'); os.symlink('/tmp/x', p)\""; denied
+}
