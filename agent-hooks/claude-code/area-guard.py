@@ -2296,6 +2296,9 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
             standing.close()
     last = max((at for at, writing in enumerate(writes) if writing), default=None)
     end = None if last is None else next((at for at in range(last, len(steps)) if depths[at] == 0), None)
+    # What ends a subshell stands after its `)` with no words of its own (`( … ) &`, `( … ) > f`).
+    while end is not None and end + 1 < len(steps) and not steps[end + 1][0]:
+        end += 1
     if end is None or min(depths) < 0 or any(acts_later[:end + 1]):
         return whole
     return [part for put in puts[:end + 1] for part in put]

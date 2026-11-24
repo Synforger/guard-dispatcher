@@ -1875,6 +1875,8 @@ area_words() {
     for command in "while read l; do echo \"\$l\" >> ${COMPANY_REPO}/f; done <<< handlename" \
                    $'while read l; do echo "$l" >> '"${COMPANY_REPO}"$'/f; done <<EOF\nhandlename\nEOF' \
                    "tail -f ${H}/tmp/t >> ${COMPANY_REPO}/f & echo handlename >> ${H}/tmp/t" \
+                   "( cat ${H}/tmp/t > ${COMPANY_REPO}/f ) & echo handlename > ${H}/tmp/t" \
+                   "(cat ${H}/tmp/t > ${COMPANY_REPO}/f)& echo handlename > ${H}/tmp/t" \
                    "exec 3>> ${COMPANY_REPO}/f; echo handlename >&3" \
                    "f() { cp ${H}/tmp/t ${COMPANY_REPO}/f; }; echo handlename > ${H}/tmp/t; f"; do
         bash_in "${H}" "${command}"
