@@ -809,28 +809,32 @@ def code_flags(tool: str) -> set[str]:
     return CODE_FLAGS.get(name, set())
 
 
-def code_paths(code: str, cwd: str, *, relative: bool = True) -> list[str]:
+def code_paths(code: str, cwd: str, *, relative: bool = True, known_writes: str = "") -> list[str]:
     """Every path inline code names (literals): an absolute or home path that stands by itself
     (standing), and, unless `relative` is False, a whole string that reads as a relative path (one
     word that holds a `/`, ends in an extension, or names something that exists in the command's
     folder). Whether the code reads or writes it cannot be told. A word quoted inside a longer
     string is that string's text, and a media type is a path only when its first name is a folder
-    of the command's folder. A string with no name in it (`/`, `./`) names no file."""
+    of the command's folder. A string with no name in it (`/`, `./`) names no file.
+
+    `known_writes` is more source, the names a call known to write is handed as they stand: its
+    relative names count even where `relative` is False. A path named more than once is listed once."""
     found = []
-    hinted = bool(HOME_HINT.search(code))
-    for text, whole in literals(code):
-        found += [path for path in standing(text) if path.strip("/.")]
-        if hinted:
-            found += [path for m in PATH_PIECES.finditer(text)
-                      if (path := os.path.join(str(Path.home()), m.group(1))) and Path(path).parent.is_dir()]
-        if not relative or not whole or text.startswith("/") or "://" in text or not text.strip("/.") \
-                or not CODE_WORD.fullmatch(text):
-            continue
-        if MEDIA_TYPE.fullmatch(text) and not (Path(cwd) / text.split("/")[0]).is_dir():
-            continue
-        if "/" in text or re.search(r"\.\w{1,8}$", text) or (Path(cwd) / text).exists():
-            found.append(text)
-    return found
+    for source, counts_relative in ((code, relative), (known_writes, True)):
+        hinted = bool(HOME_HINT.search(source))
+        for text, whole in literals(source):
+            found += [path for path in standing(text) if path.strip("/.")]
+            if hinted:
+                found += [path for m in PATH_PIECES.finditer(text)
+                          if (path := os.path.join(str(Path.home()), m.group(1))) and Path(path).parent.is_dir()]
+            if not counts_relative or not whole or text.startswith("/") or "://" in text or not text.strip("/.") \
+                    or not CODE_WORD.fullmatch(text):
+                continue
+            if MEDIA_TYPE.fullmatch(text) and not (Path(cwd) / text.split("/")[0]).is_dir():
+                continue
+            if "/" in text or re.search(r"\.\w{1,8}$", text) or (Path(cwd) / text).exists():
+                found.append(text)
+    return list(dict.fromkeys(found))
 
 
 class Standing:
@@ -1018,11 +1022,10 @@ def named_with_folders(command: str, cwd: str,
             found[1].extend(inner[1])
             found[2].extend(inner[2])
         elif code_flags(tool):
-            parts = code_writes.python.written_code(code) if tool.startswith("python") else code
-            paths = code_paths(parts, base, relative=not from_file)
-            if from_file and tool.startswith("python"):
-                paths += code_paths(code_writes.python.written_code(code, known_writes_only=True), base)
-            for path in paths:
+            is_python = tool.startswith("python")
+            parts = code_writes.python.written_code(code) if is_python else code
+            known = code_writes.python.written_code(code, known_writes_only=True) if from_file and is_python else ""
+            for path in code_paths(parts, base, relative=not from_file, known_writes=known):
                 written.append((path, base))
                 # code that only looks the config folders up (`glob(home / ".claude*")`) changes none of them
                 folder_orders.append((path, base, RECORDS))
