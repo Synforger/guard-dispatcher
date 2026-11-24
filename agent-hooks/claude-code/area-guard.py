@@ -2242,8 +2242,12 @@ def area_word_lists(targets: list[Path], areas) -> dict[str, tuple[Path, Path]]:
 COMPOUND_OPENS = {"if", "while", "until", "for", "select", "case", "{"}
 COMPOUND_CLOSES = {"fi", "done", "esac", "}"}
 # Commands whose effect comes later in the line than where they stand: a trap runs when the shell
-# ends, a coprocess reads what is written to it afterwards.
-DEFERRED = {"trap", "coproc"}
+# ends, a coprocess reads what is written to it afterwards, and the others leave what they run behind
+# them (detached, scheduled, handed to a service).
+DEFERRED = {"trap", "coproc", "disown", "setsid", "screen", "tmux", "at", "batch", "launchctl"}
+# What in the code of another language starts a process that may outlive the line's next commands.
+SPAWNS = re.compile(r"\b(?:subprocess|Popen|os\.(?:system|popen|fork\w*|spawn\w*|exec\w*|posix_spawn\w*)"
+                    r"|multiprocessing|threading|child_process|setTimeout|setInterval|daemon|nohup)\b")
 
 
 def compound_nesting(words: list[str]) -> int:
@@ -2259,6 +2263,54 @@ def compound_nesting(words: list[str]) -> int:
         if word in ("for", "select", "case"):
             break
     return change
+
+
+def step_acts_later(steps: list, at: int) -> bool:
+    """Whether a command of a line (a step as stepped_commands gives it) acts later in the line than
+    where it stands: sent to the background, a function defined, an `exec` that only opens a file, a
+    trap, a coprocess, or a program that leaves what it runs behind it (DEFERRED)."""
+    words, redirects, _, ended_by = steps[at]
+    head = program_words(words)[0]
+    defines = bool(words) and ended_by == "(" and at + 1 < len(steps) \
+        and not steps[at + 1][0] and steps[at + 1][3] == ")"
+    opens_only = not head and bool(redirects) and any(os.path.basename(word) == "exec" for word in words)
+    return ended_by == "&" or defines or opens_only or "function" in words[:1] \
+        or any(os.path.basename(word) in DEFERRED for word in words[:len(words) - len(head) + 1])
+
+
+def acts_later(command: str, cwd: str, depth: int = 0) -> bool:
+    """Whether a command line holds a command that acts later (step_acts_later), at any depth of what
+    it runs (code_acts_later). A line that cannot be split is taken to."""
+    line, _ = split_heredocs(spell_home(in_run_order(command)))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return True
+    return any(step_acts_later(steps, at) for at in range(len(steps))) or code_acts_later(command, cwd, depth)
+
+
+def code_acts_later(command: str, cwd: str, depth: int = 0) -> bool:
+    """Whether what a command line hands on to run acts later: a command line it hands on (`eval`,
+    `trap`, `env -S`, `watch`, `find -exec`), a shell's `-c` string, a heredoc or a here-string fed to a
+    shell, or a shell script it runs, that holds a command that acts later (acts_later); or the code
+    of another language it runs, that starts a process (SPAWNS). Deeper than NESTED it is taken to."""
+    if depth >= NESTED:
+        return True
+    line, fed = split_heredocs(spell_home(in_run_order(command)))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return True
+    shells = [body for program, body in fed if SHELL_CODE.fullmatch(program)]
+    for words, _, here_string, _ in steps:
+        head, lines, nested = program_words(words)
+        shells += [*lines, *map(shlex.join, nested)]
+        if head and SHELL_CODE.fullmatch(os.path.basename(head[0])):
+            shells += [head[i + 1] for i, word in enumerate(head[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
+            shells += [here_string] if here_string is not None else []
+    shells += [code for program, code, _ in ran_scripts(command, cwd) if SHELL_CODE.fullmatch(os.path.basename(program))]
+    others = [code for _, code, _ in handed_code(command, cwd)]
+    return any(SPAWNS.search(code) for code in others) or any(acts_later(code, cwd, depth + 1) for code in shells)
 
 
 def put_words(words: list[str], head: list[str]) -> list[str]:
@@ -2282,7 +2334,8 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
     The commands after are not what is written. The whole line and the code it runs are read when the
     line cannot be split, when nothing in it is seen to write there command by command, when its
     loops and groups do not close, and when a command within that stretch acts later in the line
-    (one sent to the background, a trap, a function defined, an `exec` that only opens a file)."""
+    (one sent to the background, a trap, a function defined, an `exec` that only opens a file), or
+    hands on to run what does, at any depth (code_acts_later)."""
     whole = [command, *(code for _, code, _ in ran_scripts(command, cwd))]
     line, fed = split_heredocs(spell_home(in_run_order(command)))
     try:
@@ -2293,18 +2346,14 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
     bodies = list(fed)
     puts: list[list[str]] = []
     writes: list[bool] = []
-    acts_later: list[bool] = []
+    acts_later_at: list[bool] = []
     depths: list[int] = []
     depth = 0
     for at, (words, redirects, here_string, ended_by) in enumerate(steps):
         count = sum(1 for operator, _ in redirects if operator in ("<<", "<<-"))
         mine, bodies = bodies[:count], bodies[count:]
         head = program_words(words)[0]
-        defines = bool(words) and ended_by == "(" and at + 1 < len(steps) \
-            and not steps[at + 1][0] and steps[at + 1][3] == ")"
-        opens_only = not head and bool(redirects) and any(os.path.basename(word) == "exec" for word in words)
-        acts_later.append(ended_by == "&" or defines or opens_only or "function" in words[:1]
-                          or any(os.path.basename(word) in DEFERRED for word in words[:len(words) - len(head) + 1]))
+        later = step_acts_later(steps, at)
         put: list[str] = []
         writing = False
         if head and standing.move(os.path.basename(head[0]), head[1:]):
@@ -2316,11 +2365,13 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
             if here_string is not None:
                 step += f" <<< {shlex.quote(here_string)}"
             writing = any(holds(target) for target in write_targets(step, standing.here))
+            later = later or code_acts_later(step, standing.here)
             put = put_words(words, head) + [body for _, body in mine] \
                 + ([here_string] if here_string is not None else []) \
                 + [code for _, code, _ in ran_scripts(step, standing.here)]
         puts.append(put)
         writes.append(writing)
+        acts_later_at.append(later)
         depth += compound_nesting(words) + (ended_by == "(") - (ended_by == ")")
         depths.append(depth)
         if ended_by == "(":
@@ -2332,7 +2383,7 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
     # What ends a subshell stands after its `)` with no words of its own (`( … ) &`, `( … ) > f`).
     while end is not None and end + 1 < len(steps) and not steps[end + 1][0]:
         end += 1
-    if end is None or min(depths) < 0 or any(acts_later[:end + 1]):
+    if end is None or min(depths) < 0 or any(acts_later_at[:end + 1]):
         return whole
     return [part for put in puts[:end + 1] for part in put]
 

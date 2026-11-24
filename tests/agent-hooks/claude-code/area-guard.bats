@@ -1885,6 +1885,22 @@ area_words() {
     done
 }
 
+@test "area-guard: a word written after code the line hands on starts something that acts later is refused" {
+    area_words
+    mkdir -p "${H}/tmp"
+    printf 'tail -f %s/tmp/t >> %s/f &\n' "${H}" "${COMPANY_REPO}" > "${H}/tmp/bg.sh"
+    local command
+    for command in "bash -c 'tail -f ${H}/tmp/t >> ${COMPANY_REPO}/f &'; echo handlename > ${H}/tmp/t" \
+                   "eval 'tail -f ${H}/tmp/t >> ${COMPANY_REPO}/f &'; echo handlename > ${H}/tmp/t" \
+                   "eval 'exec 3>> ${COMPANY_REPO}/f'; echo handlename >&3" \
+                   "bash ${H}/tmp/bg.sh; echo handlename > ${H}/tmp/t" \
+                   $'bash <<\'SH\'\ntail -f '"${H}/tmp/t >> ${COMPANY_REPO}"$'/f &\nSH\necho handlename > '"${H}"'/tmp/t' \
+                   "python3 -c \"import subprocess; subprocess.Popen(['cp', '${H}/tmp/t', '${COMPANY_REPO}/f'])\"; echo handlename > ${H}/tmp/t"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
 @test "area-guard: an agent's own folder inside an area holds its own names" {
     area_words
     export AGENT_PLATFORM_ROOT="${H}/platform"
