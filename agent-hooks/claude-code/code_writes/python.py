@@ -155,6 +155,17 @@ LOCAL_WRITES = frozenset({"os.makedirs", "os.mkdir", "os.remove", "os.unlink", "
 WRITING_MODE = re.compile(r"[wax+]")
 #: Functions that run a command: whatever they are handed is a command line, which writes where its
 #: words say, so the names in it are counted as a call known to write counts them.
+#: Calls that run a command besides RUNS_COMMAND: a terminal's child and asyncio's subprocesses.
+RUNS_COMMAND_TOO = re.compile(r"pty\.\w*spawn|asyncio\.create_subprocess_\w+")
+#: git, as a word, and the ways to run it without its hooks (an option, a setting given a value, a variable).
+GIT_WORD = re.compile(r"(?<![\w-])git(?![\w-])")
+GIT_SKIP = re.compile(r"--no-ver(?:i|if|ify)?\b|core\.hookspath=|GIT_CONFIG_(?:PARAMETERS|COUNT|GLOBAL|SYSTEM|KEY_\d+)"
+                      r"|\bHUSKY\b", re.I)
+
+#: What a value written out of strings is made of: strings, containers and operators, no name. A name is
+#: followed to such a value only, one step, since names are read across the whole module.
+BUILT_OF = (ast.Constant, ast.List, ast.Tuple, ast.Set, ast.Dict, ast.BinOp, ast.expr_context, ast.operator)
+
 #: Functions that move the code to the folder they are handed: a relative name written after them lands
 #: there, so that folder is counted as a call known to write counts its target.
 FOLDER_MOVES = frozenset({"os.chdir", "contextlib.chdir"})
@@ -220,6 +231,21 @@ def commands_run(code: str) -> list[str]:
     except (SyntaxError, ValueError):
         return []
     return _Reader(code, tree).commands_run()
+
+
+def git_skip(code: str) -> str | None:
+    """The way to run git without its hooks that a call running a command is handed together with git,
+    or None. Every string the call's arguments are made of counts, through the values their names
+    were given, however the code puts them together (`" ".join(...)`, `"git push " + flag`, an
+    f-string). A call made by name (`exec`, `getattr(subprocess, "run")`, `__import__`) counts as one
+    that runs a command. A variable set for the whole program (`os.environ[...]`, `os.putenv`) counts
+    with any such call that is handed git. Strings cut so that no one of them holds the word
+    (`"--no-" + "verify"`) are not seen."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return None
+    return _Reader(code, tree).git_skip()
 
 
 def stays_here(code: str) -> bool:
@@ -525,6 +551,68 @@ class _Reader:
         elif isinstance(node, ast.Name):
             for value in self._values.get(node.id, []):
                 self._as_written(value, seen, names)
+
+    def git_skip(self) -> str | None:
+        calls = [node for node in ast.walk(self._tree) if isinstance(node, ast.Call)]
+        runs = [call for call in calls if self._runs_command(call)]
+        if not runs:
+            return None
+        program_wide = self._environment_settings()
+        for call in runs:
+            strings: list[str] = []
+            self._all_strings(call, set(), strings)
+            if not any(GIT_WORD.search(text) for text in strings):
+                continue
+            if found := next((m.group(0) for text in strings if (m := GIT_SKIP.search(text))), None):
+                return found
+            if program_wide:
+                return program_wide
+        return None
+
+    def _runs_command(self, call: ast.Call) -> bool:
+        """Whether `call` runs a command, or is made by name and may (`exec`, `getattr(...)(...)`)."""
+        name = self._dotted(call.func)
+        if name and (RUNS_COMMAND.fullmatch(name) or RUNS_COMMAND_TOO.fullmatch(name) or name in DYNAMIC):
+            return True
+        return any(isinstance(inner, ast.Call) and self._dotted(inner.func) in DYNAMIC | {"__import__"}
+                   for inner in ast.walk(call.func))
+
+    def _environment_settings(self) -> str | None:
+        """A variable of GIT_SKIP the code sets for the whole program (`os.environ["GIT_CONFIG_COUNT"] = "1"`,
+        `os.putenv`, `os.environ.update(...)` / `setdefault`), or None."""
+        for node in ast.walk(self._tree):
+            keys: list[ast.AST] = []
+            if isinstance(node, (ast.Assign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                keys += [t.slice for t in targets
+                         if isinstance(t, ast.Subscript) and self._dotted(t.value) == "os.environ"]
+            elif isinstance(node, ast.Call):
+                name = self._dotted(node.func)
+                if name == "os.putenv" and node.args:
+                    keys.append(node.args[0])
+                elif name in ("os.environ.update", "os.environ.setdefault"):
+                    keys += [*node.args[:1], *(ast.Constant(k.arg) for k in node.keywords if k.arg)]
+            strings: list[str] = []
+            for key in keys:
+                self._all_strings(key, set(), strings)
+            if found := next((m.group(0) for text in strings if (m := GIT_SKIP.search(text))), None):
+                return found
+        return None
+
+    def _all_strings(self, node: ast.AST, seen: set[int], strings: list[str]) -> None:
+        """Every string constant `node` holds, and those of the values its names were given where a
+        value is written out of strings (BUILT_OF): a name given a call, a name or anything else is not
+        followed, so a large module's other constants under the same name stay out."""
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Constant) and isinstance(inner.value, str):
+                strings.append(inner.value)
+            elif isinstance(inner, ast.Name):
+                for value in self._values.get(inner.id, []):
+                    if all(isinstance(part, BUILT_OF) for part in ast.walk(value)):
+                        self._all_strings(value, seen, strings)
 
     def commands_run(self) -> list[str]:
         lines: list[str] = []

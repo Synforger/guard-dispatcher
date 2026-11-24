@@ -287,6 +287,49 @@ hub_repo() {
     done
 }
 
+@test "area-guard: a skip flag is read on the words of each git call, quoted, glued or nested" {
+    for command in "sh -c 'git push --no-verify'" "bash -c \"git push --no-verify\"" "eval 'git push --no-verify'" \
+                   "git push --no-verify; echo done" "git push --no-verify&& echo ok" "git push --no-verify|cat" \
+                   "git push \"--no-verify\"" "git push '--no-verify' origin main" "git push --no-veri" \
+                   "git -c 'core.hooksPath=/dev/null' push" "git -c\"core.hooksPath=/dev/null\" push" \
+                   "git --config-env=core.hooksPath=X push" "git -c core.hooksPath=/dev/null commit -m x"; do
+        bash_in "${PERSONAL}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    # A value of an option, what follows --, and text that only names the flag are no skip.
+    for command in "git push origin main" "echo git push --no-verify" "git push -o --no-verify origin" \
+                   "git push -- --no-verify" "git -c core.hooksPath=x status"; do
+        bash_in "${PERSONAL}" "${command}"
+        passed || { echo "refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: Python that puts a git call together with a skip is held however it builds it" {
+    local body
+    for body in 'import os
+os.system(" ".join(["git", "push", "--no-verify"]))' \
+                'import os
+flag = "--no-verify"
+os.system("git push " + flag)' \
+                'import subprocess
+args = ["push", "--no-verify"]
+subprocess.run(["git"] + args)' \
+                'import subprocess
+getattr(subprocess, "run")(["git", "push", "--no-verify"])' \
+                'import os, subprocess
+os.environ["GIT_CONFIG_COUNT"] = "1"
+subprocess.run(["git", "push"])' \
+                'import pty
+pty.spawn(["git", "push", "--no-verify"])'; do
+        printf '%s\n' "${body}" > "${PERSONAL}/built.py"
+        bash_in "${PERSONAL}" "python3 built.py"
+        denied || { echo "not refused: ${body}"; return 1; }
+    done
+    # A flag named only in text beside a git call that skips nothing.
+    printf '%s\n' 'import subprocess' 'HELP = "--no-verify is refused"' 'subprocess.run(["git", "status"])' > "${PERSONAL}/built.py"
+    bash_in "${PERSONAL}" "python3 built.py"; passed
+}
+
 @test "area-guard: a git call that code runs is held to the same skip flags" {
     printf '%s\n' 'import subprocess' 'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "push"])' > "${PERSONAL}/hooks-off.py"
     for command in "python3 -c 'import subprocess; subprocess.run([\"git\", \"push\", \"--no-verify\", \"origin\", \"main\"])'" \

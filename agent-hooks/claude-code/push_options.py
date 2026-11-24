@@ -38,6 +38,10 @@ ALL_LONG = (*VALUED_LONG, *OTHER_LONG)
 FORCING_LONG = ("--force", "--force-if-includes", "--force-with-lease", "--mirror")
 FORCING_OPTIONS = (*FORCING_LONG, f"-{FORCE_LETTER}")
 NEGATION = "--no-"
+# `--no-verify` skips the pre-push hook; git takes a prefix of it down to this length (a shorter one
+# fits `--no-verbose` too, and git refuses it as ambiguous; holding it costs nothing).
+SKIP_LONG = "--no-verify"
+SKIP_LONG_SHORTEST = len("--no-ver")
 FORCING_REFSPEC = "+"
 
 
@@ -51,6 +55,14 @@ def forces(arguments: list[str]) -> str | None:
     return None
 
 
+def skips_hooks(arguments: list[str]) -> bool:
+    """True when the words after `push` hold `--no-verify` (or a prefix git reads as it) as an
+    option, so the push runs without its pre-push hook. The value of an option and what follows
+    `--` are not options."""
+    return any(kind == "negation" and len(word) >= SKIP_LONG_SHORTEST and SKIP_LONG.startswith(word)
+               for kind, word in words_of(arguments))
+
+
 def remote(arguments: list[str]) -> str | None:
     """The repository a `git push` names (its first operand), or None when it names none."""
     return next((word for kind, word in words_of(arguments) if kind == "repository"), None)
@@ -58,8 +70,8 @@ def remote(arguments: list[str]) -> str | None:
 
 def words_of(arguments: list[str]) -> Iterator[tuple[str, str]]:
     """Each word of a `git push` as (kind, word): an `option` (a short one as `-f`, a long one
-    written out in full), the `repository` (the first operand) or a `refspec` (the operands after
-    it). The value of an option is not a word of its own."""
+    written out in full), a `negation` as written (`--no-verify`), the `repository` (the first
+    operand) or a `refspec` (the operands after it). The value of an option is not a word of its own."""
     takes_next = False
     operands = 0
     options_end = False
@@ -70,6 +82,8 @@ def words_of(arguments: list[str]) -> Iterator[tuple[str, str]]:
             options_end = True
         elif not options_end and word.startswith("--"):
             name, has_value, _ = word.partition("=")
+            if name.startswith(NEGATION):
+                yield "negation", name
             for found in long_options(name):
                 yield "option", found
             takes_next = not has_value and takes_value(name)

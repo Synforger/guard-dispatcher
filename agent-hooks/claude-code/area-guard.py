@@ -1808,18 +1808,27 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[
             inner(" ".join(args))
         elif name == "git":
             repo, i, place = here, 0, lost
+            hooks_off = None
             while i < len(args) and args[i].startswith("-"):
                 flag, eq, value = args[i].partition("=")
                 if flag in GIT_VALUED and not eq:
                     value, i = (args[i + 1] if i + 1 < len(args) else ""), i + 1
+                elif flag.startswith("-c") and not flag.startswith("--") and len(flag) > 2:
+                    flag, value = "-c", args[i][2:]
+                if flag in ("-c", "--config-env") and value.lower().startswith(HOOKS_PATH):
+                    hooks_off = f"git {flag} core.hooksPath"
                 if flag == "-C" and value:
                     repo, place = real(value, str(repo)), unknown(value, place)
                 elif flag == "--work-tree" and value:
                     repo, place = real(value, str(here)), unknown(value, lost)
                 i += 1
             sub, rest = (args[i], args[i + 1:]) if i < len(args) else ("", [])
+            if sub in ("commit", "push") and hooks_off:
+                skipping.append(hooks_off)
             if sub == "commit" and commit_options.skips_hooks(rest):
                 skipping.append("git commit -n (= --no-verify)")
+            if sub == "push" and push_options.skips_hooks(rest):
+                skipping.append("git push --no-verify")
             if sub in ("commit", "push") and place:
                 unread.append(place)
             elif sub == "commit":
@@ -2394,6 +2403,8 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
             for line in code_writes.python.commands_run(code):
                 if reason := bypass(line, here, areas, depth + 1):
                     return f"{reason}, in a command the Python code runs"
+            if found := code_writes.python.git_skip(code):
+                return f"Python code that runs git with {found}"
         elif re.search(r"\bgit\b", code) and (m := CODE_GIT_BYPASS.search(code)):
             return f"{program} code that runs git with {m.group(0)} (only Python's commands are read)"
     expanded = spell_home(command)
@@ -2412,10 +2423,6 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
         return None
     if m := BYPASS_ENV.search(command):
         return f"sends with {m.group(1)} set"
-    if re.search(r"(^|\s)--no-ver(i|if|ify)?(\s|$)", command):
-        return "--no-verify"
-    if re.search(r"\bgit\b[^|;&]*\s-c\s*core\.hookspath", command, re.I):
-        return "git -c core.hooksPath"
     if skipping:
         return skipping[0]
     for target, dest_args in sends:

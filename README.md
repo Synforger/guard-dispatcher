@@ -736,14 +736,20 @@ step earlier, before each tool call, from the same `areas.txt`:
   the operator's yes (see *A change the operator approves* below), but clearing the marks.
   A command line that Python code runs (code written into the command or handed to it in a
   file: `subprocess`, `os.system`, `os.exec*`, `os.spawn*`, with the variables an `env=` mapping
-  sets) is held to the same. Another language's code is not read for the commands it runs: code
-  that names git together with `--no-verify`, `core.hooksPath`, `GIT_CONFIG_…` or `HUSKY` is held
-  as it stands.
+  sets) is held to the same. So is a call that runs a command (or one made by name: `exec`,
+  `getattr`, `__import__`) whose arguments hold git and a skip however the code builds them (`" ".join`,
+  `+`, an f-string, a name given such strings), and git run while the code sets a skip variable for
+  the whole program (`os.environ[…]`, `os.putenv`). Another language's code is not read for the
+  commands it runs: code that names git together with `--no-verify`, `core.hooksPath`, `GIT_CONFIG_…`
+  or `HUSKY` is held as it stands.
   Writing `guard.scope corpus` into the own config of a repository inside an agent's own folder
   needs no yes: it is what the hooks read there anyway (`git config guard.scope corpus` in that
   folder, or `git -C <folder> config ...`; a command that moves with `cd` is judged as any other).
-  `--no-verify` is also matched shortened, as git accepts it (`--no-verif`). A commit's options
-  are read as git reads them, wherever the commit stands (after `cd`, in a shell's `-c` string,
+  The skips are read on the words of each git call as the shell splits them, not on the text of the
+  line: quoted, followed by `;`, `&&` or `|`, inside a shell's `-c` string or `eval`. `--no-verify` is
+  also matched shortened, as git accepts it (`--no-verif`), and `-c` / `--config-env` that set
+  `core.hooksPath` are held for a commit or a push. A push's and a commit's options
+  are read as git reads them, wherever the call stands (after `cd`, in a shell's `-c` string,
   in `eval`): `-qn` holds `-n`, while a message (`-m "… -PenableN …"`), an option's value
   (`-qm -nothing`), a path after `--` and a word with a switch git does not know (`-PenableN`,
   which git refuses) do not. A heredoc's body that is not shell (python with a quote the shell
