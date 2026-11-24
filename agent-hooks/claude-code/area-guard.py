@@ -2341,15 +2341,30 @@ def code_acts_later(command: str, cwd: str, depth: int = 0) -> bool:
     return any(SPAWNS.search(code) for code in others) or any(acts_later(code, cwd, depth + 1) for code in shells)
 
 
-def put_words(words: list[str], head: list[str]) -> list[str]:
+# Programs that write what the files they are handed hold, and never their names (GNU sed's `F` writes
+# a name, so gsed is not one). head and tail name each file when handed several or told to (`-v`), so
+# only one file, unnamed, is theirs.
+WRITES_CONTENT = {"cat", "tac", "sed", "sort", "uniq", "cut", "rev", "fold", "iconv", "base64"}
+WRITES_CONTENT_OF_ONE = {"head", "tail"}
+NAMES_FILES = re.compile(r"--verbose|-[A-Za-z0-9]*v[A-Za-z0-9]*")
+
+
+def put_words(words: list[str], head: list[str], here: str) -> list[str]:
     """The words of a command that can be put where it writes. A copy (cp, mv, install, ln) puts the
-    last name of each path it is handed, not the folders above it; any other command its words whole
-    (an `echo /x` writes `/x`)."""
-    if not head or os.path.basename(head[0]) not in COPIES:
-        return list(words)
+    last name of each path it is handed, not the folders above it. A program that writes what a file
+    holds (WRITES_CONTENT) puts none of the files it is handed that are there now: what it writes of
+    them is not seen, as what any program reads is not. Any other command puts its words whole (an
+    `echo /x` writes `/x`)."""
+    tool = os.path.basename(head[0]) if head else ""
     lead = words[:len(words) - len(head)]
-    return lead + [head[0]] + [word if word.startswith("-") else os.path.basename(word.rstrip("/"))
-                               for word in head[1:]]
+    if tool in COPIES:
+        return lead + [head[0]] + [word if word.startswith("-") else os.path.basename(word.rstrip("/"))
+                                   for word in head[1:]]
+    if tool in WRITES_CONTENT | WRITES_CONTENT_OF_ONE:
+        files = [word for word in head[1:] if not word.startswith("-") and Path(real(word, here)).is_file()]
+        if tool in WRITES_CONTENT or (len(files) == 1 and not any(NAMES_FILES.fullmatch(word) for word in head[1:])):
+            return lead + [word for word in head if word not in files]
+    return list(words)
 
 
 def writing_parts(command: str, cwd: str, holds) -> list[str]:
@@ -2358,7 +2373,7 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
     line up to the last one that writes there, and up to the close of the loop or group around it.
     What is written comes in through those commands: a variable set before, an earlier stage of a
     pipe, a file written first and then moved. Of each, its words (a copy's paths by their last name,
-    a `cd` not at all), the heredocs and here-strings fed to it and the code of the scripts it runs.
+    the files a program that writes what they hold reads not at all, a `cd` not at all), the heredocs and here-strings fed to it and the code of the scripts it runs.
     The commands after are not what is written. The whole line and the code it runs are read when the
     line cannot be split, when nothing in it is seen to write there command by command, when its
     loops and groups do not close, and when a command within that stretch acts later in the line
@@ -2394,7 +2409,7 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
                 step += f" <<< {shlex.quote(here_string)}"
             writing = any(holds(target) for target in write_targets(step, standing.here))
             later = later or code_acts_later(step, standing.here)
-            put = put_words(words, head) + [body for _, body in mine] \
+            put = put_words(words, head, standing.here) + [body for _, body in mine] \
                 + ([here_string] if here_string is not None else []) \
                 + [code for _, code, _ in ran_scripts(step, standing.here)]
         puts.append(put)

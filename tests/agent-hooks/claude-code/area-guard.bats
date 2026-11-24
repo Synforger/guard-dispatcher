@@ -1824,11 +1824,15 @@ area_words() {
     passed
 }
 
-@test "area-guard: the commands after the last write into the area and a copy's folders are not read for its words" {
+@test "area-guard: the commands after the last write into the area, a copy's folders and the files a program writes the content of are not read for its words" {
     area_words
     mkdir -p "${H}/tmp/agents-handlename"
+    printf 'clean\n' > "${H}/tmp/agents-handlename/x.md"
     local command
-    for command in "sed -i '' 's/internal/inside/' ${COMPANY_REPO}/notes.md && handlename-build --out ${H}/tmp/agents-handlename/y.pptx" \
+    for command in "cd ${COMPANY_REPO} && sed -n 1,10p ${H}/tmp/agents-handlename/x.md > memo.md" \
+                   "cat ${H}/tmp/agents-handlename/x.md | sed s/a/b/ > ${COMPANY_REPO}/m.toml" \
+                   "head -n 3 ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/m.toml" \
+                   "sed -i '' 's/internal/inside/' ${COMPANY_REPO}/notes.md && handlename-build --out ${H}/tmp/agents-handlename/y.pptx" \
                    "printf 'clean\n' > ${COMPANY_REPO}/m.toml; echo handlename" \
                    "cp ${H}/tmp/agents-handlename/y.toml ${COMPANY_REPO}/m.toml" \
                    $'python3 - <<\'PY\'\nopen("'"${COMPANY_REPO}"$'/m.toml", "w").write("clean")\nPY\nhandlename-build'; do
@@ -1840,8 +1844,14 @@ area_words() {
 
 @test "area-guard: a word the writing command itself puts into the area is refused, a path-like one too" {
     area_words
+    mkdir -p "${H}/tmp/agents-handlename"
+    printf 'clean\n' > "${H}/tmp/agents-handlename/x.md"
+    printf 'clean\n' > "${H}/tmp/agents-handlename/y.md"
     local command
-    for command in "handlename-build --out ${H}/tmp/y.pptx && sed -i '' 's/internal/handlename/' ${COMPANY_REPO}/notes.md" \
+    for command in "head -n 3 ${H}/tmp/agents-handlename/x.md ${H}/tmp/agents-handlename/y.md > ${COMPANY_REPO}/f" \
+                   "tail -v ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/f" \
+                   "wc -l ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/f" \
+                   "handlename-build --out ${H}/tmp/y.pptx && sed -i '' 's/internal/handlename/' ${COMPANY_REPO}/notes.md" \
                    "cd ${COMPANY_REPO} && printf 'handlename\n' > m.toml" \
                    $'echo ok; python3 - <<\'PY\'\nopen("'"${COMPANY_REPO}"$'/m.toml", "w").write("handlename")\nPY' \
                    "echo /handlename > ${COMPANY_REPO}/f" \
