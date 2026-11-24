@@ -188,7 +188,7 @@ def with_inner_first(line: str, depth: int = 0) -> str:
 
 def _run(words: list[Word], stdin: tuple[str, str] | None, depth: int, values: dict[str, str]) -> list[Command]:
     """The command these words run, after the command lines and the commands its leading words hand on."""
-    program, lines, nested = _program(words)
+    program, lines, nested = program_of(words)
     out: list[Command] = []
     for code in lines:
         out += simple_commands(code, depth + 1, values)
@@ -504,7 +504,7 @@ def _input(operator: str, target: tuple) -> tuple[str, str] | None:
     return None
 
 
-def _program(words: list[Word]) -> tuple[list[Word], list[str], list[list[Word]]]:
+def program_of(words: list[Word]) -> tuple[list[Word], list[str], list[list[Word]]]:
     """(the words from the program on, the command lines its words hand on to run, the commands
     they hand on as words): past keywords, assignments and the programs that run the next words.
     A compound command's header or end runs nothing; `eval`, `trap` and `env -S` hand on a command

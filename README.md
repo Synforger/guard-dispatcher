@@ -624,7 +624,8 @@ step earlier, before each tool call, from the same `areas.txt`:
   - a word of the command line or the file of a redirection (`cat <path>`,
     `--file=<path>`, `A=<path>`, `host:<path>`, `-d @<path>`, a glob that
     matches it), and the same inside a command substitution, a shell's `-c`
-    string, `eval`, or a heredoc fed to a shell;
+    string, a command line handed on (`eval`, `trap`, `env -S`, `watch`,
+    `find -exec`), or a heredoc fed to a shell;
   - a string of code written into the command (`python3 -c`, `node -e`, a
     heredoc or a here-string fed to an interpreter): `open("<path>")`,
     `["cat", "<path>"]`, a line of a string that runs over lines;
@@ -676,8 +677,13 @@ step earlier, before each tool call, from the same `areas.txt`:
     above, and once the repository has a remote it holds nothing of the others.
   The shell's writes are the paths a command names as written (a `>` / `>>`
   redirection, `tee`, `touch`, `truncate`, the destination of `cp` / `mv` /
-  `install` / `ln`, `sed -i`, `dd of=`), whatever stands before the command
-  (`sudo`, `env`, a variable). A relative name is a file of the folder the
+  `install` / `ln`, `sed -i`, `dd of=`), whatever stands before the command:
+  a variable, and every program that runs the next words, read past its options
+  as a send is (`sudo -u USER`, `timeout 5`, `nice -n 10`, `ionice`, `stdbuf`,
+  `xargs`, …). A command line handed on (`eval`, `trap`, `env -S`, `watch`, the
+  command after `find -exec`) is read as one standing alone, and the words an
+  `echo` or a `printf` pipes into `xargs` are words of the command it runs.
+  A relative name is a file of the folder the
   command stands in when it reaches that word: `cd`, `pushd` / `popd` move it
   and a `( … )` subshell gives the place back, so `cd /a && echo x > out`
   writes `/a/out`. A variable the command line set to a literal before
