@@ -105,6 +105,7 @@ import os
 import re
 import shlex
 import sys
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
@@ -347,6 +348,41 @@ def spell_home(command: str) -> str:
 
 
 GLOB = re.compile(r"[*?\[]")
+# A brace the shell expands (one with no brace inside it, so the innermost first), a range in one
+# (`1..3`, `a..c`, with a step), and how many words a word may stand for before the rest is left.
+BRACE = re.compile(r"\{([^{}]*)\}")
+BRACE_RANGE = re.compile(r"(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?|([A-Za-z])\.\.([A-Za-z])")
+BRACE_LIMIT = 256
+
+
+def brace_expanded(word: str) -> list[str]:
+    """The words a word stands for once the shell expands its braces (`a/{b,c}.txt` is `a/b.txt` and
+    `a/c.txt`, `{1..3}` is 1 2 3), or the word itself when it has none. Past BRACE_LIMIT words, the
+    rest stay as they are spelled."""
+    done: list[str] = []
+    waiting = [word]
+    while waiting and len(done) + len(waiting) < BRACE_LIMIT:
+        current = waiting.pop(0)
+        found = next((m for m in BRACE.finditer(current)
+                      if "," in m.group(1) or BRACE_RANGE.fullmatch(m.group(1))), None)
+        if found is None:
+            done.append(current)
+            continue
+        inside = found.group(1)
+        if span := BRACE_RANGE.fullmatch(inside):
+            if span.group(4):
+                first, last = ord(span.group(4)), ord(span.group(5))
+                items = [chr(c) for c in range(first, last + (1 if last >= first else -1), 1 if last >= first else -1)]
+            else:
+                first, last = int(span.group(1)), int(span.group(2))
+                step = abs(int(span.group(3) or 1)) or 1
+                items = [str(n) for n in range(first, last + (1 if last >= first else -1), step if last >= first else -step)]
+        else:
+            items = inside.split(",")
+        waiting += [current[:found.start()] + item + current[found.end():] for item in items]
+    return done + waiting
+
+
 # Where a path begins when a stretch of a command names it by itself: at the start of the stretch,
 # or after what joins it to an option, a variable, a remote or an upload (`--file=/a`, `A=/a:/b`,
 # `host:/a`, `-d @/a`), a short flag (`-C/a`), a file mode (`</a`) or `file://`.
@@ -1112,6 +1148,52 @@ def output_options(tool: str, args: list[str]) -> list[str]:
     return found
 
 
+# A URL among a command's words, and the options of curl and wget that say how a download is named.
+URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
+CURL_REMOTE_NAME = re.compile(r"--remote-name(?:-all)?|-[A-Za-z]*O[A-Za-z]*")
+CURL_SERVER_NAME = re.compile(r"--remote-header-name|-[A-Za-z]*J[A-Za-z]*")
+WGET_NAMED = re.compile(r"--output-document(?:=.*)?|-[A-Za-z]*O.*|--spider")
+WGET_SERVER_NAME = re.compile(r"--content-disposition|--trust-server-names|--recursive|--mirror|-[A-Za-z]*[rm][A-Za-z]*")
+
+
+def option_value(args: list[str], long: str, short: str | None = None) -> str | None:
+    """The value of an option among a command's words (`--long v`, `--long=v`, `-s v`, `-sv`), or None."""
+    for at, word in enumerate(args):
+        if word == long or (short is not None and word == short):
+            return args[at + 1] if at + 1 < len(args) else None
+        if word.startswith(long + "="):
+            return word.partition("=")[2]
+        if short is not None and word.startswith(short) and len(word) > len(short) and not word.startswith("--"):
+            return word[len(short):]
+    return None
+
+
+def downloaded(tool: str, args: list[str]) -> list[str]:
+    """The files curl or wget writes a download to under the name its URL ends in (`curl -O`, `wget`
+    with no `-O`), in the folder the command stands in or the one an option names (`--output-dir`,
+    `-P`); that folder itself when the server names the file (`curl -J`, `wget --content-disposition`,
+    a recursive fetch), since the name is not known before it runs."""
+    if tool == "curl":
+        if not any(CURL_REMOTE_NAME.fullmatch(word) for word in args):
+            return []
+        server = any(CURL_SERVER_NAME.fullmatch(word) for word in args)
+        folder = option_value(args, "--output-dir")
+        fallback = ""
+    elif tool == "wget":
+        if any(WGET_NAMED.fullmatch(word) for word in args):
+            return []
+        server = any(WGET_SERVER_NAME.fullmatch(word) for word in args)
+        folder = option_value(args, "--directory-prefix", "-P")
+        fallback = "index.html"
+    else:
+        return []
+    base = folder or "."
+    if server:
+        return [base]
+    names = [os.path.basename(urllib.parse.urlparse(word).path) or fallback for word in args if URL.fullmatch(word)]
+    return [os.path.join(base, name) for name in names if name]
+
+
 def unpacks_into(tool: str, args: list[str]) -> str | None:
     """The folder `tar -x` or `unzip` puts the files of an archive in (`-C`, `-d`; the folder the
     command stands in without), or None when the command does not unpack."""
@@ -1281,7 +1363,7 @@ def named_with_folders(command: str, cwd: str,
             written.extend((p, here) for p in paths if Path(real(p, here)).is_file())
         elif tool == "dd":
             written.extend((a[3:], here) for a in args if a.startswith("of="))
-        written.extend((value, here) for value in output_options(tool, args))
+        written.extend((value, here) for value in [*output_options(tool, args), *downloaded(tool, args)])
         shell = bool(SHELL_CODE.fullmatch(tool))
         flags = code_flags(tool)
         for flag, code in zip(args, args[1:]):
@@ -1323,7 +1405,8 @@ def named_with_folders(command: str, cwd: str,
             return []
         base = os.path.expanduser(name)
         base = base if os.path.isabs(base) else os.path.join(stood, base)
-        return (glob.glob(base) if GLOB.search(name) else []) or [base]
+        return [match for each in brace_expanded(base)
+                for match in (glob.glob(each) if GLOB.search(each) else []) or [each]]
 
     def spelled(names: list[tuple[str, str]]) -> list[Path]:
         return [real(m) for name, stood in distinct(names) for m in matched(name, stood)]
@@ -1712,7 +1795,8 @@ def operator_file_handed(command: str, cwd: str, depth: int = 0) -> Path | None:
                           if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
             if tool not in READS_ONLY | COPIES:
                 for word in head[1:]:
-                    for spelled in {word, word.partition("=")[2]} - {""}:
+                    for spelled in {each for part in {word, word.partition("=")[2]} - {""}
+                                    for each in brace_expanded(part)}:
                         if operator_only(real(spelled, standing.here)):
                             return real(spelled, standing.here)
         if ended_by == "(":
