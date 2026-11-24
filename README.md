@@ -848,7 +848,14 @@ step earlier, before each tool call, from the same `areas.txt`:
   `#!` line names, the shell when it has none) and `uv run fix.py`. It is
   followed where the command stands (`cd`, a subshell, `-c`, `eval`, a
   substitution the shell runs, in double quotes and heredocs too), and a
-  script that runs another is followed a few steps. Not read: a module run by
+  script that runs another is followed a few steps. A syntax check at
+  the head of the call runs none of it, so `bash -n run.sh` there is judged
+  as `cat run.sh`: only `sh`, `bash`, `zsh`, `dash` or `ksh` (bare, or in
+  `/bin` or `/usr/bin`) with `-n` or `-o noexec` and one file written out,
+  one after another, after a `cd` to a folder written out at most. Anywhere
+  else (after another command, an assignment or a function, in a pipe, with
+  another option) it is read as a run, since what stands before it can make
+  that name run the file. Not read: a module run by
   name (`python3 -m`), a program found on PATH by its bare name, what the code
   imports or starts in turn, a file over 512 KiB and one that is not text. A
   shell script's comment lines are not held to the lines about switching the

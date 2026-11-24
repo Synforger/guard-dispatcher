@@ -124,6 +124,7 @@ import search_call  # noqa: E402
 from path_forms import resolved  # noqa: E402
 import orders_edit  # noqa: E402
 import service_reads  # noqa: E402
+import syntax_checks  # noqa: E402
 import ticket_places  # noqa: E402
 import work_reads  # noqa: E402
 from shell_commands import with_inner_first  # noqa: E402
@@ -2440,6 +2441,9 @@ def main() -> int:
     areas = load_areas()
     tool, args, cwd = event.get("tool_name", ""), event.get("tool_input", {}), event.get("cwd", os.getcwd())
     session = event.get("session_id", "unknown")
+    shown = monitor_calls.as_shell(tool, args)[1]       # what the operator is shown, and says yes to
+    if tool == "Bash" and "command" in args:
+        args = {**args, "command": syntax_checks.as_reads(args["command"])}
     # A message from another machine holds the session until the operator types, areas or none.
     if tool not in HELD_RUNS and order_module().held(event.get("transcript_path")):
         deny(HELD)
@@ -2464,7 +2468,7 @@ def main() -> int:
     if tool == "Bash" and (reason := bypass(args.get("command", ""), cwd, areas)):
         command = args.get("command", "")
         places = [real(cwd), *mentioned_paths(command, areas, cwd), *(t for t, _ in sends_of(command, cwd))]
-        if reason == MARKS_REWRITE or (why := approval(tool, args, event, places, areas)):
+        if reason == MARKS_REWRITE or (why := approval(tool, shown, event, places, areas)):
             deny(f"area-guard: an agent does not switch the guards off or around ({reason})"
                  + ("" if reason == MARKS_REWRITE else f": {why}"))
             return 0
@@ -2506,7 +2510,7 @@ def main() -> int:
             paths = [Path(written)]
         else:
             paths = [p for found in named(args.get("command", ""), cwd) for p in found if in_settings(p)]
-        why = approval(tool, args, event, paths or [real(cwd)], areas) if is_setting else None
+        why = approval(tool, shown, event, paths or [real(cwd)], areas) if is_setting else None
         if not is_setting or why:
             deny(f"area-guard: an agent does not write or remove {what[0]}: {what[1]} "
                  f"(code written into a command counts as writing every path it names)"
@@ -2537,7 +2541,7 @@ def main() -> int:
     tabs = state.setdefault("tabs", {})
     try:
         reason = outgoing_module().check(tool, args, cwd, SEND_SCAN, frozenset(marks), private_area, tabs,
-                                         event, STATE)
+                                         event, STATE, shown=shown)
     except Exception as error:  # noqa: BLE001 — a hook that fails lets the call run: a check that breaks sends nothing
         where = error.__traceback__
         while where.tb_next:
