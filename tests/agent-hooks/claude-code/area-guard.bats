@@ -287,6 +287,27 @@ hub_repo() {
     done
 }
 
+@test "area-guard: a git call that code runs is held to the same skip flags" {
+    printf '%s\n' 'import subprocess' 'subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "push"])' > "${PERSONAL}/hooks-off.py"
+    for command in "python3 -c 'import subprocess; subprocess.run([\"git\", \"push\", \"--no-verify\", \"origin\", \"main\"])'" \
+                   $'python3 - <<\'PY\'\nimport os\nos.system("git commit -n -m x")\nPY' \
+                   "python3 -c 'import subprocess; args = [\"git\", \"push\", \"--no-verify\"]; subprocess.call(args)'" \
+                   "python3 -c 'import os, subprocess; subprocess.run([\"git\", \"push\"], env={**os.environ, \"GIT_CONFIG_COUNT\": \"1\"})'" \
+                   "python3 -c 'import os; os.execvp(\"git\", [\"git\", \"push\", \"--no-verify\"])'" \
+                   "python3 hooks-off.py" \
+                   "node -e \"require('child_process').execSync('git push --no-verify')\""; do
+        bash_in "${PERSONAL}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    # A git call with no skip flag, and code that only names the flag as text, run as before.
+    for command in "python3 -c 'import subprocess; subprocess.run([\"git\", \"push\", \"origin\", \"main\"])'" \
+                   "python3 -c 'print(\"git push --no-verify skips the hooks\")'" \
+                   "node -e \"console.log('git status')\""; do
+        bash_in "${PERSONAL}" "${command}"
+        passed || { echo "refused: ${command}"; return 1; }
+    done
+}
+
 @test "area-guard: -n is read as git reads the options of a commit, wherever the commit stands" {
     for command in "git commit -qn -m x" "git commit -am x -n" "git -c user.name=x commit -n -m x" \
                    "git commit --no-verif -m x" "bash -c 'git commit -n -m x'" \

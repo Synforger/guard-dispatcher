@@ -734,6 +734,11 @@ step earlier, before each tool call, from the same `areas.txt`:
   `guard.exemptPrefix`, clearing the marks, creating the off switch, removing
   the installed hooks, or sending from a repository the git hooks do not reach. Each passes on
   the operator's yes (see *A change the operator approves* below), but clearing the marks.
+  A command line that Python code runs (code written into the command or handed to it in a
+  file: `subprocess`, `os.system`, `os.exec*`, `os.spawn*`, with the variables an `env=` mapping
+  sets) is held to the same. Another language's code is not read for the commands it runs: code
+  that names git together with `--no-verify`, `core.hooksPath`, `GIT_CONFIG_…` or `HUSKY` is held
+  as it stands.
   Writing `guard.scope corpus` into the own config of a repository inside an agent's own folder
   needs no yes: it is what the hooks read there anyway (`git config guard.scope corpus` in that
   folder, or `git -C <folder> config ...`; a command that moves with `cd` is judged as any other).

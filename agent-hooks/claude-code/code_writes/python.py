@@ -33,6 +33,7 @@ import ast
 import functools
 import importlib
 import re
+import shlex
 import types
 import warnings
 
@@ -206,6 +207,19 @@ def written_with_arguments(code: str, words: list[str]) -> str:
         return quoted
     parts = reader.written_targets()
     return f"{parts}\n{quoted}" if reader.writes_where_unknown() else parts
+
+
+def commands_run(code: str) -> list[str]:
+    """The command lines `code` runs through a call that runs a command (RUNS_COMMAND): a list of words
+    joined as a shell would read them (`subprocess.run(["git", "push", "--no-verify"])`), a string the
+    shell runs as it stands (`os.system("git push -n")`, `shell=True`), and the variables an `env=`
+    mapping sets written before it (`GIT_CONFIG_COUNT=1 git push`). A word made of what the code holds
+    is written out; one it does not hold is `_`. Code that does not parse runs nothing it can tell."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return []
+    return _Reader(code, tree).commands_run()
 
 
 def stays_here(code: str) -> bool:
@@ -511,6 +525,56 @@ class _Reader:
         elif isinstance(node, ast.Name):
             for value in self._values.get(node.id, []):
                 self._as_written(value, seen, names)
+
+    def commands_run(self) -> list[str]:
+        lines: list[str] = []
+        for call in (node for node in ast.walk(self._tree) if isinstance(node, ast.Call)):
+            name = self._dotted(call.func)
+            if not name or not RUNS_COMMAND.fullmatch(name):
+                continue
+            words = self._command_words(name, call)
+            if words is None:
+                continue
+            env = next((k.value for k in call.keywords if k.arg == "env"), None)
+            settings = [f"{self._word(key)}={self._word(value)}" for key, value in
+                        zip(env.keys, env.values) if key is not None] if isinstance(env, ast.Dict) else []
+            lines.append(" ".join([*map(shlex.quote, settings), words]))
+        return lines
+
+    def _command_words(self, name: str, call: ast.Call) -> str | None:
+        """The command line `call` runs, as a shell reads it, or None when it cannot be told."""
+        method = name.rsplit(".", 1)[-1]
+        args = list(call.args)
+        given = next((k.value for k in call.keywords if k.arg == "args"), None)
+        if name.startswith("subprocess."):
+            line = args[0] if args else given
+        elif method.startswith(("exec", "spawn", "posix_spawn")):
+            skip = 2 if method.startswith("spawn") else 1
+            if method.endswith(("v", "vp", "ve", "vpe")) or method.startswith("posix_spawn"):
+                line = args[skip] if len(args) > skip else None
+            else:
+                line = ast.List(elts=args[skip:], ctx=ast.Load())
+        else:
+            line = args[0] if args else None
+        line = self._value(line)
+        if isinstance(line, (ast.List, ast.Tuple)):
+            return " ".join(shlex.quote(self._word(word)) for word in line.elts)
+        if isinstance(line, ast.Constant) and isinstance(line.value, str):
+            return line.value
+        return None
+
+    def _value(self, node: ast.AST | None) -> ast.AST | None:
+        """`node`, or the one value a name standing for it was given."""
+        seen: set[str] = set()
+        while isinstance(node, ast.Name) and node.id not in seen and len(self._values.get(node.id, [])) == 1:
+            seen.add(node.id)
+            node = self._values[node.id][0]
+        return node
+
+    def _word(self, node: ast.AST) -> str:
+        """The word `node` stands for when it is a string the code holds, else `_`."""
+        node = self._value(node)
+        return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else "_"
 
     def _known_strings(self, node: ast.AST, seen: set[int], names: list[str]) -> None:
         """Add to `names` every string constant `node` is made of, through the values its names were
