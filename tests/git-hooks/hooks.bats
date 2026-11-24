@@ -646,17 +646,19 @@ force_push.give(Path(sys.argv[2]), sys.argv[3], float(sys.argv[4]) if len(sys.ar
 
 grants_left() { find "${BATS_TEST_TMPDIR}/force-grants" -name '*.json' 2>/dev/null | wc -l | tr -d ' '; }
 
-@test "force-push hook: a push of the operator's own shell is not held, whatever it rewrites" {
-    unset CLAUDECODE
+@test "force-push hook: a rewrite is held whoever pushes, with or without the agent's shell variable" {
+    local value
     held_repo
     mk_repo synforger
     rewrite
-    run_pre_push "refs/heads/feature/x ${new} refs/heads/feature/x ${old}"
-    [ "$status" -eq 0 ]
+    for value in "" 0 1; do
+        CLAUDECODE="${value}" run_pre_push "refs/heads/feature/x ${new} refs/heads/feature/x ${old}"
+        [ "$status" -eq 1 ] || { echo "passed with CLAUDECODE='${value}'"; return 1; }
+        [[ "$output" == *"--no-verify"* ]]
+    done
 }
 
-@test "force-push hook: a repository without order is not held, from the agent's shell too" {
-    export CLAUDECODE=1
+@test "force-push hook: a repository without order is not held" {
     mk_repo synforger
     rewrite
     run_pre_push "refs/heads/feature/x ${new} refs/heads/feature/x ${old}"
@@ -667,8 +669,7 @@ grants_left() { find "${BATS_TEST_TMPDIR}/force-grants" -name '*.json' 2>/dev/nu
     [ "$status" -eq 0 ]
 }
 
-@test "force-push hook: a fast-forward, a new branch and a deletion pass from the agent's shell" {
-    export CLAUDECODE=1
+@test "force-push hook: a fast-forward, a new branch and a deletion pass" {
     held_repo
     mk_repo synforger
     base="$(git rev-parse HEAD)"
@@ -682,8 +683,7 @@ grants_left() { find "${BATS_TEST_TMPDIR}/force-grants" -name '*.json' 2>/dev/nu
     [ "$status" -eq 0 ]
 }
 
-@test "force-push hook: a rewrite from the agent's shell stops without a grant and says how to ask" {
-    export CLAUDECODE=1
+@test "force-push hook: a rewrite stops without a grant and says how to ask" {
     held_repo
     mk_repo synforger
     rewrite
@@ -695,7 +695,6 @@ grants_left() { find "${BATS_TEST_TMPDIR}/force-grants" -name '*.json' 2>/dev/nu
 }
 
 @test "force-push hook: a remote commit this repository does not hold counts as a rewrite" {
-    export CLAUDECODE=1
     held_repo
     mk_repo synforger
     echo "more" > more.txt && git add more.txt && commit_bypassing_hooks "feat: clean"
@@ -704,7 +703,6 @@ grants_left() { find "${BATS_TEST_TMPDIR}/force-grants" -name '*.json' 2>/dev/nu
 }
 
 @test "force-push hook: a grant lets one rewrite through and is used up" {
-    export CLAUDECODE=1
     held_repo
     mk_repo synforger
     rewrite
@@ -718,7 +716,6 @@ grants_left() { find "${BATS_TEST_TMPDIR}/force-grants" -name '*.json' 2>/dev/nu
 }
 
 @test "force-push hook: one grant covers every rewritten ref of one push" {
-    export CLAUDECODE=1
     held_repo
     mk_repo synforger
     rewrite
@@ -729,7 +726,6 @@ grants_left() { find "${BATS_TEST_TMPDIR}/force-grants" -name '*.json' 2>/dev/nu
 }
 
 @test "force-push hook: a grant that ended, or one for another URL or repository, lets nothing through" {
-    export CLAUDECODE=1
     held_repo
     mk_repo synforger
     rewrite
@@ -747,7 +743,6 @@ grants_left() { find "${BATS_TEST_TMPDIR}/force-grants" -name '*.json' 2>/dev/nu
 }
 
 @test "force-push hook: a push that rewrites nothing leaves the grant for the push it was given for" {
-    export CLAUDECODE=1
     held_repo
     mk_repo synforger
     base="$(git rev-parse HEAD)"

@@ -4,8 +4,8 @@ Two sides use it:
 
 - agent-hooks' area-guard.py gives the grant (`give`) when the operator approved a call whose forced
   push goes to a repository that destinations.txt marks `order`;
-- git-hooks/pre-push runs `force_push.py check <url>` for a push the agent's shell made to such a
-  repository. It sees what the agent's command line did not show (a force set in a config, an alias
+- git-hooks/pre-push runs `force_push.py check <url>` for every push to such a repository (a shell
+  can drop any variable that would tell an agent's push from a person's). It sees what the agent's command line did not show (a force set in a config, an alias
   or a script's code): a push that rewrites a ref passes only while a grant of that repository,
   for that URL, stands, and the push uses the grant up.
 
@@ -39,7 +39,7 @@ REFUSAL = (
     "[pre-push] this push rewrites {refs} on {url}, which destinations.txt holds to the operator's "
     "approval (`order`), and no approval stands for it. A force set in a config, an alias or code is "
     "not seen before it runs: write `--force-with-lease` on the command line and show the call to "
-    "the operator in a ```guard block"
+    "the operator in a ```guard block. A person pushing by hand who means the rewrite pushes with --no-verify"
 )
 
 

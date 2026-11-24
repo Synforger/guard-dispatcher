@@ -11,9 +11,8 @@
 #      outgoing commit range + scan the ref name. Default-on. Missing
 #      scanner = hard fail. A push of several refs is first checked once
 #      over all they send together; only a red sends it ref by ref.
-#   0. Before all of that: a push from the agent's shell (CLAUDECODE=1) that rewrites a ref of a
-#      repository whose destinations.txt line ends with `order` needs the operator's grant
-#      (_internal/force_push.py).
+#   0. Before all of that: a push that rewrites a ref of a repository whose destinations.txt line
+#      ends with `order` needs the operator's grant (_internal/force_push.py), whoever pushes.
 #   3. Protected-branch and author-identity enforcement stay scoped to
 #      synforger / enforced / no-remote — `other` repos are scanned but keep
 #      their own push flow and committer identities.
@@ -43,12 +42,12 @@ else
     dispatcher::run_local_hook "pre-push" "$@" </dev/null || local_status=$?
 fi
 
-# A push the agent's shell made (`CLAUDECODE=1`) to a repository whose `repo:` line in destinations.txt
-# says `order` must not rewrite history without the operator's approval. area-guard.py holds the
-# forces written on the command line; this holds the rest (a force set in a config, an alias or a
-# script's code) by what the push does to each ref (_internal/force_push.py). A push made by hand
-# is not held.
-if [ "${CLAUDECODE:-}" = "1" ] && [ -n "${ref_lines}" ]; then
+# A push to a repository whose `repo:` line in destinations.txt says `order` must not rewrite history
+# without the operator's approval. area-guard.py holds the forces written on the command line; this
+# holds the rest (a force set in a config, an alias or a script's code) by what the push does to each
+# ref (_internal/force_push.py). It holds every push: a shell can drop any variable that would tell an
+# agent's push from a person's. A person who means the rewrite pushes with --no-verify.
+if [ -n "${ref_lines}" ]; then
     force_scan="$(dispatcher::locate_scanner "corpus-scan.py" || true)"
     if [ -z "${force_scan}" ] || ! force_order="$(python3 "${force_scan}" --force-order --dest "${2:-}")"; then
         printf '[pre-push] corpus-scan.py could not say whether this push needs the operator'"'"'s approval — refusing the push\n' >&2

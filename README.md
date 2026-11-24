@@ -730,8 +730,6 @@ step earlier, before each tool call, from the same `areas.txt`:
   compared as well, keep the repository out of `_exempt`.
 - On every machine, areas or not, a `Bash` command that switches the guards off
   or around is refused: `--no-verify`, `git commit -n`, the skip variables,
-  clearing or changing `CLAUDECODE` on a line that pushes (`unset CLAUDECODE`, `env -u CLAUDECODE`,
-  `CLAUDECODE=0`, `env -i`, `env -`: the pre-push check below reads only the agent's shell),
   `git -c core.hooksPath=…`, setting `core.hooksPath` / `guard.scope` /
   `guard.exemptPrefix`, clearing the marks, creating the off switch, removing
   the installed hooks, or sending from a repository the git hooks do not reach. Each passes on
@@ -823,15 +821,15 @@ step earlier, before each tool call, from the same `areas.txt`:
      operator's yes to that very call, shown in a `guard` block, as above, and
      the one yes covers every forced push of the call. A refusal names the form
      that forces and the destination.
-  2. *As git pushes* (`git-hooks/pre-push`): a push made from the agent's shell
-     (`CLAUDECODE=1`) to such a repository is read by what it does to each ref.
+  2. *As git pushes* (`git-hooks/pre-push`): every push to such a repository,
+     whoever makes it, is read by what it does to each ref (a shell can drop any
+     variable that would tell an agent's push from a person's).
      A ref the push overwrites with a commit that does not descend from the
      one the remote holds (or a remote commit this repository does not hold) is a
      rewrite; a new branch, a fast-forward and a deletion are not. A force set in
      a config, an alias or code never shows on the command line, so only this
      check sees it. A rewrite passes only while the grant of the yes in 1 stands.
-     Clearing `CLAUDECODE` to step round this check is refused as switching the guards off.
-     A push the operator makes by hand is not read.
+     A person pushing by hand who means the rewrite pushes with `--no-verify`.
 
   The yes in 1 leaves a grant for the repository, in `force-grants/` beside the
   folder of the marks (`<state folder>/force-grants/<hash of the repository's top

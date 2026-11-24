@@ -287,23 +287,6 @@ hub_repo() {
     done
 }
 
-@test "area-guard: a send that clears or changes the agent's shell variable is refused" {
-    for command in "unset CLAUDECODE; git push origin main" "env -u CLAUDECODE git push origin main" \
-                   "env -uCLAUDECODE git push" "env --unset=CLAUDECODE git push" "CLAUDECODE=0 git push" \
-                   "CLAUDECODE= git push origin main" "env -i PATH=/usr/bin git push origin main" \
-                   "env - git push" "env --ignore-environment git push" \
-                   "git config remote.origin.mirror true && env -u CLAUDECODE git push origin"; do
-        bash_in "${PERSONAL}" "${command}"
-        denied || { echo "not refused: ${command}"; return 1; }
-    done
-    # Not a send, or the variable left as it is: nothing steps round the pre-push layer.
-    for command in "unset CLAUDECODE; echo x" "env -i PATH=/usr/bin python3 -c 'print(1)'" \
-                   "env GIT_TRACE=1 git add -i" "env -u HOME git status" "env -i PATH=/usr/bin git commit -m x"; do
-        bash_in "${PERSONAL}" "${command}"
-        passed || { echo "refused: ${command}"; return 1; }
-    done
-}
-
 @test "area-guard: -n is read as git reads the options of a commit, wherever the commit stands" {
     for command in "git commit -qn -m x" "git commit -am x -n" "git -c user.name=x commit -n -m x" \
                    "git commit --no-verif -m x" "bash -c 'git commit -n -m x'" \
