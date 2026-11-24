@@ -1863,6 +1863,19 @@ area_words() {
     done
 }
 
+@test "area-guard: the file a program reads is read for the area's words where its name can reach the area" {
+    area_words
+    mkdir -p "${H}/tmp/agents-handlename"
+    printf 'clean\n' > "${H}/tmp/agents-handlename/x.md"
+    local command
+    for command in "cat ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/f 2>&1" \
+                   "cat ${H}/tmp/agents-handlename/x.md 2> ${COMPANY_REPO}/err" \
+                   "sed -n F ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/f"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
 @test "area-guard: a word that reaches the area through an earlier command of the line is refused" {
     area_words
     local command

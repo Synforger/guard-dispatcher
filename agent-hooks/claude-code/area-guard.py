@@ -2347,22 +2347,28 @@ def code_acts_later(command: str, cwd: str, depth: int = 0) -> bool:
 WRITES_CONTENT = {"cat", "tac", "sed", "sort", "uniq", "cut", "rev", "fold", "iconv", "base64"}
 WRITES_CONTENT_OF_ONE = {"head", "tail"}
 NAMES_FILES = re.compile(r"--verbose|-[A-Za-z0-9]*v[A-Za-z0-9]*")
+# A redirection of the standard error (`2>`, `2>&1`, `&>`, `|&`): a program's error names the file it
+# could not read, so the files it is handed may then be written as names.
+ERRORS_REDIRECTED = re.compile(r"(?<![\w$])2>|&>|>&|\|&")
 
 
-def put_words(words: list[str], head: list[str], here: str) -> list[str]:
+def put_words(words: list[str], head: list[str], here: str, *, errors_redirected: bool = False) -> list[str]:
     """The words of a command that can be put where it writes. A copy (cp, mv, install, ln) puts the
     last name of each path it is handed, not the folders above it. A program that writes what a file
     holds (WRITES_CONTENT) puts none of the files it is handed that are there now: what it writes of
-    them is not seen, as what any program reads is not. Any other command puts its words whole (an
-    `echo /x` writes `/x`)."""
+    them is not seen, as what any program reads is not -- unless the line redirects the standard error
+    (`errors_redirected`), where an error names the file, or a sed script holds an `F` (GNU sed writes
+    the file's name). Any other command puts its words whole (an `echo /x` writes `/x`)."""
     tool = os.path.basename(head[0]) if head else ""
     lead = words[:len(words) - len(head)]
     if tool in COPIES:
         return lead + [head[0]] + [word if word.startswith("-") else os.path.basename(word.rstrip("/"))
                                    for word in head[1:]]
-    if tool in WRITES_CONTENT | WRITES_CONTENT_OF_ONE:
+    if tool in WRITES_CONTENT | WRITES_CONTENT_OF_ONE and not errors_redirected:
         files = [word for word in head[1:] if not word.startswith("-") and Path(real(word, here)).is_file()]
-        if tool in WRITES_CONTENT or (len(files) == 1 and not any(NAMES_FILES.fullmatch(word) for word in head[1:])):
+        names = tool == "sed" and any("F" in word for word in head[1:] if word not in files)
+        if not names and (tool in WRITES_CONTENT
+                          or (len(files) == 1 and not any(NAMES_FILES.fullmatch(word) for word in head[1:]))):
             return lead + [word for word in head if word not in files]
     return list(words)
 
@@ -2387,6 +2393,7 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
         return whole
     standing = Standing(cwd)
     bodies = list(fed)
+    errors_redirected = bool(ERRORS_REDIRECTED.search(line))
     puts: list[list[str]] = []
     writes: list[bool] = []
     acts_later_at: list[bool] = []
@@ -2409,7 +2416,8 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
                 step += f" <<< {shlex.quote(here_string)}"
             writing = any(holds(target) for target in write_targets(step, standing.here))
             later = later or code_acts_later(step, standing.here)
-            put = put_words(words, head, standing.here) + [body for _, body in mine] \
+            put = put_words(words, head, standing.here, errors_redirected=errors_redirected) \
+                + [body for _, body in mine] \
                 + ([here_string] if here_string is not None else []) \
                 + [code for _, code, _ in ran_scripts(step, standing.here)]
         puts.append(put)
