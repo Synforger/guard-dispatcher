@@ -665,6 +665,47 @@ open("orders.txt", "a").write("x")'
     bash_call "python3 chdir.py ${H}"; passed
 }
 
+# --- a syntax check at the head of a call ----------------------------------------------------------
+
+unchecked_scripts() {
+    bash_call "cat ~/org/clients/acme/received/memo.md"; passed
+    script w.sh "echo x >> ${PLACE}/a.jsonl"
+    script land.sh "git commit --no-verify -m x"
+}
+
+@test "script files: a syntax check at the head of a call runs nothing the script holds" {
+    unchecked_scripts
+    local command
+    for command in "bash -n w.sh" "sh -n land.sh" "/bin/bash -n w.sh" "bash -o noexec land.sh" "bash -n w.sh 2>&1" \
+                   "cd . && bash -n w.sh" "bash -n w.sh; echo checked" $'bash -n w.sh\nzsh -n land.sh && git diff --stat'; do
+        bash_call "${command}"
+        passed || { echo "refused: ${command}"; echo "${output}"; return 1; }
+    done
+}
+
+@test "script files: what stands before or beside a syntax check makes it a run" {
+    unchecked_scripts
+    local command
+    for command in "bash(){ /bin/bash w.sh; }; bash -n w.sh" "function bash { /bin/bash w.sh; }; bash -n w.sh" \
+                   "PATH=./bin:/usr/bin bash -n w.sh" "export PATH=./bin; bash -n w.sh" "env PATH=./bin bash -n w.sh" \
+                   "alias bash=/bin/bash; bash -n w.sh" "hash -p ./bin/bash bash; bash -n w.sh" "true; bash -n w.sh" \
+                   "cd . && true && bash -n w.sh" "./bin/bash -n w.sh" "bash -n +n w.sh" "bash -n -i w.sh" \
+                   "bash w.sh -n" "fish -n w.sh" "bash -n w.sh | cat" "bash -n w.sh & echo started" \
+                   "bash -n w.sh && bash w.sh" "bash -n w.sh || bash w.sh" "bash -n land.sh; bash land.sh"; do
+        bash_call "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
+@test "script files: a syntax check still reads the file it is given and writes where it is sent" {
+    script w.sh "echo hi"
+    bash_call "cat ~/org/clients/acme/received/memo.md"; passed
+    bash_call "bash -n w.sh > ${PLACE}/a.jsonl"; denied
+    export GUARD_WORK_FOLDER="${TOOL}"
+    bash_call "bash -n ~/org/clients/acme/received/memo.md"; denied
+    says "reads inside client"
+}
+
 @test "script files: code that only looks at a link or whether a path is there writes neither" {
     bash_call "cat ~/org/clients/acme/received/memo.md"; passed
     bash_call "python3 -c \"import os; p = os.path.join('${PLACE}', 'a.jsonl'); print(os.path.lexists(p))\""; passed

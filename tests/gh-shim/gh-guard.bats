@@ -138,3 +138,71 @@ STUB
     [ "$status" -eq 0 ]
     ran
 }
+
+# --- the word list follows the repository the call sends to ---------------------------------------
+
+# A company folder holding a clone of a company repository whose git settings name the company's word
+# list (where the company's own name is a right word), a personal clone outside every area, and the
+# operator's whole list (the company's name is flagged there).
+words_by_destination() {
+    unset ANON_WORDS_FILE
+    export GUARD_CORPUS_MAX_AGE=0
+    WORK="${BATS_TEST_TMPDIR}/work"
+    COMPANY_CLONE="${WORK}/repos/tool"
+    PERSONAL="${BATS_TEST_TMPDIR}/personal"
+    mkdir -p "${WORK}" "${PERSONAL}" "${GUARD_CONFIG_DIR}"
+    printf 'company %s\n' "${WORK}" > "${GUARD_CONFIG_DIR}/areas.txt"
+    export ANON_TRUTH_PATH="${BATS_TEST_TMPDIR}/master.txt"
+    printf '%s\nAcmeCorpX\n' "${SENTINEL}" > "${ANON_TRUTH_PATH}"
+    printf '%s\n' "${SENTINEL}" > "${BATS_TEST_TMPDIR}/company-words.txt"
+    git init -q "${COMPANY_CLONE}"
+    git -C "${COMPANY_CLONE}" remote add origin git@github.com:acmecorpx/tool.git
+    git -C "${COMPANY_CLONE}" config guard.wordlist "${BATS_TEST_TMPDIR}/company-words.txt"
+    git init -q "${PERSONAL}"
+    git -C "${PERSONAL}" remote add origin git@github.com:me/notes.git
+    seed_visibility acmecorpx/tool private
+    seed_visibility me/notes private
+    seed_visibility me/elsewhere private
+}
+
+@test "gh-guard: a call naming a company repository with -R is scanned with that repository's list, from any folder" {
+    words_by_destination
+    cd "${BATS_TEST_TMPDIR}"
+    run gh pr comment 13 -R acmecorpx/tool --body "a correction of the count"
+    [ "$status" -eq 0 ]
+    ran
+    rm -f "${RAN_MARKER}"
+    cd "${PERSONAL}"
+    run gh pr comment 13 --repo=acmecorpx/tool --body "AcmeCorpX tool, a correction"
+    [ "$status" -eq 0 ]
+    ran
+    # its own list still flags what it flags
+    run gh pr comment 13 -R acmecorpx/tool --body "deferred to ${SENTINEL}"
+    [ "$status" -ne 0 ]
+}
+
+@test "gh-guard: a call typed in a company clone that names another repository is scanned with the whole list" {
+    words_by_destination
+    cd "${COMPANY_CLONE}"
+    run gh pr comment 1 --body "AcmeCorpX tool, a correction"
+    [ "$status" -eq 0 ]
+    ran
+    rm -f "${RAN_MARKER}"
+    run gh pr comment 1 -R me/notes --body "AcmeCorpX tool, a correction"
+    [ "$status" -ne 0 ]
+    ! ran
+    GH_REPO=me/elsewhere run gh issue create --title "AcmeCorpX" --body x
+    [ "$status" -ne 0 ]
+    ! ran
+}
+
+@test "gh-guard: a call naming a repository with no clone in an area is scanned with the whole list" {
+    words_by_destination
+    cd "${COMPANY_CLONE}"
+    run gh api repos/me/elsewhere/issues -f body="AcmeCorpX"
+    [ "$status" -ne 0 ]
+    ! ran
+    # a list the caller names is kept
+    ANON_WORDS_FILE="${BATS_TEST_TMPDIR}/company-words.txt" run gh pr comment 1 -R me/notes --body "AcmeCorpX"
+    [ "$status" -eq 0 ]
+}

@@ -30,6 +30,9 @@ used when the guard runs on its own; under a platform root the same files sit in
                                        be committed to with the text of the areas named
                                        (a glob names several: `client-*`). Only a commit:
                                        whatever leaves that repository is judged as before
+        _shows <area> <name> ...       names of <area>'s folders that may be said to any
+                                       session (a folder named by an ordinary word). Only
+                                       the machine's own file gives one
     ~/.config/guard/patterns/<name>.txt
         one regular expression per line (case-insensitive) for identifiers of
         that area that follow a shape: product codes, client names
@@ -223,6 +226,8 @@ NO_AREA = "_outside"
 UNSCANNED = {EXEMPT, NO_AREA}
 #: Not an area: a line of areas.txt that says which other areas' text an area's repositories may hold.
 CARRIES = "_carries"
+#: Not an area: a line of areas.txt that says which names of an area are no secret.
+SHOWS = "_shows"
 #: A root on another machine: `host:<host>:<absolute path>` (read by load_remote_areas, not load_areas).
 REMOTE = "host:"
 OFFICE = {".pptx", ".docx", ".xlsx", ".pptm", ".docm", ".xlsm"}
@@ -266,6 +271,9 @@ BUILD_POLL = 0.1
 # An area this small has its table merged anew within the scan that sees one of its documents
 # rewritten or deleted (well under a second); a larger one gets a full walk started apart.
 SMALL_AREA = int(os.environ.get("GUARD_CORPUS_SMALL_AREA", "1000"))
+# Bringing the tables up to date past this many seconds says where the time went: about 2.5 times
+# the 4s it takes on a machine of 110,000 documents.
+SLOW_SAY = float(os.environ.get("GUARD_CORPUS_SLOW_SAY", "10"))
 # One PDF's extractor gets far less than the judgement's own budget (send-scan.py's 120s for the
 # whole scan): a single huge attachment must not eat that budget, so it is marked unreadable
 # instead, on its own, well before the outer timeout could fire.
@@ -428,7 +436,8 @@ def _areas_of(lines: list[str]) -> dict[str, list[Path]]:
     templates: list[tuple[str, list[Path]]] = []
     for line in lines:
         parts = shlex.split(line, comments=True)
-        if len(parts) < 2 or parts[0] == CARRIES:       # `_carries` names areas, not paths: load_carries
+        # `_carries` and `_shows` give names, not paths: load_carries, load_shown
+        if len(parts) < 2 or parts[0] in (CARRIES, SHOWS):
             continue
         # A relative path would resolve against wherever the scan runs -- an `_exempt .` would
         # exempt every folder. A line that is not a definition is a broken file, not a pass.
@@ -481,6 +490,8 @@ def area_lines(source: Path | None = None) -> list[str]:
             skip(own, line, "is not a line of areas.txt")
         elif parts[0] == CARRIES:
             carries.append((owner, own, parts, line))
+        elif parts[0] == SHOWS:
+            skip(own, line, "only the machine's own areas.txt shows an area's name outside it")
         elif parts[0].startswith("_"):
             skip(own, line, "only the machine's own areas.txt sets a folder apart from every area")
         elif parts[0] in top and not within(parts[0], owner, top):
@@ -776,13 +787,41 @@ def unknown_areas(read_inside: list[str], areas: dict[str, list[Path]]) -> list[
             and not any(outer(n, r, areas) for r in read_inside)]
 
 
+def load_shown(words: dict[str, set[str]]) -> dict[str, set[str]]:
+    """The names of each area that may be said to any session: the `_shows <area> <name> ...` lines,
+    `words` being the names each area goes by (`area_words`).
+
+    A folder named by an ordinary word would make that word unsayable in every message. A line
+    shows the names it gives and no more: another name of the area, the same name of another
+    area, and the area's text are judged as before. Only the machine's own file is read, since a
+    shown name reaches outside its area. A line that gives no name of an area is a broken file,
+    not a pass."""
+    shown: dict[str, set[str]] = {}
+    for line in read_lines(guard_places.setting("areas.txt")):
+        parts = shlex.split(line, comments=True)
+        if not parts or parts[0] != SHOWS:
+            continue
+        if len(parts) < 3:
+            raise ValueError(f"areas.txt: {line!r} is not `{SHOWS} <area> <name> ...`")
+        if parts[1] not in words:
+            raise ValueError(f"areas.txt: {line!r} names {parts[1]!r}, which is no area")
+        for name in parts[2:]:
+            matched = {word for word in words[parts[1]] if word.casefold() == name.casefold()}
+            if not matched:
+                raise ValueError(f"areas.txt: {line!r} names {name!r}, no name {parts[1]} goes by")
+            shown.setdefault(parts[1], set()).update(matched)
+    return shown
+
+
 def named_areas(text: str, read_inside: list[str]) -> list[tuple[str, str]]:
-    """(area, name) for each name of an area unknown to the session that the text carries."""
+    """(area, name) for each name of an area unknown to the session that the text carries, but
+    the names a `_shows` line shows."""
     areas = load_areas()
     words = area_words(areas)
+    shown = load_shown(words)
     found = []
     for area in unknown_areas(read_inside, areas):
-        for word in sorted(words.get(area, ())):
+        for word in sorted(words.get(area, set()) - shown.get(area, set())):
             shape = (rf"(?<![A-Za-z0-9]){re.escape(word)}(?![A-Za-z0-9])" if word.isascii() else re.escape(word))
             if re.search(shape, text, re.IGNORECASE):
                 found.append((area, word))
@@ -1806,6 +1845,7 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
     with lock_file(wait=False) as acquired:
         if not acquired:
             return summary
+        began = time.time()
         index = json.loads(INDEX.read_text()) if INDEX.is_file() else {}
         roots = [r for n, rs in areas.items() if n not in UNSCANNED for r in rs]
         changed = spotlight_changes(roots, summary["checked"], index)
@@ -1820,6 +1860,7 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
             changed += [p for root in roots if not any(k.startswith(f"{root}{os.sep}") for k in index)
                         for p in unvouched_changes(root, index)]
         started = time.time()
+        found_in = started - began
         # Many documents, or a long read, before the scan answers: say so with the time the reads so
         # far give it, then how long they took and on what.
         try:
@@ -1880,6 +1921,7 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
         if loud:
             slowest = ", ".join(f"{kind} {seconds:.0f}s ({counted[kind]})" for kind, seconds in spent.most_common(3))
             say(f"read {len(changed)} changed documents in {time.time() - started:.0f}s; most of it on {slowest}")
+        read_in = time.time() - started
         deltas = {n: [v[1] for v in index.values() if v[2] == n and v[-1] == "delta"] for n in touched}
         if sum(len(f) for f in deltas.values()) > MAX_DELTA:
             # The delta is written all the same (= what changed is seen now); the full walk that
@@ -1911,6 +1953,12 @@ def catch_up(areas: dict[str, list[Path]], summary: dict) -> dict | None:
             atomic_write(INDEX, json.dumps(index))
         summary["checked"] = started
         atomic_write(CACHE / "summary.json", json.dumps(summary, indent=1))
+        took = time.time() - began
+        if took > SLOW_SAY:
+            read = sum(counted.values())
+            say(f"brought the tables up to date in {took:.0f}s: finding what changed {found_in:.0f}s, "
+                f"reading {read} document{'' if read == 1 else 's'} {read_in:.0f}s, "
+                f"merging {max(took - found_in - read_in, 0):.0f}s")
         return summary
 
 
@@ -1938,8 +1986,12 @@ def walk_apart(summary: dict, wait: float = WALK_WAIT) -> dict:
     try:
         code = walk.wait(timeout=wait)
     except subprocess.TimeoutExpired:
-        say(f"the walk takes longer than {wait:g}s: it goes on apart from this scan, which uses the "
-            "tables brought up to date just now")
+        if wait:
+            say(f"the walk takes longer than {wait:g}s: it goes on apart from this scan, which uses the "
+                "tables brought up to date just now")
+        else:
+            say("a document of a large area was rewritten: its walk goes on apart from this scan, which "
+                "uses the tables brought up to date just now")
         return summary
     built = built_summary()
     if code != 0 or built is None or built["built"] <= summary["built"]:

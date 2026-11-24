@@ -120,7 +120,7 @@ guard = importlib.util.module_from_spec(spec)
 sys.modules["guard"] = guard
 spec.loader.exec_module(guard)
 read, words = [], guard.shell_words
-guard.shell_words = lambda line: read.append(line) or words(line)
+guard.shell_words = lambda line, **options: read.append(line) or words(line, **options)
 sends = guard.send_places("bash s1.sh; bash s1.sh", sys.argv[2])[0]
 print(len(read) == len(set(read)), len(sends))' "${HOOK}" "${REPO}"
     [ "${output}" = "True 1" ]
