@@ -151,6 +151,9 @@ OFF = guard_places.setting("agent-off")
 GRANT = guard_places.setting("agent-writes.txt")
 OPERATOR_ONLY = (GRANT.name, "orders.txt", OFF.name)
 CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus/corpus-scan.py"
+# The seconds a handoff's private-document scan is given: the scan waits for a walk only in what is
+# left of them (corpus-scan.py --budget).
+HANDOFF_SCAN_SECONDS = 180
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/destinations/send-scan.py"
 ANON_SCAN = Path(__file__).resolve().parents[2] / "scanners/words/anon-scan.sh"
 # How many word-list hits a refusal of a write shows; the rest are counted.
@@ -2415,8 +2418,9 @@ def handoff_refusal(folder: Path, text: str, areas) -> str | None:
                                      dir=os.environ.get("TMPDIR") or None) as fh:
         fh.write(text)
     try:
-        r = subprocess.run(["python3", str(CORPUS), "--dest-area", ",".join(own), "--text", fh.name],
-                           capture_output=True, text=True, timeout=180)
+        r = subprocess.run(["python3", str(CORPUS), "--dest-area", ",".join(own), "--text", fh.name,
+                            "--budget", str(HANDOFF_SCAN_SECONDS)],
+                           capture_output=True, text=True, timeout=HANDOFF_SCAN_SECONDS)
     except (subprocess.TimeoutExpired, OSError):
         return "the private-document scan could not run, so what it holds could not be judged"
     finally:
