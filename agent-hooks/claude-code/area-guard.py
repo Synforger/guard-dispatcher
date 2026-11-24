@@ -1077,6 +1077,41 @@ def find_deletes(args: list[str]) -> list[str]:
     return roots if deletes else []
 
 
+# Options that name the file a program writes its output, a log or a record to: the long ones any
+# program means so, and the ones a program of these means so (a short `-o` means other things to
+# others: `ssh -o` an option, `grep -o` a way to print).
+OUTPUT_OPTIONS = frozenset({"--output", "--output-file", "--output-document", "--outfile", "--out-file", "--log-file"})
+OUTPUT_OPTIONS_OF = {
+    "curl": frozenset({"-o", "-D", "--dump-header", "-c", "--cookie-jar", "--trace", "--trace-ascii", "--stderr",
+                       "--etag-save", "--libcurl", "--hsts", "--alt-svc"}),
+    "wget": frozenset({"-O", "-o", "-a", "--append-output"}),
+    "sort": frozenset({"-o"}),
+    "pandoc": frozenset({"-o"}),
+    "yt-dlp": frozenset({"-o"}),
+    "openssl": frozenset({"-out"}),
+    **{compiler: frozenset({"-o"}) for compiler in ("cc", "gcc", "g++", "clang", "clang++", "ld", "swiftc", "rustc")},
+}
+
+
+def output_options(tool: str, args: list[str]) -> list[str]:
+    """The files the options of a command name as where it writes (OUTPUT_OPTIONS): the next word (after
+    short flags run together too: `-sSo file`), the value after `=` of a long one, or what is glued to a
+    short one (`-ofile`)."""
+    options = OUTPUT_OPTIONS | OUTPUT_OPTIONS_OF.get(tool, frozenset())
+    found: list[str] = []
+    for at, word in enumerate(args):
+        flag, eq, value = word.partition("=")
+        if eq and flag.startswith("--") and flag in options:
+            found.append(value)
+        elif word in options and at + 1 < len(args):
+            found.append(args[at + 1])
+        elif re.fullmatch(r"-[A-Za-z]{2,}", word) and f"-{word[-1]}" in options and at + 1 < len(args):
+            found.append(args[at + 1])      # short flags run together, the last one taking the next word (`-sSo f`)
+        elif re.fullmatch(r"-[A-Za-z].+", word) and word[:2] in options:
+            found.append(word[2:])
+    return found
+
+
 def unpacks_into(tool: str, args: list[str]) -> str | None:
     """The folder `tar -x` or `unzip` puts the files of an archive in (`-C`, `-d`; the folder the
     command stands in without), or None when the command does not unpack."""
@@ -1246,6 +1281,7 @@ def named_with_folders(command: str, cwd: str,
             written.extend((p, here) for p in paths if Path(real(p, here)).is_file())
         elif tool == "dd":
             written.extend((a[3:], here) for a in args if a.startswith("of="))
+        written.extend((value, here) for value in output_options(tool, args))
         shell = bool(SHELL_CODE.fullmatch(tool))
         flags = code_flags(tool)
         for flag, code in zip(args, args[1:]):
@@ -1634,6 +1670,58 @@ def kept_by(command: str, cwd: str, transcript: str | None,
             return "the folder holding the guard's settings", SETTINGS_WHY
         if holds_openings(path):
             return "a folder holding openings of relayed messages", f"{SETTINGS_WHY}, and {ADDS_ONLY}"
+    if (handed := operator_file_handed(command, cwd)) is not None:
+        return (f"the guard's settings ({handed.name})",
+                f"{SETTINGS_WHY}; only the operator writes it, and a program the guard does not know may write a "
+                f"file it is handed")
+    return None
+
+
+# Programs that only read the files they are handed, or name them: a file only the operator writes may
+# be handed to these. A copy's file is judged as its destination or its source (named).
+READS_ONLY = frozenset({"cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "wc", "diff", "cmp",
+                        "comm", "sha256sum", "shasum", "md5", "md5sum", "file", "stat", "ls", "realpath", "readlink",
+                        "nl", "strings", "od", "hexdump", "xxd", "test", "[", "[[", "du", "bat"})
+
+
+def operator_only(path: Path) -> bool:
+    """Whether a path is a setting only the operator writes (OPERATOR_ONLY), under any spelling."""
+    name = settings_name(path)
+    return bool(name) and name.split(os.sep)[0] in {n.casefold() for n in OPERATOR_ONLY}
+
+
+def operator_file_handed(command: str, cwd: str, depth: int = 0) -> Path | None:
+    """A file only the operator writes that a command line hands as a word (alone, or after an option's
+    `=`) to a program that may write it -- one not in READS_ONLY, and no copy -- wherever it runs: a
+    command line handed on, a shell's `-c` string, a heredoc fed to a shell. None when there is none. A
+    file fed on the standard input (`< orders.txt`) is read, not handed."""
+    line, fed = split_heredocs(spell_home(in_run_order(command)))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return None
+    standing = Standing(cwd)
+    inner: list[tuple[str, str]] = [(body, standing.here) for program, body in fed if SHELL_CODE.fullmatch(program)]
+    for words, _, _, ended_by in steps:
+        head, lines, nested = program_words(words)
+        inner += [(code, standing.here) for code in [*lines, *map(shlex.join, nested)]]
+        tool = os.path.basename(head[0]) if head else ""
+        if head and not standing.move(tool, head[1:]):
+            if SHELL_CODE.fullmatch(tool):
+                inner += [(head[at + 1], standing.here) for at, word in enumerate(head[1:-1], 1)
+                          if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
+            if tool not in READS_ONLY | COPIES:
+                for word in head[1:]:
+                    for spelled in {word, word.partition("=")[2]} - {""}:
+                        if operator_only(real(spelled, standing.here)):
+                            return real(spelled, standing.here)
+        if ended_by == "(":
+            standing.open()
+        elif ended_by == ")":
+            standing.close()
+    for code, here in inner if depth < NESTED else []:
+        if (found := operator_file_handed(code, here, depth + 1)) is not None:
+            return found
     return None
 
 
