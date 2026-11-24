@@ -1774,3 +1774,63 @@ write_text() {
     seed_visibility acme/pipeline private
     bash_in "${CASE_REPO}" "git push"; passed
 }
+
+# --- what is written into an area is held to that area's word list ------------------------------
+# An area that keeps a word list of its own beside the operator's (`company.txt`) holds what an
+# agent writes into its folders to it, as a send to that area is: by an Edit or a Write, and by a
+# command that writes there (a redirection, sed -i, a program's code).
+
+# call <tool> <input json> [cwd] — run the hook on one tool call of the session s1.
+call() {
+    local event
+    event="$(jq -n --arg tool "$1" --argjson input "$2" --arg cwd "${3:-${H}}" \
+        '{session_id: "s1", tool_name: $tool, tool_input: $input, cwd: $cwd, hook_event_name: "PreToolUse"}')"
+    run python3 "${HOOK}" <<< "${event}"
+}
+
+area_words() {
+    mkdir -p "${H}/.config/anon-words"
+    printf 'handlename\n' > "${H}/.config/anon-words/master.txt"
+    printf 'handlename\n' > "${H}/.config/anon-words/company.txt"
+    export ANON_TRUTH_PATH="${H}/.config/anon-words/master.txt"
+}
+
+@test "area-guard: a word of an area's own list is not written into its folders, however it is written" {
+    area_words
+    call Write "$(jq -n --arg f "${COMPANY_REPO}/m.toml" '{file_path: $f, content: "source = \"HandleName research\"\n"}')"
+    denied
+    [[ "${output}" == *"company.txt"* && "${output}" == *"HandleName"* ]]
+    call Edit "$(jq -n --arg f "${CASE}/received/memo.md" '{file_path: $f, old_string: "client", new_string: "handlename client"}')"
+    denied
+    local command
+    for command in "printf 'by handlename\n' > ${COMPANY_REPO}/m.toml" \
+                   "sed -i '' 's/internal/handlename/' ${COMPANY_REPO}/notes.md" \
+                   $'python3 - <<\'PY\'\nopen("'"${COMPANY_REPO}"$'/m.toml", "w").write("handlename")\nPY'; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: what holds no listed word, what goes elsewhere, and an area with no list of its own are written" {
+    area_words
+    call Write "$(jq -n --arg f "${COMPANY_REPO}/m.toml" '{file_path: $f, content: "source = \"research\"\n"}')"
+    passed
+    call Write "$(jq -n --arg f "${PERSONAL}/a.md" '{file_path: $f, content: "handlename\n"}')"
+    passed
+    bash_in "${H}" "grep -c handlename ${COMPANY_REPO}/notes.md"
+    [ "${status}" -eq 0 ] && [[ "${output}" != *'"deny"'* ]]
+    rm "${H}/.config/anon-words/company.txt"
+    call Write "$(jq -n --arg f "${COMPANY_REPO}/m.toml" '{file_path: $f, content: "handlename\n"}')"
+    passed
+}
+
+@test "area-guard: an agent's own folder inside an area holds its own names" {
+    area_words
+    export AGENT_PLATFORM_ROOT="${H}/platform"
+    mkdir -p "${H}/platform/agents/me/co"
+    printf 'company ~/platform/agents/me/co\n' >> "${GUARD_CONFIG_DIR}/areas.txt"
+    call Write "$(jq -n --arg f "${H}/platform/agents/me/co/journal.md" '{file_path: $f, content: "handlename wrote this\n"}')"
+    passed
+    call Write "$(jq -n --arg f "${COMPANY_REPO}/m.toml" '{file_path: $f, content: "handlename\n"}')"
+    denied
+}
