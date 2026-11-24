@@ -105,6 +105,7 @@ import os
 import re
 import shlex
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -1552,7 +1553,8 @@ def holds_transcripts(path: Path, reach: str) -> bool:
 
 
 def script_argument_orders(command: str, cwd: str, transcript: str | None, marks: set[str] | None = None,
-                           depth: int = 0) -> tuple[list[Path], list[FolderOrder]]:
+                           depth: int = 0, *, refuses: Callable[[Path], bool] | None = None,
+                           ) -> tuple[list[Path], list[FolderOrder]]:
     """(the paths, the orders on a folder) a file of code the command runs writes where its arguments say,
     when one of the words handed to it names what the agent may not write: a thing `kept` judges, or
     the folder of transcripts or one in it (`holds_transcripts`). A script that takes the path from its
@@ -1560,7 +1562,9 @@ def script_argument_orders(command: str, cwd: str, transcript: str | None, marks
     script by `$1`, `$@`, a loop over them, a `shift` and a default, and what it runs in turn by the words
     it hands on. A script that uses its words where the text does not say, and writes, writes every one;
     so does the code of another interpreter that uses its arguments and spells a call that writes. A
-    command that hands no such word is read as it always was."""
+    command that hands no such word is read as it always was. `refuses` (a path -> bool) names more
+    places a word may name to have the script read so: where a session that has read inside an area
+    may not write."""
     paths: list[Path] = []
     orders: list[FolderOrder] = []
 
@@ -1571,7 +1575,7 @@ def script_argument_orders(command: str, cwd: str, transcript: str | None, marks
     def guarded(word: str, here: str) -> bool:
         resolved, written = spelled(word, here)
         return bool(kept(resolved, transcript, marks) or holds_transcripts(resolved, RECORDS)
-                    or holds_transcripts(written, RECORDS))
+                    or holds_transcripts(written, RECORDS) or (refuses is not None and refuses(resolved)))
 
     def writes_all(words: list[str], here: str) -> None:
         for word in script_arguments.candidates(words):
@@ -1591,7 +1595,8 @@ def script_argument_orders(command: str, cwd: str, transcript: str | None, marks
                 orders += folders
                 wrote = wrote or bool(written or removed or folders)
                 if depth < NESTED:
-                    inner_paths, inner_orders = script_argument_orders(text, here, transcript, marks, depth + 1)
+                    inner_paths, inner_orders = script_argument_orders(text, here, transcript, marks, depth + 1,
+                                                                       refuses=refuses)
                     paths += inner_paths
                     orders += inner_orders
             if unreadable and wrote:
@@ -3016,7 +3021,11 @@ def main() -> int:
         command = args.get("command", "")
         touched += bash_marks(command, cwd, areas)
         remote = remote_marks(command, cwd)
-        for target in write_targets(command, cwd) if marks else []:
+        def refuses(path: Path) -> bool:
+            return not may_write(path, marks, areas)
+
+        argument_writes = script_argument_orders(command, cwd, None, marks, refuses=refuses)[0] if marks else []
+        for target in [*write_targets(command, cwd), *argument_writes] if marks else []:
             if not may_write(target, marks, areas):
                 deny(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
                      f"write {target} (areas: {AREAS}). Do it in another session{handoff_unset_note()}")
