@@ -44,6 +44,15 @@ def pattern(agents: Path | None) -> re.Pattern[str] | None:
     return re.compile("|".join(forms)) if forms else None
 
 
+def inside(spellings: re.Pattern[str] | None, words: tuple[str, ...] | list[str]) -> int:
+    """How many spellings of an agent's folder in `words` go on to a file or folder inside it. One
+    that ends the word (`<folder>`, `<folder>/`, `<folder>/.`, `<folder>/..`) names the folder itself,
+    whose name a copy or the folder a command stands in carries on, so it is not counted."""
+    if spellings is None:
+        return 0
+    return sum(1 for word in words for found in spellings.finditer(word) if word[found.end():].strip("/."))
+
+
 def masked(command: str, spellings: re.Pattern[str] | None, read_or_run: int) -> str:
     """`command` with each spelling of an agent's folder made PLACEHOLDER, when the line holds as many
     of them as the caller found in the paths it reads or runs (`read_or_run`); else unchanged, since

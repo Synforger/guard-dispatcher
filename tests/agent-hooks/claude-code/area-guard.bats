@@ -1861,6 +1861,7 @@ area_words() {
     printf '#!/bin/sh\necho ok\n' > "${S}/tool.sh"
     chmod +x "${S}/tool.sh"
     printf 'plain\n' > "${S}/a.txt"
+    printf 'import os\nprint(os.getcwd())\n' > "${S}/where.py"
     local scratch c
     scratch="/tmp/claude-$(id -u)/$(printf '%s' "${H}/platform/agents/handlename" | sed 's/[^A-Za-z0-9]/-/g')-projects-x/s1/scratchpad"
     for c in "python3 ${S}/gen.py > ${COMPANY_REPO}/out.txt" \
@@ -1883,7 +1884,13 @@ area_words() {
              "grep -H plain ${S}/a.txt > ${COMPANY_REPO}/o.txt" \
              $'cat > '"${COMPANY_REPO}"$'/o.txt <<\'EOF\'\n'"${S}"$'/a.txt\nEOF' \
              "python3 ${S}/gen.py handlename > ${COMPANY_REPO}/o.txt" \
-             "printf handlename > ${COMPANY_REPO}/o.txt"; do
+             "printf handlename > ${COMPANY_REPO}/o.txt" \
+             "cp -r ${H}/platform/agents/handlename ${COMPANY_REPO}/" \
+             "cp -r ${H}/platform/agents/handlename/ ${COMPANY_REPO}/x" \
+             "cd ${H}/platform/agents/handlename && pwd > ${COMPANY_REPO}/f" \
+             "cd ${S} && echo \$PWD > ${COMPANY_REPO}/f" \
+             "cd ${S} && python3 where.py > ${COMPANY_REPO}/f" \
+             "cd ${S} && git rev-parse --show-toplevel > ${COMPANY_REPO}/f"; do
         bash_in "${H}" "${c}"
         denied || { echo "not refused: ${c}"; return 1; }
     done
