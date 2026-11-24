@@ -200,6 +200,9 @@ def order_module():
 HEREDOC = re.compile(r"(?<!<)<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2(?!<)")
 # Programs that run what a heredoc feeds them as code, and those that only pass on to the next word.
 RUNS_BODY = re.compile(r"(?:\S*/)?(?:(?:ba|z|da|k)?sh|python[\d.]*|node|perl|ruby|osascript|eval|xargs|source|\.)")
+# Of those, the ones whose body is shell: the commands in it can send. The body of an interpreter of
+# another language is code the guard reads as that language (code_paths, code_writes), not as words.
+RUNS_SHELL_BODY = re.compile(r"(?:\S*/)?(?:(?:ba|z|da|k)?sh|eval|xargs|source|\.)")
 PASSES_ON = {"sudo", "env", "command", "exec", "nohup", "time", "nice"}
 
 
@@ -219,30 +222,32 @@ def heredocs(command: str):
         pos = body_end
 
 
-def strip_heredocs(command: str) -> str:
+def strip_heredocs(command: str, *, shell_only: bool = False) -> str:
     """The command without the bodies of its heredocs, unless the program they feed runs them as
-    code (a shell, python, ...). A commit message or a file's text written through a heredoc is
-    not the command's own words: read as words, `-n` in a message was a `git commit -n`."""
+    code (a shell, python, ...; with `shell_only`, a shell). A commit message or a file's text written
+    through a heredoc is not the command's own words: read as words, `-n` in a message was a
+    `git commit -n`."""
+    runs = RUNS_SHELL_BODY if shell_only else RUNS_BODY
     out, pos = [], 0
     for line_end, body_end, program in heredocs(command):
-        out.append(command[pos:body_end] if RUNS_BODY.fullmatch(program) else command[pos:line_end + 1])
+        out.append(command[pos:body_end] if runs.fullmatch(program) else command[pos:line_end + 1])
         pos = body_end
     out.append(command[pos:])
     return "".join(out)
 
 
-def shell_words(command: str) -> list[str]:
+def shell_words(command: str, *, shell_only: bool = False) -> list[str]:
     """The command's words, split in one place for every judgement (outgoing.shell_words):
     a `;` glued to a word is still a break, and a heredoc's body is not words of the command
-    unless the program it feeds runs it (strip_heredocs). Falls back to plain spaces on an
-    unclosed quote."""
-    return list(split_words(command))
+    unless the program it feeds runs it (strip_heredocs; `shell_only`: unless it is a shell).
+    Falls back to plain spaces on an unclosed quote."""
+    return list(split_words(command, shell_only))
 
 
 @functools.lru_cache(maxsize=None)
-def split_words(command: str) -> tuple[str, ...]:
+def split_words(command: str, shell_only: bool = False) -> tuple[str, ...]:
     """shell_words, split once a call of the hook for each command line."""
-    command = strip_heredocs(command)
+    command = strip_heredocs(command, shell_only=shell_only)
     try:
         return tuple(outgoing_module().shell_words(command))
     except ValueError:
@@ -617,6 +622,23 @@ def split_heredocs(text: str) -> tuple[str, list[tuple[str, str]]]:
         pos = body_end
     line.append(text[pos:])
     return "".join(line), fed
+
+
+def shell_heredocs_as_code(command: str) -> str:
+    """The command with each heredoc that feeds a shell written as that shell's `-c` string
+    (`bash <<'SH' ... SH` is `bash -c '...'`), so what it runs is read where the command stands
+    when it reaches it, as a `-c` string is. The terminator line stays and reads as a word."""
+    out, kept_to, scanned = [], 0, 0
+    for line_end, body_end, program in heredocs(command):
+        opening = HEREDOC.search(command, scanned)
+        scanned = body_end
+        if opening and SHELL_CODE.fullmatch(os.path.basename(program)):
+            out.append(command[kept_to:opening.start()])
+            out.append("-c " + shlex.quote(command[line_end + 1:body_end]))
+            out.append(command[opening.end():line_end + 1])
+            kept_to = body_end
+    out.append(command[kept_to:])
+    return "".join(out)
 
 
 # Builtins that run their words, or the file they are handed, as shell.
@@ -1640,7 +1662,9 @@ def send_places(command: str, cwd: str,
     A call of the hook reads each command line from each folder once, and names each send once."""
     command = in_run_order(command)
     try:
-        words = shell_words(command)
+        # Python written into the command is no command line: a quote it leaves open turns the words
+        # into plain spaces, and a shell line quoted inside it would be read as a send.
+        words = shell_words(shell_heredocs_as_code(command), shell_only=True)
     except ValueError:
         return (), (), ()
     breaks = outgoing_module().SHELL_BREAK
