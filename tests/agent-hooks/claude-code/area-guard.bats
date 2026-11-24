@@ -714,7 +714,11 @@ AREAS
     for c in $'bash <<\'SH\'\ntouch '"${GUARD_CONFIG_DIR}"$'/agent-off\nSH' \
              "eval 'touch ${GUARD_CONFIG_DIR}/agent-off'" \
              "echo x > ${GUARD_CONFIG_DIR}/agent-off" \
-             "rm -rf ~/.git-hooks"; do
+             "rm -rf ~/.git-hooks" \
+             $'cat <<\'SH\' | bash\ntouch '"${GUARD_CONFIG_DIR}"$'/agent-off\nSH' \
+             $'cat > '"${H}"$'/s.sh <<\'SH\'\ntouch '"${GUARD_CONFIG_DIR}"$'/agent-off\nSH\nbash '"${H}"'/s.sh' \
+             "xargs touch <<< ${GUARD_CONFIG_DIR}/agent-off" \
+             $'python3 - <<\'PY\'\nimport os\nos.system("touch '"${GUARD_CONFIG_DIR}"$'/agent-off")\nPY'; do
         bash_in "${H}" "${c}"
         denied || { echo "not refused: ${c}"; return 1; }
     done
