@@ -1410,15 +1410,16 @@ session_files() {
 @test "area-guard: code in the command names every path it hands to a call it does not know" {
     session_files
     local c g="${GUARD_CONFIG_DIR}"
-    # a call known to only read leaves the path as text, and so does a command the code runs that the
-    # same command typed in Bash would not write with; a call the guard does not know may write it
+    # a call known to only read leaves the path as text; one the guard does not know may write it
     for c in "python3 -c \"print(open('${TRANSCRIPT}').read()[:9])\"" \
-             "python3 -c \"import json; print([json.loads(l) for l in open('${TRANSCRIPT}')])\"" \
-             "python3 -c \"import subprocess; subprocess.run(['wc', '-l', '${TRANSCRIPT}'])\""; do
+             "python3 -c \"import json; print([json.loads(l) for l in open('${TRANSCRIPT}')])\""; do
         bash_in "${H}" "${c}"
         passed || { echo "refused: ${c}"; return 1; }
     done
-    for c in "python3 -c \"import subprocess; subprocess.run(['tee', '-a', '${TRANSCRIPT}'])\"" \
+    for c in "python3 -c \"import subprocess; subprocess.run(['wc', '-l', '${TRANSCRIPT}'])\"" \
+             "python3 -c \"import subprocess; subprocess.run(['tee', '-a', '${TRANSCRIPT}'])\"" \
+             "python3 -c \"import subprocess; subprocess.run(['some-tool', '${g}/orders.txt'])\"" \
+             "python3 -c \"import subprocess; subprocess.run(['curl', '-o', '${g}/orders.txt', 'https://example.com'])\"" \
              "python3 -c \"import subprocess; subprocess.run(['sh', '-c', 'echo x >> ${g}/orders.txt'])\"" \
              "python3 -c \"import gzip; print(gzip.open('${TRANSCRIPT}').read())\"" \
              "python3 -c \"import os; print(os.read(os.open('${g}/orders.txt', os.O_RDONLY), 9))\""; do

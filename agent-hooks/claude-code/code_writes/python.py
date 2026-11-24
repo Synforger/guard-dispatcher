@@ -167,10 +167,10 @@ BUILT_OF = (ast.Constant, ast.List, ast.Tuple, ast.Set, ast.Dict, ast.BinOp, ast
 #: Functions that move the code to the folder they are handed: a relative name written after them lands
 #: there, so that folder is counted as a call known to write counts its target.
 FOLDER_MOVES = frozenset({"os.chdir", "contextlib.chdir"})
-#: Functions that run a command. What they run is a command line, read for what it writes as one
-#: (commands_run); of what they are handed, the folder it runs in (`cwd=`) is counted as a call known to
-#: write counts its target, and so is any part the code does not hold. The variables they set (`env=`)
-#: name no file it writes.
+#: Functions that run a command. What they run is a command line, also read for what it writes as one
+#: (commands_run); what they are handed is counted as a call known to write counts its target, since a
+#: program the guard does not know may write any path it is given, but for the program itself (the
+#: first word of a list) and the variables they set (`env=`), which name no file it writes.
 RUNS_COMMAND = re.compile(r"subprocess\.\w+|os\.(?:system|popen|exec\w*|spawn\w*|posix_spawnp?)")
 #: Attributes of the values known calls give (a path, a match, a date, a stat, an open file, a number,
 #: what a command that ran gave back)
@@ -540,9 +540,10 @@ class _Reader:
         if name is not None and (name in self._functions or _pure(name)):
             return []
         if name is not None and (RUNS_COMMAND.fullmatch(name) or RUNS_COMMAND_TOO.fullmatch(name)):
-            handed = [*call.args, *(k.value for k in call.keywords if k.arg not in ("cwd", "env"))]
-            return [*(k.value for k in call.keywords if k.arg == "cwd"),
-                    *(part for part in handed if not self._held(part, frozenset()))]
+            first = call.args[0] if call.args else None
+            words = first.elts[1:] if isinstance(first, (ast.List, ast.Tuple)) and first.elts \
+                else [first] if first is not None else []
+            return [*words, *call.args[1:], *(k.value for k in call.keywords if k.arg != "env")]
         if known_writes_only and name not in LOCAL_WRITES | FOLDER_MOVES:
             return []
         return args
