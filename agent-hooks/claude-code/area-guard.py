@@ -2299,14 +2299,12 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
     for at, (words, redirects, here_string, ended_by) in enumerate(steps):
         count = sum(1 for operator, _ in redirects if operator in ("<<", "<<-"))
         mine, bodies = bodies[:count], bodies[count:]
-        head = words
-        while head and (ASSIGNMENT.fullmatch(head[0]) or os.path.basename(head[0]) in RUNS_NEXT or head[0] in KEYWORDS):
-            head = head[1:]
+        head = program_words(words)[0]
         defines = bool(words) and ended_by == "(" and at + 1 < len(steps) \
             and not steps[at + 1][0] and steps[at + 1][3] == ")"
         opens_only = not head and bool(redirects) and any(os.path.basename(word) == "exec" for word in words)
         acts_later.append(ended_by == "&" or defines or opens_only or "function" in words[:1]
-                          or (bool(head) and os.path.basename(head[0]) in DEFERRED))
+                          or any(os.path.basename(word) in DEFERRED for word in words[:len(words) - len(head) + 1]))
         put: list[str] = []
         writing = False
         if head and standing.move(os.path.basename(head[0]), head[1:]):

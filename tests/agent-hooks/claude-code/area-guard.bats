@@ -1878,7 +1878,8 @@ area_words() {
                    "( cat ${H}/tmp/t > ${COMPANY_REPO}/f ) & echo handlename > ${H}/tmp/t" \
                    "(cat ${H}/tmp/t > ${COMPANY_REPO}/f)& echo handlename > ${H}/tmp/t" \
                    "exec 3>> ${COMPANY_REPO}/f; echo handlename >&3" \
-                   "f() { cp ${H}/tmp/t ${COMPANY_REPO}/f; }; echo handlename > ${H}/tmp/t; f"; do
+                   "f() { cp ${H}/tmp/t ${COMPANY_REPO}/f; }; echo handlename > ${H}/tmp/t; f" \
+                   "trap 'cp ${H}/tmp/t ${COMPANY_REPO}/f' EXIT; echo handlename > ${H}/tmp/t"; do
         bash_in "${H}" "${command}"
         denied || { echo "not refused: ${command}"; return 1; }
     done
