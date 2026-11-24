@@ -836,7 +836,8 @@ step earlier, before each tool call, from the same `areas.txt`:
   (`python3 fix.py`, `bash run.sh`, `node`, `deno run`, `bun`, `ruby`, `perl`,
   `php`, `osascript`), `source` and `.`, a file run by its path (the program its
   `#!` line names, the shell when it has none) and `uv run fix.py`. It is
-  followed where the command stands (`cd`, a subshell, `-c`, `eval`), and a
+  followed where the command stands (`cd`, a subshell, `-c`, `eval`, a
+  substitution the shell runs, in double quotes and heredocs too), and a
   script that runs another is followed a few steps. A syntax check at
   the head of the call runs none of it, so `bash -n run.sh` there is judged
   as `cat run.sh`: only `sh`, `bash`, `zsh`, `dash` or `ksh` (bare, or in
