@@ -265,6 +265,7 @@ documents themselves. Everything it reads is configured on this machine only:
                                         _outside <path> ...          in no area
                                         _exempt <path> ...           never scanned
                                         _carries <area> <other> ...  what a repository in <area> may hold
+                                        _shows <area> <name> ...     a name of <area> any session may be told
 ~/.config/guard/patterns/<name>.txt     regular expressions for identifiers of a shape
                                         (product codes, client names), case-insensitive
 ~/.config/guard/allow.txt               phrases that are fine to send
@@ -306,7 +307,7 @@ inside the area only:
 
 | file | read | not read |
 |---|---|---|
-| `areas.txt` | a sub-area whose folders lie inside the area's; a `_carries` line between areas within it | `_exempt` / `_outside`, an area of the machine's own file outside it, a folder outside it |
+| `areas.txt` | a sub-area whose folders lie inside the area's; a `_carries` line between areas within it | `_exempt` / `_outside` / `_shows`, an area of the machine's own file outside it, a folder outside it |
 | `destinations.txt` | a destination placed in the area or an area within it, or `block`ed; `order` as in the machine's file | `outside`, a pattern that catches every destination (`*`), an area outside it |
 | `allow.txt` | a phrase fine to send of the text of the areas within it | — |
 | `patterns/<name>.txt` | a shape of the identifiers of an area within it | a shape that does not compile |
@@ -475,6 +476,15 @@ words. Keep it in a folder `ignore.txt` lists among the area's own settings
 (`/srv/company/hub/from/outside`): its documents are no area's. Nothing finds
 such text by itself: the area keeps it apart, so a session outside cannot make an
 area's text no area's by sending it in.
+
+An area goes by the names of its folders, and a message to a session that has
+not read inside it may not say them. When a folder is named by an ordinary
+word (`~/notes`), every such message holding that word is refused.
+`_shows notes notes` in the machine's own `areas.txt` lets that name of that
+area be said to any session. It shows only the names it gives: the area's text,
+its other names, and the same name of another area are judged as before, and a
+name marked `outside` in `roles.txt` still may not hold it. A line that gives
+no name of an area refuses every message to another session until it is fixed.
 
 An area's documents are everything under it that holds its words:
 
