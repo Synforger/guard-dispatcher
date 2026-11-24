@@ -306,6 +306,42 @@ shutil.copy("/etc/hosts", "a.jsonl")'; do
     done
 }
 
+@test "script files: a relative name a call that writes is handed counts however the target is put together" {
+    local body
+    for body in 'import os
+open(os.path.join("sub", "a.jsonl"), "w")' \
+                'import os
+d = "sub"
+open(os.path.join(d, "a.jsonl"), "w")' \
+                'from pathlib import Path
+Path("sub", "a.jsonl").write_text("{}")' \
+                'from pathlib import Path
+Path("sub").joinpath("a.jsonl").write_text("{}")' \
+                'import os, shutil
+src = "/etc/hosts"
+shutil.copy(src, os.path.join("sub", "a.jsonl"))' \
+                'import subprocess
+src = "/etc/hosts"
+subprocess.run(["cp", src, "sub/a.jsonl"])' \
+                'd = "sub"
+n = "a.jsonl"
+open(d + "/" + n, "w")'; do
+        script rel.py "${body}"
+        bash_in "${PLACE}" "python3 ${TOOL}/rel.py"
+        denied || { echo "not refused: ${body}"; return 1; }
+    done
+    # Handed to a call the guard does not know, even inside the target of one that writes: that call places it.
+    for body in 'import mylib
+mylib.put("sub/a.jsonl")' \
+                'def setting(name):
+    return "/tmp/" + name
+open(setting("sub/a.jsonl"), "w")'; do
+        script rel.py "${body}"
+        bash_in "${PLACE}" "python3 ${TOOL}/rel.py"
+        passed || { echo "refused: ${body}"; return 1; }
+    done
+}
+
 # --- a script that writes where its arguments say ------------------------------------------------
 
 # What the guard judges from, and what it keeps for the operator: its settings and a session's transcript.

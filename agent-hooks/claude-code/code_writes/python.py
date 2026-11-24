@@ -152,6 +152,9 @@ LOCAL_WRITES = frozenset({"os.makedirs", "os.mkdir", "os.remove", "os.unlink", "
                           "os.rmdir", "os.removedirs", "shutil.copy", "shutil.copy2", "shutil.copyfile",
                           "shutil.copytree", "shutil.move", "shutil.rmtree"})
 WRITING_MODE = re.compile(r"[wax+]")
+#: Functions that run a command: whatever they are handed is a command line, which writes where its
+#: words say, so the names in it are counted as a call known to write counts them.
+RUNS_COMMAND = re.compile(r"subprocess\.\w+|os\.(?:system|popen|exec\w*|spawn\w*|posix_spawnp?)")
 #: Attributes of the values known calls give (a path, a match, a date, a stat, an open file, a number)
 #: that hold data and run nothing: handed on as a value, they are not a method a known call may call.
 VALUE_ATTRIBUTES = frozenset({
@@ -173,12 +176,12 @@ def written_code(code: str, *, known_writes_only: bool = False) -> str:
     """The source of every part of `code` that can name a file it writes, one part a line, or the
     whole code when it does not parse. With `known_writes_only`, only the names a call known to
     write the file it is given (an `open` in a writing mode, a path's method that writes, one of
-    LOCAL_WRITES) is handed as they stand: a string (`open("out.json", "w")`), a path made of one
-    string (`Path("out.json").write_text(...)`), such a path with strings joined on (`Path("d") / "a"`),
-    or a name given such values, each as a string
-    literal on a line of its own. What a call this module does not know is handed, that call places
-    itself (`setting("areas.txt")` may join it to a folder of its own), and a string glued onto
-    another value (`base / "areas.txt"`) is a piece of a path the code puts together."""
+    LOCAL_WRITES, a call that runs a command) is handed, each as a string literal on a line of its own:
+    every string its target is made of, through the values its names were given and the calls known
+    to only turn values into others (`os.path.join("d", "a")`, `Path("d", "a")`, `d + "/" + n`), and
+    a path made of strings joined by `/` as one name too (`Path("d") / "a"` is also `d/a`). A string
+    handed to a call this module does not know is that call's to place (`setting("areas.txt")` may
+    join it to a folder of its own), even inside a target (`open(setting("state.json"), "w")`)."""
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError):
@@ -243,6 +246,7 @@ class _Reader:
             for target in (t for node in ast.walk(self._tree) if isinstance(node, ast.Call)
                            for t in self._targets(node, known_writes_only=True)):
                 self._as_written(target, set(), names)
+                self._known_strings(target, set(), names)
             return "\n".join(repr(name) for name in dict.fromkeys(names))
         return self.written_targets()
 
@@ -480,7 +484,9 @@ class _Reader:
             return [*call.args[:1], *(k.value for k in call.keywords if k.arg == "file")] if _writes(call, 1) else []
         if name is not None and (name in self._functions or _pure(name)):
             return []
-        return [] if known_writes_only and name not in LOCAL_WRITES else args
+        if known_writes_only and name not in LOCAL_WRITES and not (name and RUNS_COMMAND.fullmatch(name)):
+            return []
+        return args
 
     def _as_written(self, node: ast.AST, seen: set[int], names: list[str]) -> None:
         """Add to `names` each string `node` stands for as it is: a string constant, a path made of one
@@ -502,6 +508,37 @@ class _Reader:
         elif isinstance(node, ast.Name):
             for value in self._values.get(node.id, []):
                 self._as_written(value, seen, names)
+
+    def _known_strings(self, node: ast.AST, seen: set[int], names: list[str]) -> None:
+        """Add to `names` every string constant `node` is made of, through the values its names were
+        given, containers, operators and the calls known to only turn values into others. A call this
+        module does not know places what it is handed itself, so its arguments are left out. A value
+        put together (`a / "b"`, `os.path.join(a, "b")`) from something the code does not hold
+        (`Path(__file__).parent`) is a path under that something: its strings are pieces, not names."""
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        if isinstance(node, (ast.BinOp, ast.Call)) and not self._held(node, frozenset()):
+            return
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, str):
+                names.append(node.value)
+            return
+        if isinstance(node, ast.Name):
+            for value in self._values.get(node.id, []):
+                self._known_strings(value, seen, names)
+            return
+        if isinstance(node, ast.Call):
+            name = self._dotted(node.func)
+            if name is None and isinstance(node.func, ast.Attribute) and node.func.attr in PURE_METHODS:
+                self._known_strings(node.func.value, seen, names)
+            elif name is None or name in self._functions or not (name in PATH_MAKERS or _pure(name)):
+                return
+            for argument in [*node.args, *(k.value for k in node.keywords)]:
+                self._known_strings(argument, seen, names)
+            return
+        for child in ast.iter_child_nodes(node):
+            self._known_strings(child, seen, names)
 
     def _sources(self, node: ast.AST, seen: set[int], parts: list[str], name: str | None = None) -> None:
         """Add the source of `node`, and of every value its names were given, to `parts`. A value is
