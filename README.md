@@ -768,6 +768,11 @@ step earlier, before each tool call, from the same `areas.txt`:
   environment (`$HOME`) written out. A folder still only known as the command runs
   (`cd $W` with `W` set elsewhere, `git -C "$(…)"`) is refused, with the reason asking for the
   folder written out: the guard cannot tell which repository's hooks and areas the send meets.
+  A literal the command gives a variable before a script it runs (`BASE=/a/b bash run.sh`) is
+  known inside the script, unless the script may change it (assigns it, unsets or reads it,
+  `${BASE:=…}`, `source`). An `if` whose condition is only a test of whether that variable is set
+  (`[ -n "${BASE:-}" ]`, `[[ -z $BASE ]]`, `test -n "$BASE"`) is read as the shell runs it, its
+  other branches left out; an `if` any of whose conditions holds more is read whole.
 - On every machine too, the agent writes nothing in the guard's settings folder
   (`~/.config/guard/`: `areas.txt`, `allow.txt`, `background.txt`, `ignore.txt`,
   `patterns/`, `destinations.txt`, `orders.txt`, `handoff.txt`, and a file put there tomorrow),

@@ -823,6 +823,108 @@ ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 # Builtins that set the variables written after them, a variable as a word spells it (`$D`, `${D}`),
 # and what makes a value one this command line cannot know.
 DECLARES = {"export", "local", "declare", "typeset", "readonly"}
+# A test of one variable being set (`[ -n "${X:-}" ]`, `[[ -z $X ]]`, `test -n "$X"`): (the test, the name).
+VARIABLE_TEST = re.compile(r"\$(?:\{([A-Za-z_]\w*)(?::?-)?\}|([A-Za-z_]\w*))")
+
+
+# Builtins that may give a variable named among their words a value.
+WRITES_VARIABLE = {"unset", "read", "getopts", "mapfile", "readarray", "declare", "typeset", "local", "export",
+                   "readonly", "printf", "for", "select", "eval", "source", ".", "let", "trap"}
+# What makes the test of an if mean something else than the shell's own: an alias, a function named so.
+REDEFINES_TEST = re.compile(r"(?m)^\s*(?:alias\b|function\s+(?:test|\[)(?:\s|\()|(?:test|\[)\s*\(\s*\))")
+# A value the test reads the same quoted or not: not empty, no blank, no glob.
+PLAIN_VALUE = re.compile(r"[^\s*?\[\]]+")
+
+
+def rebinds(code: str, name: str) -> bool:
+    """Whether shell code may give `name` another value than the one it came with, read on its words: an
+    assignment (alone or before a command), a default that assigns (`${X:=…}`), a builtin that writes a
+    variable named among its words (unset, read, printf -v, declare and its kin, a nameref to it, a
+    for or select loop, let, an arithmetic assignment, eval, trap), or code it reads from another file
+    (`source`, `.`). Code that cannot be split may."""
+    word = re.escape(name)
+    if re.search(rf"\$\{{{word}:?=|\(\([^)]*(?<![\w$]){word}\s*(?:\[[^]]*\])?\s*[-+*/%&|^<>]*=(?!=)", code):
+        return True
+    try:
+        commands = list(stepped_commands(split_heredocs(code)[0]))
+    except ValueError:
+        return True
+    for words, _, _, _ in commands:
+        rest = words
+        while rest and (rest[0] in KEYWORDS or ASSIGNMENT.fullmatch(rest[0])
+                        or re.fullmatch(r"[A-Za-z_]\w*\[[^]]*\]\+?=.*", rest[0])):
+            if re.fullmatch(rf"{word}(?:\[[^]]*\])?\+?=.*", rest[0]):
+                return True
+            rest = rest[1:]
+        if rest and rest[0] in WRITES_VARIABLE and (
+                rest[0] in ("source", ".", "eval")
+                or any(re.search(rf"(?<![\w$]){word}(?!\w)", argument) for argument in rest[1:])):
+            return True
+    return False
+
+
+def tested(condition: list[str], given: dict[str, str]) -> bool | None:
+    """Whether an if's condition holds, when it is one test of whether a variable the command line gave
+    is set (`[ -n "${X:-}" ]`, `[[ -z $X ]]`, `test -n "$X"`); None when that cannot be told."""
+    if condition[:1] == ["["] and condition[-1:] == ["]"] or condition[:1] == ["[["] and condition[-1:] == ["]]"]:
+        inside = condition[1:-1]
+    elif condition[:1] == ["test"]:
+        inside = condition[1:]
+    else:
+        return None
+    if len(inside) != 2 or inside[0] not in ("-n", "-z") or not (m := VARIABLE_TEST.fullmatch(inside[1])):
+        return None
+    name = m.group(1) or m.group(2)
+    if name not in given or not PLAIN_VALUE.fullmatch(given[name]):
+        return None
+    return inside[0] == "-n"
+
+
+class Branches:
+    """Which commands of a script run, as far as its ifs test only what the command line gave: a
+    branch whose condition is told (`tested`) is read only when it runs; an if any of whose
+    conditions cannot be told, or that holds more than its one test, is read whole."""
+
+    def __init__(self, given: dict[str, str]) -> None:
+        self._given = given
+        self._frames: list[dict] = []
+
+    def live(self) -> bool:
+        """Whether the command at this point may run."""
+        return all(frame["reading"] for frame in self._frames)
+
+    def step(self, words: list[str]) -> list[str]:
+        """Follow the if keywords at the head of a command; the words left are the command, which
+        runs only while `live()`."""
+        while words and words[0] in ("if", "elif", "then", "else", "fi"):
+            keyword, words = words[0], words[1:]
+            frame = self._frames[-1] if self._frames and keyword != "if" else None
+            if keyword == "if":
+                self._frames.append({"reading": True, "condition": True, "told": tested(words, self._given),
+                                     "whole": False, "taken": False})
+                return words
+            if frame is None:
+                continue
+            if keyword == "fi":
+                self._frames.pop()
+            elif keyword == "then":
+                frame["condition"] = False
+                if frame["told"] is None:
+                    frame["whole"] = True
+                frame["reading"] = frame["whole"] or (bool(frame["told"]) and not frame["taken"])
+                frame["taken"] = frame["taken"] or frame["reading"]
+            elif keyword == "elif":
+                frame["condition"] = True
+                frame["reading"] = frame["whole"] or not frame["taken"]
+                frame["told"] = tested(words, self._given) if frame["reading"] else False
+                return words
+            elif keyword == "else":
+                frame["reading"] = frame["whole"] or not frame["taken"]
+        if self._frames and self._frames[-1]["condition"] and self._frames[-1]["reading"] and words:
+            # More than the one test before `then` (`&&`, a pipe, another line): it cannot be told.
+            # An elif after a branch that ran is not tested at all, whatever it holds.
+            self._frames[-1]["told"] = None
+        return words
 VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 UNKNOWN = re.compile(r"[$`]")
 # A string of inline code that may be a relative path: one word, with no quote inside.
@@ -1674,7 +1776,7 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
 
 
 @functools.lru_cache(maxsize=None)
-def send_places(command: str, cwd: str, depth: int = 0) -> tuple[
+def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, str], ...] = ()) -> tuple[
         tuple[tuple[Path, list[str]], ...], tuple[str, ...], tuple[str, ...], tuple[tuple[Path, str, str], ...]]:
     """(every send in a command -- git commit / push, a sending gh call -- as (repository it runs
     in, arguments naming its destination for corpus-scan), the words that leave a send's folder
@@ -1716,7 +1818,11 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[
             skipping += skips
             forcing += forces
     standing = Standing(cwd, unknown_stays=False)
-    values: dict[str, str] = {}
+    # What the command that runs this code gave its variables (`X=/a bash s.sh`), unless the code may change it.
+    head = {name: value for name, value in given if not rebinds(command, name)}
+    redefined = bool(REDEFINES_TEST.search(command))
+    values: dict[str, str] = dict(head)
+    branches = Branches({} if redefined else head)
     lost: str | None = None            # the word that took the command where it cannot be read
     pushed: list[str | None] = []
 
@@ -1732,6 +1838,9 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[
 
     def run(argv: list[str]) -> None:
         nonlocal lost
+        argv = branches.step(argv)
+        if not branches.live():
+            return
         argv = [filled(w) for w in argv]
         assigned = argv[argv[0] in DECLARES:] if argv else []
         if assigned and all(ASSIGNMENT.fullmatch(w) for w in assigned):
@@ -1746,8 +1855,12 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[
         # Skip what stands before the command: shell keywords (`do git push`), assignments
         # (`FOO=1 git ...`) and commands that run the next one (`sudo`, `env`, `nohup`, ...).
         chdir = None
+        gives: dict[str, str] = {}
         while argv:
             if argv[0] in KEYWORDS or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", argv[0]):
+                name, is_assignment, value = argv[0].partition("=")
+                if is_assignment and argv[0] not in KEYWORDS and not UNKNOWN.search(value):
+                    gives[name] = value
                 argv = argv[1:]
             elif (wrapper := os.path.basename(argv[0])) in WRAPPERS:
                 argv = argv[1:]
@@ -1792,7 +1905,7 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[
         def inner(code: str) -> None:
             if depth >= NESTED:
                 return
-            sends, unreadable, skips, forces = send_places(code, str(here), depth + 1)
+            sends, unreadable, skips, forces = send_places(code, str(here), depth + 1, tuple(sorted(gives.items())))
             found.extend([] if lost else sends)
             unread.extend([lost] * len(sends) if lost else [])
             unread.extend(unreadable)
