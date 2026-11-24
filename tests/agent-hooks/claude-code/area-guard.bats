@@ -422,6 +422,23 @@ record_of() {
     unset GUARD_WORK_FOLDER
 }
 
+@test "area-guard: a projects folder shared through a link is counted from either config folder" {
+    local id="2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f"
+    record_of "${id}" client
+    mkdir -p "${H}/.claude-work"
+    ln -s "${H}/.claude/projects" "${H}/.claude-work/projects"
+    export GUARD_WORK_FOLDER="${PERSONAL}"
+    local folder
+    for folder in "~/.claude" "~/.claude-work" "~/.claude-work/projects" "~/.claude-work/projects/-work"; do
+        bash_in "${H}" "grep -rn notes ${folder}" s1
+        denied || { echo "not counted: ${folder}"; return 1; }
+        [[ "${output}" == *"this call reads inside client"* ]]
+    done
+    agent Grep path "${H}/.claude-work" "${H}" s1; denied
+    agent Read file_path "${H}/.claude-work/projects/-work/${id}.jsonl" "${H}" s1; denied
+    unset GUARD_WORK_FOLDER
+}
+
 @test "area-guard: the record of a session that read inside no area marks nothing" {
     local id="1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
     record_of "${id}"
@@ -1222,6 +1239,81 @@ session_files() {
     bash_in "${g}" "echo x >> orders.txt"; denied
     bash_in "${g}" $'python3 - <<\'EOF\'\nopen("orders.txt", "a").write("send it")\nEOF'; denied
     bash_in "$(dirname "${TRANSCRIPT}")" "python3 -c \"open('s1.jsonl','a').write('{}')\""; denied
+}
+
+@test "area-guard: the agent does not replace the folder of transcripts either, whole or in part" {
+    session_files
+    mkdir -p "${H}/fake/-home-tool" "${H}/linked" "${H}/scratch"
+    : > "${H}/fake/s1.jsonl"
+    : > "${H}/fake/-home-tool/s1.jsonl"
+    : > "${H}/.claude.json"
+    ln -s "${H}/.claude/projects" "${H}/linked/projects"
+    ln -s "${H}/.claude-work/projects" "${H}/.claude-work/projects-by-another-name"
+    local c
+    for c in "rm -rf ~/.claude/projects" "mv ~/.claude/projects ~/old" "mv ~/.claude/projects/-home-tool ~/old" \
+             "mv ~/.claude-work ~/old" "rm ~/linked/projects" "ln -sfn ~/fake ~/.claude-work/projects" \
+             "cp ~/fake/s1.jsonl ~/.claude/projects/-home-tool/" "cp -R ~/fake/-home-tool ~/.claude/projects/" \
+             "rsync -a ~/fake/ ~/.claude/projects/" \
+             "python3 -c \"import os; os.rename('${H}/.claude/projects', '${H}/old')\"" \
+             "rm -rf ~/.claude-work/projects/p" "rm -rf ~/.claude" "rm -rf ~" "rm -rf ${H}/.claude/projects/" \
+             "cd ~/.claude/projects && rm -rf -- -home-tool" "mv ~/fake/s1.jsonl ~/.claude/projects/-home-tool/" \
+             "rm ~/.claude-work/projects-by-another-name" "rsync -a ~/fake/ ~/.claude-work/" \
+             "cp -R ~/fake/. ~/.claude-work/"; do
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+        [[ "${output}" == *"an order for a send is judged from it"* ]] || { echo "other reason: ${c}"; return 1; }
+    done
+    # the transcripts' folders stay the agent's to read and copy out, and what is no transcript's stays its own
+    for c in "cp ~/.claude/projects/-home-tool/s1.jsonl ~/scratch/" "cp -R ~/.claude/projects ~/scratch/backup" \
+             "rsync -a ~/.claude/projects/ ~/scratch/" "ls ~/.claude/projects" "mv ~/scratch ~/scratch-old" \
+             "cp ~/fake/s1.jsonl ~/.claude/projects/-home-tool/memory/" "cp -R ~/fake ~/.claude/projects/-home-tool/memory/" \
+             "rm -rf ~/.claude/projects/-home-tool/memory" "cp ~/fake/s1.jsonl ~/scratch/" "cp -R ~/fake ~/.claude/skills" \
+             "ln -s ~/fake ~/scratch/fake-link" "rm ~/.claude.json" \
+             "python3 -c \"import glob, pathlib; print(glob.glob(str(pathlib.Path.home() / '.claude*')))\""; do
+        bash_in "${H}" "${c}"
+        passed || { echo "refused: ${c}"; return 1; }
+    done
+}
+
+@test "area-guard: find, tar, unzip, -t and rsync take away or fill the transcripts' and the settings' folders as the commands beside them do" {
+    session_files
+    mkdir -p "${H}/fake" "${H}/scratch"
+    : > "${H}/fake/s1.jsonl"
+    local c g="${GUARD_CONFIG_DIR}"
+    for c in "find ~/.claude/projects -name '*.jsonl' -delete" "find ~/.claude/projects/-home-tool -exec rm {} +" \
+             "find -L ~/.claude-work -delete" "find ~/.claude/projects -type f -execdir rm -f {} ;" \
+             "tar -xf ~/old.tar -C ~/.claude/projects" "tar -x -C ~/.claude-work -f ~/old.tar" \
+             "tar xzf ~/old.tgz --directory=~/.claude/projects" "unzip ~/old.zip -d ~/.claude/projects" \
+             "unzip -o ~/old.zip -d ~/.claude-work" \
+             "cp -t ~/.claude/projects/-home-tool/ ~/fake/s1.jsonl" "mv -t ~/.claude/projects/-home-tool/ ~/fake/s1.jsonl" \
+             "install -t ~/.claude/projects/-home-tool ~/fake/s1.jsonl" "cp --target-directory=~/.claude/projects/-home-tool ~/fake/s1.jsonl" \
+             "mv -t ~/scratch ~/.claude/projects/-home-tool" \
+             "rsync -a --remove-source-files ~/.claude/projects/ ~/scratch/" \
+             "rsync --remove-source-files ~/.claude/projects/-home-tool/ ~/scratch/" \
+             "rsync -a --delete ~/fake/ ~/.claude/projects/"; do
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+        [[ "${output}" == *"an order for a send is judged from it"* ]] || { echo "other reason: ${c}"; return 1; }
+    done
+    for c in "find ${g} -name orders.txt -delete" "find ${g} -exec rm {} +" "tar -xf ~/old.tar -C ${g}" \
+             "unzip ~/old.zip -d ${g}" "cp -t ${g} ~/fake/s1.jsonl" "mv -t ${g} ~/fake/s1.jsonl" \
+             "install -t ${g} ~/fake/s1.jsonl" "rsync -a ~/fake/ ${g}/" "rsync -a --remove-source-files ${g}/ ~/scratch/"; do
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+        [[ "${output}" == *"what the guard lets through is judged from it"* ]] || { echo "other reason: ${c}"; return 1; }
+    done
+    # reading, listing, unpacking elsewhere, and what is no transcript's stay the agent's own
+    for c in "find ~/.claude/projects -name '*.jsonl'" "find ~/.claude/projects -exec cat {} +" "find ~/scratch -delete" \
+             "find ${g} -name orders.txt" "tar -xf ~/old.tar -C ~/scratch" "tar -czf ~/scratch/b.tgz ~/.claude/projects" \
+             "tar -tf ~/old.tar" "unzip -l ~/old.zip" "unzip ~/old.zip -d ~/scratch" \
+             "cp -t ~/scratch ~/.claude/projects/-home-tool/s1.jsonl" "cp -t ~/scratch ${g}/orders.txt" \
+             "mv -t ~/scratch ~/fake/s1.jsonl" "install -t ~/scratch ~/fake/s1.jsonl" \
+             "cp -t ~/.claude/projects/-home-tool/memory/ ~/fake/s1.jsonl" \
+             "find ~/.claude/projects/-home-tool/memory -delete" "rsync -a ~/.claude/projects/ ~/scratch/" \
+             "rsync -a --remove-source-files ~/fake/ ~/scratch/" "rsync -a ${g}/ ~/scratch/"; do
+        bash_in "${H}" "${c}"
+        passed || { echo "refused: ${c}"; return 1; }
+    done
 }
 
 @test "area-guard: reading them and copying them out pass" {

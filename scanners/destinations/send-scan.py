@@ -268,9 +268,14 @@ def judge(name: str, payload: Path, reading: bool = False, handles: Path | None 
         env["ANON_WORDS_FILE"] = str(area_words)
     if (destination == OUTSIDE or env.get("ANON_WORDS_FILE") == str(area_words)) and ANON.is_file():
         import subprocess   # loaded where it is used: the agent's entry guard reads this file on every call
+        words = {}
+        master = guard_places.master_words()
+        # Outside, the folder the call is typed in does not choose the list (its `guard.wordlist` would).
+        if destination == OUTSIDE and not env.get("ANON_WORDS_FILE") and master.is_file():
+            words["ANON_WORDS_FILE"] = str(master)
         try:
             r = subprocess.run(["bash", str(ANON)], capture_output=True, text=True, timeout=60,
-                               env={**env, "ANON_SHOW_MATCH": "1",
+                               env={**env, **words, "ANON_SHOW_MATCH": "1",
                                     "ANON_SCAN_PATHS": "\n".join(map(str, filter(None, (payload, handles))))})
         except subprocess.TimeoutExpired:
             return 2, (f"not sent to {name}: the word-list scan did not finish within 60s -- refused "
