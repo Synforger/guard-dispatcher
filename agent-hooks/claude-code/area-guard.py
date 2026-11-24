@@ -1782,9 +1782,10 @@ def operator_only(path: Path) -> bool:
 
 def operator_file_handed(command: str, cwd: str, depth: int = 0) -> Path | None:
     """A file only the operator writes that a command line hands as a word (alone, or after an option's
-    `=`) to a program that may write it -- one not in READS_ONLY, and no copy -- wherever it runs: a
-    command line handed on, a shell's `-c` string, a heredoc fed to a shell. None when there is none. A
-    file fed on the standard input (`< orders.txt`) is read, not handed."""
+    `=`) to a program that may write it -- one not in READS_ONLY, no copy, and no file of code the
+    guard reads, which is read again with the words in place (script_argument_orders) -- wherever it
+    runs: a command line handed on, a shell's `-c` string, a heredoc fed to a shell. None when there is
+    none. A file fed on the standard input (`< orders.txt`) is read, not handed."""
     line, fed = split_heredocs(spell_home(in_run_order(command)))
     try:
         steps = list(stepped_commands(line))
@@ -1800,7 +1801,8 @@ def operator_file_handed(command: str, cwd: str, depth: int = 0) -> Path | None:
             if SHELL_CODE.fullmatch(tool):
                 inner += [(head[at + 1], standing.here) for at, word in enumerate(head[1:-1], 1)
                           if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
-            if tool not in READS_ONLY | COPIES:
+            # A file of code the guard reads is read again with its words in place (script_argument_orders).
+            if tool not in READS_ONLY | COPIES and script_files.ran(head, standing.here) is None:
                 for word in head[1:]:
                     for spelled in {each for part in {word, word.partition("=")[2]} - {""}
                                     for each in brace_expanded(part)}:
