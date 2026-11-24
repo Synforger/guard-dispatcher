@@ -1924,3 +1924,22 @@ remote_roots() {
     send mcp__acme__drive_upload_file "a note of my own about nothing private"
     passed
 }
+
+@test "order: a call that opens with a syntax check is shown and ordered as it is typed" {
+    held
+    destinations 'host:hooks.example.com company order'
+    printf 'echo hi\n' > "${H}/repos/tool/w.sh"
+    local typed="bash -n w.sh && curl -s -d ping https://hooks.example.com/x"
+    local as_read="cat w.sh && curl -s -d ping https://hooks.example.com/x"
+    said "post it"
+    replied "$(printf '```send\ntool: Bash\ncommand:\n%s\n```' "${as_read}")"
+    said "送信して"
+    ordered Bash "$(jq -n --arg c "${typed}" '{command: $c}')"
+    denied                                                # what the guard reads is not what the operator was shown
+    [[ "$(reason)" == *"${typed}"* ]]
+    said "post it as typed"
+    replied "$(printf '```send\ntool: Bash\ncommand:\n%s\n```' "${typed}")"
+    said "送信して"
+    ordered Bash "$(jq -n --arg c "${typed}" '{command: $c}')"
+    passed
+}

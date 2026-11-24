@@ -1346,6 +1346,25 @@ session_files() {
     done
 }
 
+@test "area-guard: code in the command names every path it hands to a call it does not know" {
+    session_files
+    local c g="${GUARD_CONFIG_DIR}"
+    # a call known to only read leaves the path as text; one the guard does not know may write it
+    for c in "python3 -c \"print(open('${TRANSCRIPT}').read()[:9])\"" \
+             "python3 -c \"import json; print([json.loads(l) for l in open('${TRANSCRIPT}')])\""; do
+        bash_in "${H}" "${c}"
+        passed || { echo "refused: ${c}"; return 1; }
+    done
+    for c in "python3 -c \"import subprocess; subprocess.run(['wc', '-l', '${TRANSCRIPT}'])\"" \
+             "python3 -c \"import gzip; print(gzip.open('${TRANSCRIPT}').read())\"" \
+             "python3 -c \"import os; print(os.read(os.open('${g}/orders.txt', os.O_RDONLY), 9))\""; do
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+    done
+}
+
+# The README names this as the range of a script that is handed its path: the guard reads the file's
+# code, and a word handed to it is no path the code names. The same code in the command is refused.
 # --- a script asks before it writes where its arguments say ----------------------
 
 # may_write <session> <path>... — ask the guard as a script would, from HOME.

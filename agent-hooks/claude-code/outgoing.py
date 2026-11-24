@@ -1198,7 +1198,7 @@ def written_in(payload: str, command: str) -> bool:
 
 def check(tool: str, args: dict, cwd: str, send_scan: Path,
           marks: frozenset[str] = frozenset(), area_of=lambda path: None, tabs: dict | None = None,
-          event: dict | None = None, state: Path | None = None) -> str | None:
+          event: dict | None = None, state: Path | None = None, *, shown: dict | None = None) -> str | None:
     """The one-line refusal for this call, or None when every send in it passes.
 
     A file whose text cannot be taken out (too large, or not text) cannot be scanned. It is
@@ -1208,8 +1208,10 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
 
     A send to a destination declared with `order` is first held to the operator's order, read
     from the hook's `event` (its transcript); once everything else has passed it takes one of
-    the order's shown blocks, kept under `state`."""
+    the order's shown blocks, kept under `state`. The order is held against `shown`, the call as it
+    is typed, where `args` is the call as the guard reads it."""
     judged = send_scan_module(send_scan)
+    typed = args if shown is None else shown
 
     def refusal(send: Send) -> str | None:
         name, payload, unreadable, unknown, reading, handles = send[:6]
@@ -1225,11 +1227,11 @@ def check(tool: str, args: dict, cwd: str, send_scan: Path,
             return None
         ordered = None
         if needs_order and not reading and not order_module().is_draft(tool):
-            if tool == "Bash" and (unreadable or not written_in(payload, args.get("command") or "")):
+            if tool == "Bash" and (unreadable or not written_in(payload, typed.get("command") or "")):
                 return (f"outgoing: not sent to {name}: a send there needs the operator's order, and a command "
                         f"is matched against a shown call only when what it sends is written in the command "
                         f"itself: put the body in the command (`-d '...'`, or a heredoc whose delimiter is quoted), not in a file")
-            why, ordered = order_module().ordered(tool, args, event)
+            why, ordered = order_module().ordered(tool, typed, event)
             if why:
                 return f"outgoing: not sent to {name}: {why}"
         if unknown:

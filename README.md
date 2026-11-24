@@ -94,6 +94,15 @@ Scanners read one PCRE fragment per line from the first of:
    (recommended location; `<root>/config/guard/exit/words/master.txt` under a platform root)
 4. a repo-local `.tooling/local-ci/anon-words.txt` (legacy)
 
+A `gh` send is scanned with the list of the repository it sends to, as a push
+is: `gh-shim/_internal/words_folder.py` reads the git settings of that
+repository's clone. A call that names its repository (`-R`, `--repo`,
+`GH_REPO`, the path of `gh api`) takes the list of that repository's clone
+inside an area, wherever the call is typed; one that names none, or names
+only the remotes of the folder it is typed in, takes that folder's list. A
+named repository with no clone inside an area, or with clones that disagree,
+is scanned with the operator master.
+
 A send of a tool or a network command to a destination outside every area
 skips step 2: it takes the operator master, whatever list the folder the
 call is typed in names.
@@ -256,6 +265,7 @@ documents themselves. Everything it reads is configured on this machine only:
                                         _outside <path> ...          in no area
                                         _exempt <path> ...           never scanned
                                         _carries <area> <other> ...  what a repository in <area> may hold
+                                        _shows <area> <name> ...     a name of <area> any session may be told
 ~/.config/guard/patterns/<name>.txt     regular expressions for identifiers of a shape
                                         (product codes, client names), case-insensitive
 ~/.config/guard/allow.txt               phrases that are fine to send
@@ -297,7 +307,7 @@ inside the area only:
 
 | file | read | not read |
 |---|---|---|
-| `areas.txt` | a sub-area whose folders lie inside the area's; a `_carries` line between areas within it | `_exempt` / `_outside`, an area of the machine's own file outside it, a folder outside it |
+| `areas.txt` | a sub-area whose folders lie inside the area's; a `_carries` line between areas within it | `_exempt` / `_outside` / `_shows`, an area of the machine's own file outside it, a folder outside it |
 | `destinations.txt` | a destination placed in the area or an area within it, or `block`ed; `order` as in the machine's file (on a `repo:` line it holds a forced push) | `outside`, a pattern that catches every destination (`*`), an area outside it |
 | `allow.txt` | a phrase fine to send of the text of the areas within it | — |
 | `patterns/<name>.txt` | a shape of the identifiers of an area within it | a shape that does not compile |
@@ -466,6 +476,15 @@ words. Keep it in a folder `ignore.txt` lists among the area's own settings
 (`/srv/company/hub/from/outside`): its documents are no area's. Nothing finds
 such text by itself: the area keeps it apart, so a session outside cannot make an
 area's text no area's by sending it in.
+
+An area goes by the names of its folders, and a message to a session that has
+not read inside it may not say them. When a folder is named by an ordinary
+word (`~/notes`), every such message holding that word is refused.
+`_shows notes notes` in the machine's own `areas.txt` lets that name of that
+area be said to any session. It shows only the names it gives: the area's text,
+its other names, and the same name of another area are judged as before, and a
+name marked `outside` in `roles.txt` still may not hold it. A line that gives
+no name of an area refuses every message to another session until it is fixed.
 
 An area's documents are everything under it that holds its words:
 
@@ -878,7 +897,14 @@ step earlier, before each tool call, from the same `areas.txt`:
   `#!` line names, the shell when it has none) and `uv run fix.py`. It is
   followed where the command stands (`cd`, a subshell, `-c`, `eval`, a
   substitution the shell runs, in double quotes and heredocs too), and a
-  script that runs another is followed a few steps. Not read: a module run by
+  script that runs another is followed a few steps. A syntax check at
+  the head of the call runs none of it, so `bash -n run.sh` there is judged
+  as `cat run.sh`: only `sh`, `bash`, `zsh`, `dash` or `ksh` (bare, or in
+  `/bin` or `/usr/bin`) with `-n` or `-o noexec` and one file written out,
+  one after another, after a `cd` to a folder written out at most. Anywhere
+  else (after another command, an assignment or a function, in a pipe, with
+  another option) it is read as a run, since what stands before it can make
+  that name run the file. Not read: a module run by
   name (`python3 -m`), a program found on PATH by its bare name, what the code
   imports or starts in turn, a file over 512 KiB and one that is not text. A
   shell script's comment lines are not held to the lines about switching the
@@ -1542,7 +1568,9 @@ contract:
   `GET` through `api`, …) pass through untouched, because those
   legitimately name accounts and repositories. An unrecognised subcommand
   is scanned rather than assumed harmless, and an unresolvable scanner
-  refuses the command. Pinned in `tests/gh-shim/gh-guard.bats`.
+  refuses the command. The word list is the one of the repository the call
+  sends to (see *Word list*), not of the folder it is typed in. Pinned in
+  `tests/gh-shim/gh-guard.bats`.
 - **A Claude Code session with the agent entry guard registered** does not
   write a repository outside the areas it read, and does not commit, push or
   send through `gh` outside them; with or without areas, it does not run a

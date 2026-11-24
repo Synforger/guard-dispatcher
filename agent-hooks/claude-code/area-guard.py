@@ -127,6 +127,7 @@ import search_call  # noqa: E402
 from path_forms import resolved  # noqa: E402
 import orders_edit  # noqa: E402
 import service_reads  # noqa: E402
+import syntax_checks  # noqa: E402
 import ticket_places  # noqa: E402
 import work_reads  # noqa: E402
 from shell_commands import with_inner_first  # noqa: E402
@@ -205,6 +206,9 @@ def order_module():
 HEREDOC = re.compile(r"(?<!<)<<(-?)[ \t]*(['\"]?)([A-Za-z_][\w.-]*)\2(?!<)")
 # Programs that run what a heredoc feeds them as code, and those that only pass on to the next word.
 RUNS_BODY = re.compile(r"(?:\S*/)?(?:(?:ba|z|da|k)?sh|python[\d.]*|node|perl|ruby|osascript|eval|xargs|source|\.)")
+# Of those, the ones whose body is shell: the commands in it can send. The body of an interpreter of
+# another language is code the guard reads as that language (code_paths, code_writes), not as words.
+RUNS_SHELL_BODY = re.compile(r"(?:\S*/)?(?:(?:ba|z|da|k)?sh|eval|xargs|source|\.)")
 PASSES_ON = {"sudo", "env", "command", "exec", "nohup", "time", "nice"}
 
 
@@ -224,30 +228,32 @@ def heredocs(command: str):
         pos = body_end
 
 
-def strip_heredocs(command: str) -> str:
+def strip_heredocs(command: str, *, shell_only: bool = False) -> str:
     """The command without the bodies of its heredocs, unless the program they feed runs them as
-    code (a shell, python, ...). A commit message or a file's text written through a heredoc is
-    not the command's own words: read as words, `-n` in a message was a `git commit -n`."""
+    code (a shell, python, ...; with `shell_only`, a shell). A commit message or a file's text written
+    through a heredoc is not the command's own words: read as words, `-n` in a message was a
+    `git commit -n`."""
+    runs = RUNS_SHELL_BODY if shell_only else RUNS_BODY
     out, pos = [], 0
     for line_end, body_end, program in heredocs(command):
-        out.append(command[pos:body_end] if RUNS_BODY.fullmatch(program) else command[pos:line_end + 1])
+        out.append(command[pos:body_end] if runs.fullmatch(program) else command[pos:line_end + 1])
         pos = body_end
     out.append(command[pos:])
     return "".join(out)
 
 
-def shell_words(command: str) -> list[str]:
+def shell_words(command: str, *, shell_only: bool = False) -> list[str]:
     """The command's words, split in one place for every judgement (outgoing.shell_words):
     a `;` glued to a word is still a break, and a heredoc's body is not words of the command
-    unless the program it feeds runs it (strip_heredocs). Falls back to plain spaces on an
-    unclosed quote."""
-    return list(split_words(command))
+    unless the program it feeds runs it (strip_heredocs; `shell_only`: unless it is a shell).
+    Falls back to plain spaces on an unclosed quote."""
+    return list(split_words(command, shell_only))
 
 
 @functools.lru_cache(maxsize=None)
-def split_words(command: str) -> tuple[str, ...]:
+def split_words(command: str, shell_only: bool = False) -> tuple[str, ...]:
     """shell_words, split once a call of the hook for each command line."""
-    command = strip_heredocs(command)
+    command = strip_heredocs(command, shell_only=shell_only)
     try:
         return tuple(outgoing_module().shell_words(command))
     except ValueError:
@@ -622,6 +628,23 @@ def split_heredocs(text: str) -> tuple[str, list[tuple[str, str]]]:
         pos = body_end
     line.append(text[pos:])
     return "".join(line), fed
+
+
+def shell_heredocs_as_code(command: str) -> str:
+    """The command with each heredoc that feeds a shell written as that shell's `-c` string
+    (`bash <<'SH' ... SH` is `bash -c '...'`), so what it runs is read where the command stands
+    when it reaches it, as a `-c` string is. The terminator line stays and reads as a word."""
+    out, kept_to, scanned = [], 0, 0
+    for line_end, body_end, program in heredocs(command):
+        opening = HEREDOC.search(command, scanned)
+        scanned = body_end
+        if opening and SHELL_CODE.fullmatch(os.path.basename(program)):
+            out.append(command[kept_to:opening.start()])
+            out.append("-c " + shlex.quote(command[line_end + 1:body_end]))
+            out.append(command[opening.end():line_end + 1])
+            kept_to = body_end
+    out.append(command[kept_to:])
+    return "".join(out)
 
 
 # Builtins that run their words, or the file they are handed, as shell.
@@ -1662,7 +1685,9 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[
     A call of the hook reads each command line from each folder once, and names each send once."""
     command = in_run_order(command)
     try:
-        words = shell_words(command)
+        # Python written into the command is no command line: a quote it leaves open turns the words
+        # into plain spaces, and a shell line quoted inside it would be read as a send.
+        words = shell_words(shell_heredocs_as_code(command), shell_only=True)
     except ValueError:
         return (), (), (), ()
     breaks = outgoing_module().SHELL_BREAK
@@ -2531,6 +2556,9 @@ def main() -> int:
     areas = load_areas()
     tool, args, cwd = event.get("tool_name", ""), event.get("tool_input", {}), event.get("cwd", os.getcwd())
     session = event.get("session_id", "unknown")
+    shown = monitor_calls.as_shell(tool, args)[1]       # what the operator is shown, and says yes to
+    if tool == "Bash" and "command" in args:
+        args = {**args, "command": syntax_checks.as_reads(args["command"])}
     # A message from another machine holds the session until the operator types, areas or none.
     if tool not in HELD_RUNS and order_module().held(event.get("transcript_path")):
         deny(HELD)
@@ -2556,7 +2584,7 @@ def main() -> int:
     if tool == "Bash" and (reason := bypass(args.get("command", ""), cwd, areas)):
         command = args.get("command", "")
         places = [real(cwd), *mentioned_paths(command, areas, cwd), *(t for t, _ in sends_of(command, cwd))]
-        if reason == MARKS_REWRITE or (why := approval(tool, args, event, places, areas)):
+        if reason == MARKS_REWRITE or (why := approval(tool, shown, event, places, areas)):
             deny(f"area-guard: an agent does not switch the guards off or around ({reason})"
                  + ("" if reason == MARKS_REWRITE else f": {why}"))
             return 0
@@ -2612,7 +2640,7 @@ def main() -> int:
             paths = [Path(written)]
         else:
             paths = [p for found in named(args.get("command", ""), cwd) for p in found if in_settings(p)]
-        why = approval(tool, args, event, paths or [real(cwd)], areas) if is_setting else None
+        why = approval(tool, shown, event, paths or [real(cwd)], areas) if is_setting else None
         if not is_setting or why:
             deny(f"area-guard: an agent does not write or remove {what[0]}: {what[1]} "
                  f"(code written into a command counts as writing every path it names)"
@@ -2643,7 +2671,7 @@ def main() -> int:
     tabs = state.setdefault("tabs", {})
     try:
         reason = outgoing_module().check(tool, args, cwd, SEND_SCAN, frozenset(marks), private_area, tabs,
-                                         event, STATE)
+                                         event, STATE, shown=shown)
     except Exception as error:  # noqa: BLE001 — a hook that fails lets the call run: a check that breaks sends nothing
         where = error.__traceback__
         while where.tb_next:
