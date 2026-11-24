@@ -2079,19 +2079,66 @@ def area_word_lists(targets: list[Path], areas) -> dict[str, tuple[Path, Path]]:
     return found
 
 
+# A word that names a place, not what is written: an absolute, home or relative path (alone or after
+# `--out=`). Its folders may carry names of their own (an agent's folder, a tool's).
+PATH_WORD = re.compile(r"(?:(?<=^)|(?<==))(?:~|\.{1,2})?/\S*")
+
+
+def writing_parts(command: str, cwd: str, holds) -> list[str]:
+    """What the commands of a line that write where `holds` says yes put there, read command by
+    command as the shell runs them (a `cd` moves the rest, a subshell gives the place back): the words
+    of such a command but its paths, the heredocs and here-strings fed to it, and the code of the
+    script it runs. The other commands of the line (a tool run after, a path it is handed) are not
+    what is written. A line that cannot be split is taken whole."""
+    line, fed = split_heredocs(spell_home(in_run_order(command)))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return [command]
+    standing = Standing(cwd)
+    bodies = list(fed)
+    parts: list[str] = []
+    for words, redirects, here_string, ended_by in steps:
+        count = sum(1 for operator, _ in redirects if operator in ("<<", "<<-"))
+        mine, bodies = bodies[:count], bodies[count:]
+        rest = words
+        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT or rest[0] in KEYWORDS):
+            rest = rest[1:]
+        if rest and standing.move(os.path.basename(rest[0]), rest[1:]):
+            pass
+        elif words:
+            step = " ".join(shlex.quote(word) for word in words) + "".join(
+                f" {operator} {shlex.quote(target)}" for operator, target in redirects if operator not in ("<<", "<<-"))
+            step += "".join(f" <<'GUARD_BODY_{at}'\n{body}\nGUARD_BODY_{at}" for at, (_, body) in enumerate(mine))
+            if here_string is not None:
+                step += f" <<< {shlex.quote(here_string)}"
+            if any(holds(target) for target in write_targets(step, standing.here)):
+                parts += [PATH_WORD.sub("", word) for word in words]
+                parts += [body for _, body in mine] + ([here_string] if here_string is not None else [])
+                parts += [code for _, code, _ in ran_scripts(step, standing.here)]
+        if ended_by == "(":
+            standing.open()
+        elif ended_by == ")":
+            standing.close()
+    return parts
+
+
 def area_words_refusal(tool: str, args: dict, cwd: str, areas) -> str | None:
     """Why what a call writes into an area's folders may not go there, or None: it holds a word of
     that area's own list (area_word_lists), as a send to that area would. What is read is what the
-    call puts there: the text an Edit or a Write writes, and for a command its line and the code of
-    the scripts it runs (a heredoc, a `sed` expression, a program's strings). What a program reads
-    from elsewhere and writes is not seen."""
+    call puts there: the text an Edit or a Write writes, and for a command the commands of its line
+    that write there (writing_parts: their words but paths, what is fed to them, the code of the
+    scripts they run). What a program reads from elsewhere and writes is not seen."""
     if tool in WRITES:
         targets = [real(args.get("file_path") or args.get("notebook_path") or "", cwd)]
         text = written_text(tool, args)
     elif tool == "Bash":
         command = args.get("command", "")
         targets = write_targets(command, cwd)
-        text = "\n".join([command, *(code for _, code, _ in ran_scripts(command, cwd))])
+        held = area_word_lists(targets, areas)
+        held_targets = {target for _, target in held.values()}
+        text = "\n".join(writing_parts(command, cwd, lambda path: bool(area_word_lists([path], areas)))) \
+            if held_targets else ""
     else:
         return None
     lists = area_word_lists(targets, areas) if text.strip() else {}

@@ -1810,6 +1810,26 @@ area_words() {
     passed
 }
 
+@test "area-guard: only the commands that write into the area are read for its words, their paths left out" {
+    area_words
+    mkdir -p "${H}/tmp/agents-handlename"
+    local command
+    for command in "sed -i '' 's/internal/inside/' ${COMPANY_REPO}/notes.md && handlename-build --out ${H}/tmp/agents-handlename/y.pptx" \
+                   "printf 'clean\n' > ${COMPANY_REPO}/m.toml; echo handlename" \
+                   "cp ${H}/tmp/agents-handlename/y.toml ${COMPANY_REPO}/m.toml" \
+                   $'python3 - <<\'PY\'\nopen("'"${COMPANY_REPO}"$'/m.toml", "w").write("clean")\nPY\nhandlename-build'; do
+        bash_in "${H}" "${command}"
+        [ "${status}" -eq 0 ] && [[ "${output}" != *"word list"* && "${output}" != *"readers must not"* ]] \
+            || { echo "held: ${command} -> ${output}"; return 1; }
+    done
+    for command in "handlename-build --out ${H}/tmp/y.pptx && sed -i '' 's/internal/handlename/' ${COMPANY_REPO}/notes.md" \
+                   "cd ${COMPANY_REPO} && printf 'handlename\n' > m.toml" \
+                   $'echo ok; python3 - <<\'PY\'\nopen("'"${COMPANY_REPO}"$'/m.toml", "w").write("handlename")\nPY'; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
 @test "area-guard: an agent's own folder inside an area holds its own names" {
     area_words
     export AGENT_PLATFORM_ROOT="${H}/platform"
