@@ -1808,18 +1808,27 @@ def send_places(command: str, cwd: str, depth: int = 0) -> tuple[
             inner(" ".join(args))
         elif name == "git":
             repo, i, place = here, 0, lost
+            hooks_off = None
             while i < len(args) and args[i].startswith("-"):
                 flag, eq, value = args[i].partition("=")
                 if flag in GIT_VALUED and not eq:
                     value, i = (args[i + 1] if i + 1 < len(args) else ""), i + 1
+                elif flag.startswith("-c") and not flag.startswith("--") and len(flag) > 2:
+                    flag, value = "-c", args[i][2:]
+                if flag in ("-c", "--config-env") and value.lower().startswith(HOOKS_PATH):
+                    hooks_off = f"git {flag} core.hooksPath"
                 if flag == "-C" and value:
                     repo, place = real(value, str(repo)), unknown(value, place)
                 elif flag == "--work-tree" and value:
                     repo, place = real(value, str(here)), unknown(value, lost)
                 i += 1
             sub, rest = (args[i], args[i + 1:]) if i < len(args) else ("", [])
+            if sub in ("commit", "push") and hooks_off:
+                skipping.append(hooks_off)
             if sub == "commit" and commit_options.skips_hooks(rest):
                 skipping.append("git commit -n (= --no-verify)")
+            if sub == "push" and push_options.skips_hooks(rest):
+                skipping.append("git push --no-verify")
             if sub in ("commit", "push") and place:
                 unread.append(place)
             elif sub == "commit":
@@ -2347,14 +2356,57 @@ def approval(tool: str, args: dict, event: dict, places: list[Path], areas) -> s
     return why or order_module().spend(found, event, STATE)
 
 
+def handed_code(command: str, cwd: str) -> list[tuple[str, str, str]]:
+    """(the program, the code, the folder it runs in) for the code a command hands to an interpreter
+    that is not a shell: a file of code (ran_scripts), a `-c` / `-e` string, a heredoc or a
+    here-string fed to it. Code given on the line is read from the folder the command started in."""
+    found = [(program, code, here) for program, code, here in ran_scripts(command, cwd)
+             if not SHELL_CODE.fullmatch(program)]
+    line, fed = split_heredocs(command)
+    found += [(program, body, cwd) for program, body in fed if script_files.kind_of(program) not in (None, "shell")]
+    try:
+        steps = list(simple_commands(line))
+    except ValueError:
+        return found
+    for words, _, here_string in steps:
+        rest = words
+        while rest and (ASSIGNMENT.fullmatch(rest[0]) or os.path.basename(rest[0]) in RUNS_NEXT):
+            rest = rest[1:]
+        tool = os.path.basename(rest[0]) if rest else ""
+        if script_files.kind_of(tool) in (None, "shell"):
+            continue
+        flags = code_flags(tool)
+        found += [(tool, code, cwd) for flag, code in zip(rest[1:], rest[2:]) if flag in flags]
+        if here_string is not None:
+            found.append((tool, here_string, cwd))
+    return found
+
+
+# Any interpreter's code that names git together with a way to switch its hooks off. Only Python is
+# read for the command lines it runs; another language's code is held by these words alone.
+CODE_GIT_BYPASS = re.compile(r"--no-ver(?:i|if|ify)?\b|core\.hookspath|GIT_CONFIG_(?:PARAMETERS|COUNT|GLOBAL|SYSTEM)"
+                             r"|\bHUSKY\b", re.I)
+
+
 def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
     """Why a command switches the guards off or around, or None. It passes on the operator's yes
     (`approval`), but for the marks. A shell script the command runs from a file (ran_scripts) is
-    held to the same lines, its comment lines left out: they are matched as text here."""
+    held to the same lines, its comment lines left out: they are matched as text here. So is a
+    command line Python code runs (code_writes.python.commands_run); another language's code that
+    names git and a way to switch its hooks off is held as it stands."""
     for program, code, here in ran_scripts(command, cwd) if depth < NESTED else []:
         lines = "\n".join(line for line in code.splitlines() if not line.lstrip().startswith("#"))
         if SHELL_CODE.fullmatch(program) and (reason := bypass(lines, here, areas, depth + 1)):
             return reason
+    for program, code, here in handed_code(command, cwd) if depth < NESTED else []:
+        if script_files.kind_of(program) == "python":
+            for line in code_writes.python.commands_run(code):
+                if reason := bypass(line, here, areas, depth + 1):
+                    return f"{reason}, in a command the Python code runs"
+            if found := code_writes.python.git_skip(code):
+                return f"Python code that runs git with {found}"
+        elif re.search(r"\bgit\b", code) and (m := CODE_GIT_BYPASS.search(code)):
+            return f"{program} code that runs git with {m.group(0)} (only Python's commands are read)"
     expanded = spell_home(command)
     marks = "|".join(re.escape(name) for name in sorted(marks_names()))
     if re.search(rf"\b(rm|mv|cp|truncate|tee|touch|ln)\b[^|;&]*(?:{marks})|>\s*\S*(?:{marks})", expanded):
@@ -2371,10 +2423,6 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
         return None
     if m := BYPASS_ENV.search(command):
         return f"sends with {m.group(1)} set"
-    if re.search(r"(^|\s)--no-ver(i|if|ify)?(\s|$)", command):
-        return "--no-verify"
-    if re.search(r"\bgit\b[^|;&]*\s-c\s*core\.hookspath", command, re.I):
-        return "git -c core.hooksPath"
     if skipping:
         return skipping[0]
     for target, dest_args in sends:
