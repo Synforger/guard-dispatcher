@@ -683,6 +683,11 @@ step earlier, before each tool call, from the same `areas.txt`:
   `xargs`, …). A command line handed on (`eval`, `trap`, `env -S`, `watch`, the
   command after `find -exec`) is read as one standing alone, and the words an
   `echo` or a `printf` pipes into `xargs` are words of the command it runs.
+  So is a command line code of another language hands to a shell: the ones
+  Python's calls that run a command run (`os.system("…")`, `shell=True`,
+  `["sh", "-c", "…"]`), and every whole string of Node, Ruby, Perl, PHP or
+  AppleScript code that calls a shell (`execSync`, `system`, backticks,
+  `do shell script`).
   A relative name is a file of the folder the
   command stands in when it reaches that word: `cd`, `pushd` / `popd` move it
   and a `( … )` subshell gives the place back, so `cd /a && echo x > out`

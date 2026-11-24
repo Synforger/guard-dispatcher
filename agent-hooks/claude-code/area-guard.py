@@ -1176,6 +1176,11 @@ def named_with_folders(command: str, cwd: str,
                 written.append((path, base))
                 # code that only looks the config folders up (`glob(home / ".claude*")`) changes none of them
                 folder_orders.append((path, base, RECORDS))
+            for line in code_command_lines(tool, code) if depth < NESTED else []:
+                inner = named_with_folders(line, base, depth + 1)
+                found[0].extend(inner[0])
+                found[1].extend(inner[1])
+                found[2].extend(inner[2])
 
     def one(words: list[str], stdin: str | None, fed: list[str], piped: list[str] | None = None) -> None:
         if words and all(ASSIGNMENT.fullmatch(w) for w in words[words[0] in DECLARES:]):
@@ -1303,6 +1308,29 @@ def echoed(previous: tuple) -> list[str]:
     if ended_by not in ("|", "|&") or not words or os.path.basename(words[0]) not in ECHOES:
         return []
     return [word for word in words[1:] if not word.startswith("-")]
+
+
+# Calls in another language's code that hand a string to a shell to run. Python's are read with
+# its syntax (code_writes.python.commands_run).
+RUNS_SHELL_IN_CODE = {
+    "node": re.compile(r"child_process|\b(?:exec|execSync|spawn|spawnSync|execFile|execFileSync)\s*\("),
+    "ruby": re.compile(r"\b(?:system|exec|spawn)\b|`|%x|IO\.popen|Open3"),
+    "perl": re.compile(r"\b(?:system|exec|qx)\b|`|\bopen\b[^;]*\|"),
+    "php": re.compile(r"\b(?:shell_exec|exec|system|passthru|popen|proc_open)\b|`"),
+    "osascript": re.compile(r"do\s+shell\s+script", re.I),
+}
+
+
+def code_command_lines(program: str, code: str) -> list[str]:
+    """The command lines code of an interpreter hands to a shell: for Python those its calls that run
+    a command run (`os.system("…")`, `shell=True`, `["sh", "-c", "…"]`); for another language that
+    calls a shell (RUNS_SHELL_IN_CODE), every whole string of the code, since which one reaches the
+    shell is not read."""
+    kind = script_files.kind_of(program)
+    if kind == "python":
+        return code_writes.python.commands_run(code)
+    runs = RUNS_SHELL_IN_CODE.get(kind or "")
+    return [text for text, whole in literals(code) if whole] if runs and runs.search(code) else []
 
 
 def fed_files(redirects: list[tuple[str, str]], previous: tuple | None) -> list[str]:
