@@ -112,6 +112,25 @@ judged() {
         "echo ${REPO}/a.txt | xargs touch"
 }
 
+@test "command reading: a write is found in a command line that code of another language hands to a shell" {
+    judged denied \
+        "python3 -c \"import os; os.system('echo x >> ${KEPT}')\"" \
+        "python3 -c \"import subprocess; subprocess.run('echo x >> ${KEPT}', shell=True)\"" \
+        "python3 -c \"import subprocess; subprocess.run(['sh', '-c', 'echo x >> ${KEPT}'])\"" \
+        "node -e \"require('child_process').execSync('echo x >> ${KEPT}')\"" \
+        "perl -e 'system(\"echo x >> ${KEPT}\")'" \
+        "ruby -e 'system(\"echo x >> ${KEPT}\")'" \
+        "php -r 'shell_exec(\"echo x >> ${KEPT}\");'"
+}
+
+@test "command reading: code of another language that runs a shell elsewhere, or none, passes" {
+    judged passed \
+        "python3 -c \"import os; os.system('echo x >> ${REPO}/out.txt')\"" \
+        "node -e \"require('child_process').execSync('git status')\"" \
+        "perl -e 'print \"echo x >> ${KEPT}\"'" \
+        "ruby -e 'puts \"echo x >> ${KEPT}\"'"
+}
+
 @test "command reading: text the shell does not run, and everyday substitutions, pass" {
     judged passed \
         "echo '\$(echo x > ${KEPT})'" \
