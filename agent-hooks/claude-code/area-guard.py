@@ -116,8 +116,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "git-hooks" / "_int
 import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
+import credentials  # noqa: E402
 import commit_options  # noqa: E402
 import commit_scope  # noqa: E402
+import word_table  # noqa: E402
 import force_push  # noqa: E402
 import guard_places  # noqa: E402
 import monitor_calls  # noqa: E402
@@ -156,6 +158,8 @@ CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus/corpus-scan.py"
 HANDOFF_SCAN_SECONDS = 180
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/destinations/send-scan.py"
 ANON_SCAN = Path(__file__).resolve().parents[2] / "scanners/words/anon-scan.sh"
+#: The line a word-list refusal ends with: the command that prints which words may go where.
+WORDS_HINT = "which words may go where: python3 ~/.git-hooks/agent-hooks/claude-code/area-guard.py words"
 # How many word-list hits a refusal of a write shows; the rest are counted.
 SHOWN_WORD_HITS = 5
 EXEMPT = area_roles.EXEMPT
@@ -1375,9 +1379,9 @@ def named_with_folders(command: str, cwd: str,
                 run(tool, code, here)
         if stdin is not None:
             run(tool, stdin, here)
-        if depth < NESTED and (script := script_files.ran([filled(words[0]), *args], here,
-                                                          [filled(f) for f in fed])) is not None:
-            run(*script, here, from_file=True)
+        if depth < NESTED:
+            for script in script_files.ran([filled(words[0]), *args], here, [filled(f) for f in fed]):
+                run(*script, here, from_file=True)
 
     # The command line is read in order, following where it stands, as sends_of does for a send:
     # `cd`, `pushd` / `popd` move it and a `( ... )` subshell gives the place back, so
@@ -1494,10 +1498,11 @@ def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
         if rest and not standing.move(os.path.basename(rest[0]), rest[1:]):
             tool, here = os.path.basename(rest[0]), standing.here
             fed = fed_files(redirects, steps[index - 1] if index else None)
-            if (script := script_files.ran_with_arguments(rest, here, fed)) is not None:
-                if not fed_only or script_files.ran(rest, here) is None:
-                    found.append((*script[:2], here, script[2]))
-            elif depth < NESTED and SHELL_CODE.fullmatch(tool):
+            # `fed_only` keeps the code a program reads from files: it is handed none by its words.
+            if not fed_only or (fed and script_files.ran_from_disk(rest, here) is None):
+                found += [(*script[:2], here, script[2])
+                          for script in script_files.ran_with_arguments(rest, here, fed)]
+            if script_files.ran_from_disk(rest, here, fed) is None and depth < NESTED and SHELL_CODE.fullmatch(tool):
                 codes = [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
                 for code in codes:
                     found += ran_scripts_with_arguments(code, here, depth + 1, fed_only=fed_only)
@@ -1805,7 +1810,7 @@ def operator_file_handed(command: str, cwd: str, depth: int = 0) -> Path | None:
                 inner += [(head[at + 1], standing.here) for at, word in enumerate(head[1:-1], 1)
                           if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
             # A file of code the guard reads is read again with its words in place (script_argument_orders).
-            if tool not in READS_ONLY | COPIES and script_files.ran(head, standing.here) is None:
+            if tool not in READS_ONLY | COPIES and script_files.ran_from_disk(head, standing.here) is None:
                 for word in head[1:]:
                     for spelled in {each for part in {word, word.partition("=")[2]} - {""}
                                     for each in brace_expanded(part)}:
@@ -1934,10 +1939,14 @@ def _program_walked(rest: list[str], steps: list, index: int, standing: Standing
     cwd = standing.here
     ended_by = steps[index][3]
     found: list[tuple[Path, list[str]]] = []
-    script = script_files.ran(rest, cwd, fed_files(steps[index][1], steps[index - 1] if index else None)) \
-        if depth < NESTED else None
-    if script is not None and SHELL_CODE.fullmatch(script[0]):
-        return recursive_reads(script[1], cwd, depth + 1)
+    if depth < NESTED:
+        fed = fed_files(steps[index][1], steps[index - 1] if index else None)
+        for program, code in script_files.ran(rest, cwd, fed):
+            if SHELL_CODE.fullmatch(program):
+                found += recursive_reads(code, cwd, depth + 1)
+        script = script_files.ran_from_disk(rest, cwd, fed)
+        if script is not None and SHELL_CODE.fullmatch(script[0]):
+            return found
     if SHELL_CODE.fullmatch(tool) and depth < NESTED:
         for at, word in enumerate(args[:-1]):
             if re.fullmatch(r"-[A-Za-z]*c", word):
@@ -2230,9 +2239,12 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
             inner(code)
         if not argv:
             return
-        script = script_files.ran(argv, str(here))
+        for program, code in script_files.ran(argv, str(here)):
+            if SHELL_CODE.fullmatch(program):
+                inner(code)
+        script = script_files.ran_from_disk(argv, str(here))
         if script is not None and SHELL_CODE.fullmatch(script[0]):
-            inner(script[1])
+            pass                        # the words run that file: they are not read as a command of their own
         elif name in SHELLS and "-c" in args[:-1]:
             inner(args[args.index("-c") + 1])
         elif name == "git":
@@ -2551,7 +2563,8 @@ def area_words_refusal(tool: str, args: dict, cwd: str, areas) -> str | None:
             shown = hits[:SHOWN_WORD_HITS] + ([f"... and {len(hits) - SHOWN_WORD_HITS} more"]
                                               if len(hits) > SHOWN_WORD_HITS else [])
             return (f"area-guard: this call writes into {target}, in {area}, a word {area}'s readers must not "
-                    f"meet ({words.name}): rewrite it" + "".join(f"\n    {hit}" for hit in shown))
+                    f"meet ({words.name}): rewrite it" + "".join(f"\n    {hit}" for hit in shown)
+                    + f"\n  {WORDS_HINT}")
     finally:
         os.unlink(fh.name)
     return None
@@ -2937,6 +2950,52 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
     return None
 
 
+def credential_change(command: str, cwd: str, depth: int = 0) -> str | None:
+    """What a Bash command changes of how the operator signs in (credentials.change: a password,
+    a key, a token, a login), or None. Every simple command is read past what runs it, inside
+    command substitutions, `-c` strings, `eval` and `trap`; a shell script it runs from a file and
+    the command lines Python code runs are held to the same lines, as `bypass` holds them, and so are
+    the command lines a command hands on as text (`su -c`, `ssh <host> …`, `tmux send-keys`, `expect`,
+    `do shell script`: credentials.handed_lines). A file it writes, takes away, moves away or opens up
+    that keeps a password, a key or a token changes one too, and so does a folder that holds one."""
+    for program, code, here in ran_scripts(command, cwd) if depth < NESTED else []:
+        lines = "\n".join(line for line in code.splitlines() if not line.lstrip().startswith("#"))
+        if SHELL_CODE.fullmatch(program) and (reason := credential_change(lines, here, depth + 1)):
+            return reason
+    for program, code, here in handed_code(command, cwd) if depth < NESTED else []:
+        if script_files.kind_of(program) == "python":
+            for line in code_writes.python.commands_run(code):
+                if reason := credential_change(line, here, depth + 1):
+                    return f"{reason}, in a command the Python code runs"
+    try:
+        commands = list(simple_commands(in_run_order(shell_heredocs_as_code(command))))
+    except ValueError:
+        commands = []
+    for words, _, _ in commands:
+        rest, lines, nested = program_words(words)
+        for found in (credentials.change(rest), *(credentials.change(program_words(inner)[0]) for inner in nested)):
+            if found:
+                return found
+        ran = credentials.past_runners(rest)
+        tool = os.path.basename(ran[0]) if ran else ""
+        if SHELL_CODE.fullmatch(tool):
+            flagged = [i for i, w in enumerate(ran[1:], 1) if re.fullmatch(r"-[A-Za-z]*c", w)]
+            lines = [*lines, *(ran[flagged[0] + 1:flagged[0] + 2] if flagged else [])]
+        lines = [*lines, *credentials.handed_lines(ran)]
+        for line in lines if depth < NESTED else []:
+            if reason := credential_change(line, cwd, depth + 1):
+                return reason
+        home = real(str(Path.home()))
+        for word in credentials.changed_paths(ran):
+            if credentials.holds_credentials(real(os.path.expanduser(word), cwd), home):
+                return f"{tool} {word} takes away, moves or opens up what keeps a password, a key or a token"
+    home = real(str(Path.home()))
+    for target in write_targets(command, cwd):
+        if credentials.credential_file(real(target), home):
+            return f"writes {target}, which keeps a password, a key or a token"
+    return None
+
+
 def forced_push_needs_order(url: str) -> bool:
     """Whether the repository a push goes to is one whose forced pushes wait for the operator
     (`repo:` line ending `order`, corpus-scan.py --force-order). A scan that cannot answer holds
@@ -2978,15 +3037,21 @@ def ask(argv: list[str]) -> int:
     areas, and for a session with no marks, but for the guard's own settings and a transcript, judged as
     an Edit of them is). Exit 1: one line per refused path on stderr. Exit 2: usage.
 
+    `words`: the table of the words the word lists hold and where each may go, for the areas a
+    session of `GUARD_WORK_FOLDER` may read (words_table). Exit 0.
+
     `reach`: the areas a session of `GUARD_WORK_FOLDER` may read inside, one name per line in name
     order; nothing when no work folder is named. Exit 0."""
+    if argv[:1] == ["words"]:
+        print(words_table(), end="")
+        return 0
     if argv[:1] == ["reach"]:
         names = reach(load_areas()) or set()
         if names:
             print("\n".join(sorted(names)))
         return 0
     if len(argv) < 3 or argv[0] != "may-write" or not argv[1]:
-        print("usage: area-guard.py may-write <session_id> <path>... | reach", file=sys.stderr)
+        print("usage: area-guard.py may-write <session_id> <path>... | reach | words", file=sys.stderr)
         return 2
     if OFF.exists():
         return 0
@@ -3009,6 +3074,39 @@ def ask(argv: list[str]) -> int:
         print(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
               f"write {target} (areas: {AREAS}). Do it in another session{handoff_unset_note()}", file=sys.stderr)
     return 1 if refused or kept_here else 0
+
+
+def words_table() -> str:
+    """The table of the words the machine's lists hold and where each may go (word_table), for the
+    areas a session of `GUARD_WORK_FOLDER` may read: the lists, the destination lines and the area
+    names of the others are left out."""
+    spec = importlib.util.spec_from_file_location("send_scan", SEND_SCAN)
+    send = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(send)
+    corpus = corpus_module()
+    named = corpus.load_areas(AREAS) if AREAS.is_file() else {}
+    visible = reach(load_areas())
+    shown = {name: roots for name, roots in named.items() if visible is None or name in visible}
+    every = send.rules()
+    # rules() puts the lines each area keeps after the machine's own: those of the areas the
+    # session may read are taken again on their own.
+    kept_all = corpus.kept_destinations(named) if corpus.area_folders() else []
+    machine = every[:len(every) - len(kept_all)]
+    kept = corpus.kept_destinations(shown) if corpus.area_folders() else []
+    destinations = [(pattern, where) for pattern, where, _ in [*machine, *kept]
+                    if where in (word_table.OUTSIDE, word_table.BLOCK) or where in shown]
+    folder = guard_places.words_folder()
+    lists = {}
+    if (master := guard_places.master_words()).is_file():
+        lists[word_table.MASTER] = word_table.words_of(master.read_text(encoding="utf-8").splitlines())
+    for name in shown:
+        if (path := folder / f"{name}.txt").is_file():
+            lists[name] = word_table.words_of(path.read_text(encoding="utf-8").splitlines())
+    names = sorted(set(named) - corpus.UNSCANNED)
+    roots = {name: [real(root) for root in named[name]] for name in names}
+    enclosing = {inner: {outer for outer in names if outer != inner and all(
+        any(o == r or o in r.parents for o in roots[outer]) for r in roots[inner])} for inner in names}
+    return word_table.table(lists, destinations, names, visible, enclosing)
 
 
 def child_guard() -> children.command.Guard:
@@ -3116,6 +3214,8 @@ def main() -> int:
         deny(HELD)
         return 0
     tool, args = monitor_calls.as_shell(tool, args)
+    if tool == "Bash":
+        script_files.judging(args.get("command", ""), cwd)
     tab = os.environ.get("PWA_SID")
     if areas:
         children.registry.save_session(tab, session)
@@ -3198,6 +3298,16 @@ def main() -> int:
                  f"(code written into a command counts as writing every path it names)"
                  + (f": {why}" if why else ""))
             return 0
+
+    # A password, a key, a token or a login is the operator's to change (after the settings and the
+    # transcripts, whose own reasons come first): an agent's call that changes
+    # one passes on the operator's yes to that very call, as a change of the guards does.
+    changed = credential_change(args.get("command", ""), cwd) if tool == "Bash" else \
+        f"writes {written}, which keeps a password, a key or a token" \
+        if tool in WRITES and credentials.credential_file(Path(written), real(str(Path.home()))) else None
+    if changed and (why := approval(tool, shown, event, [real(cwd)], areas)):
+        deny(f"area-guard: an agent does not change how the operator signs in ({changed}): {why}")
+        return 0
 
     if areas and (why := area_words_refusal(tool, args, cwd, areas)):
         deny(why)
