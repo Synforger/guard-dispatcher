@@ -147,7 +147,8 @@ sections below spell the places the first way.
 
 Every hook follows the same AND-composition:
 
-1. If the repository ships its own `.githooks/<hook>`, run it first. A
+1. If the repository ships its own `.githooks/<hook>` and the machine
+   trusts the repository (*Repository hooks* below), run it first. A
    failing repo hook fails the operation — but a passing one does not
    skip the baseline. Repo hooks add rules; they never replace the
    guard.
@@ -205,7 +206,7 @@ written into any repository:
 `guard.wordlist` feeds the scanners a scope-specific list (resolution
 order is single-sourced in *Word list* above).
 `guard.allowedEmails` (comma-separated) replaces the built-in identity
-list for that scope. Existing repo-local `.githooks/` keep running
+list for that scope. The `.githooks/` of a trusted repository keep running
 first (AND-composition), so per-repo rules still apply on top.
 
 The push-time identity check additionally accepts GitHub bot accounts
@@ -248,7 +249,31 @@ session's folder at the same place in that worktree.
 Scanners always come from this checkout's `scanners/` — individual
 repositories need no toolkit of their own, and a copy a repository carries
 (`.tooling/local-ci/anon-scan.sh`) does not replace them. A repository's own
-checks run from its `.githooks/`, before the machine's scan.
+checks run from its `.githooks/` (when the machine trusts it), before the
+machine's scan.
+
+### Repository hooks
+
+A repository's `.githooks/<hook>` runs with the operator's rights, so the
+dispatcher runs it only for a repository the machine trusts. The decision comes
+from the machine's git settings and the repository's remote, never from a file
+the repository's own tree carries:
+
+| Setting | Trusts |
+|---|---|
+| `guard.localHooks = true` | the repository it is set in (`.git/config`), or every repository under a folder that an `includeIf "gitdir:…"` file of the machine's config covers |
+| `guard.hookOwners = a,b` | the repositories whose `origin` fetch address is a GitHub address of owner `a` or `b` (case-insensitive) |
+| built in | the Synforger org |
+
+A GitHub address is `https://github.com/<owner>/<repo>`, or an ssh form
+(`ssh://git@host/<owner>/<repo>`, `git@host:<owner>/<repo>`) whose host is
+`github.com` or `github-<alias>`, an ssh host entry of the machine. The address
+is the one git uses (`url.<base>.insteadOf` applied). A repository with no
+`origin`, or an address of any other shape, is not trusted.
+
+A hook that is not run does not stop the commit or the push: one line on stderr
+names the hook and the two settings that allow it, and the dispatcher's own
+checks run as always.
 
 ### Private documents
 
@@ -754,7 +779,8 @@ step earlier, before each tool call, from the same `areas.txt`:
 - On every machine, areas or not, a `Bash` command that switches the guards off
   or around is refused: `--no-verify`, `git commit -n`, the skip variables,
   `git -c core.hooksPath=…`, setting `core.hooksPath` / `guard.scope` /
-  `guard.exemptPrefix`, clearing the marks, creating the off switch, removing
+  `guard.exemptPrefix`, widening the trust in a repository's own hooks
+  (`guard.localHooks` / `guard.hookOwners`, set or given to one call with `git -c`), clearing the marks, creating the off switch, removing
   the installed hooks, or sending from a repository the git hooks do not reach. Each passes on
   the operator's yes (see *A change the operator approves* below), but clearing the marks.
   Clearing the marks, creating the off switch and removing the hooks are read one command at a

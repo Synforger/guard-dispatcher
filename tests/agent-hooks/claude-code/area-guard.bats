@@ -379,11 +379,14 @@ pty.spawn(["git", "push", "--no-verify"])'; do
 
 @test "area-guard: turning the hooks off by git config is refused" {
     for command in "git config core.hooksPath .husky" "git config --local guard.scope exempt" \
-                   "git config --global guard.exemptPrefix ~/x"; do
+                   "git config --global guard.exemptPrefix ~/x" "git config guard.localHooks true" \
+                   "git -C ${PERSONAL} config guard.localHooks true" "git config --global --add guard.hookOwners someone" \
+                   "git -c guard.localHooks=true commit -m x"; do
         bash_in "${PERSONAL}" "${command}"
         denied || { echo "not refused: ${command}"; return 1; }
     done
     bash_in "${PERSONAL}" "git config --get core.hooksPath"; passed
+    bash_in "${PERSONAL}" "git config --get guard.localHooks"; passed
 }
 
 @test "area-guard: reading a guard key passes, however it is spelled" {

@@ -60,6 +60,7 @@ gh-shim/gh-guard.sh                         | tests/gh-shim/gh-guard.bats       
 git-hooks/_internal/dispatcher-common.sh    | tests/git-hooks/_internal/dispatcher-common.bats            | The dispatchers' shared helpers tell a repository's kind from its remote, which branches are protected, and which identities a commit may carry.
 git-hooks/_internal/staged_places.py        | tests/git-hooks/_internal/staged-places.bats                | A commit an agent's session makes takes no path another tab left in its own work folder.
 git-hooks                                   | tests/git-hooks/hooks.bats                                  | pre-commit, commit-msg and pre-push stop a commit or a push whose content, message, identity or branch name carries a flagged word or a private document's text.
+git-hooks/_internal/hook_trust.py           | tests/git-hooks/local-hooks.bats                            | A repository's own hooks run only for a repository the machine trusts; for any other, one line names the hook left unrun and the dispatcher's own checks still run.
 
 # --- the scanners ---
 scanners/corpus/corpus-scan.py              | tests/scanners/corpus/_internal/sqlite-text.bats            | Text copied out of a table of an area's SQLite database does not leave the area, whatever the database file is called.
