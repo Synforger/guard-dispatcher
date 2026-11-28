@@ -2041,6 +2041,46 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
     return list(send_places(command, cwd)[0])
 
 
+#: An assignment of mktemp's output left unquoted (`T=$(mktemp -d)`), which splits into words at its spaces.
+UNQUOTED_MKTEMP = re.compile(r"(?<![\w\"'])([A-Za-z_][A-Za-z0-9_]*=)(\$\(\s*mktemp\b[^()`$\"']*\)|`\s*mktemp\b[^`$\"']*`)")
+#: A word that is the whole of a command substitution running mktemp (`$(mktemp -d)`, `` `mktemp -d -t x` ``).
+MKTEMP_WORD = re.compile(r"\$\(\s*(mktemp\b[^()`$]*)\)|`\s*(mktemp\b[^()`$]*)`")
+
+
+def fresh_folder(value: str) -> str | None:
+    """The folder a variable set to `$(mktemp -d ...)` names, as a path in the folder mktemp makes it in
+    (the template's folder, `-p`/`--tmpdir`, else `$TMPDIR`), or None when the value is not that. The
+    folder is new: no remote, nothing in it but what the command puts there."""
+    m = MKTEMP_WORD.fullmatch(value.strip())
+    if not m:
+        return None
+    try:
+        words = shlex.split(m.group(1) or m.group(2))[1:]
+    except ValueError:
+        return None
+    if not {"-d", "--directory"} & set(words) and not any(re.fullmatch(r"-[A-Za-z]*d[A-Za-z]*", w) for w in words):
+        return None
+    parent = os.environ.get("TMPDIR") or "/tmp"
+    templates: list[str] = []
+    valued = False
+    for i, word in enumerate(words):
+        if valued:
+            valued = False
+            if words[i - 1] in ("-p", "--tmpdir"):
+                parent = word
+        elif word in ("-p", "--tmpdir", "-t"):
+            valued = True
+        elif word.startswith("--tmpdir="):
+            parent = word.split("=", 1)[1]
+        elif not word.startswith("-"):
+            templates.append(word)
+    if templates and "/" in templates[-1]:
+        parent = os.path.dirname(templates[-1])
+    if UNKNOWN.search(parent):
+        return None
+    return str(Path(os.path.expanduser(parent)) / "mktemp.XXXXXX")
+
+
 @functools.lru_cache(maxsize=None)
 def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, str], ...] = ()) -> tuple[
         tuple[tuple[Path, list[str]], ...], tuple[str, ...], tuple[str, ...], tuple[tuple[Path, str, str], ...]]:
@@ -2067,7 +2107,7 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
     try:
         # Python written into the command is no command line: a quote it leaves open turns the words
         # into plain spaces, and a shell line quoted inside it would be read as a send.
-        words = shell_words(shell_heredocs_as_code(command), shell_only=True)
+        words = shell_words(UNQUOTED_MKTEMP.sub(r'\1"\2"', shell_heredocs_as_code(command)), shell_only=True)
     except ValueError:
         return (), (), (), ()
     breaks = outgoing_module().SHELL_BREAK
@@ -2090,6 +2130,12 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
     head = {} if starts_elsewhere else {name: value for name, value in given if not rebinds(command, name)}
     redefined = bool(REDEFINES_TEST.search(command))
     values: dict[str, str] = dict(head)
+    # Folders a variable was set to by `$(mktemp -d)`: a commit there is judged where the folder lies;
+    # a push from one has no remote the command shows, so its destination is not known before it runs.
+    fresh: set[str] = set()
+    # Names once given a value not known: a branch read before may have left it there, so a fresh
+    # folder given later does not stand for it. Nor does it for a name that holds a value already.
+    once_unknown: set[str] = set()
     branches = Branches({} if redefined else head)
     lost: str | None = None            # the word that took the command where it cannot be read
     pushed: list[str | None] = []
@@ -2115,8 +2161,13 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
             # `W=/a/b` alone on its command (or after export / local): later words may spell it $W.
             for word in assigned:
                 name, _, value = word.partition("=")
-                if UNKNOWN.search(value):
+                folder = fresh_folder(value)
+                if folder is not None and name not in once_unknown and name not in values:
+                    values[name] = folder
+                    fresh.update({folder, str(real(folder))})
+                elif UNKNOWN.search(value):
                     values.pop(name, None)
+                    once_unknown.add(name)
                 else:
                     values[name] = value
             return
@@ -2219,8 +2270,11 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
                 skipping.append("git commit -n (= --no-verify)")
             if sub == "push" and push_options.skips_hooks(rest):
                 skipping.append("git push --no-verify")
+            in_fresh = any(str(repo) == f or str(repo).startswith(f + "/") for f in fresh)
             if sub in ("commit", "push") and place:
                 unread.append(place)
+            elif sub == "push" and in_fresh:
+                unread.append(str(repo))
             elif sub == "commit":
                 found.append((repo, []))
             elif sub == "push":
