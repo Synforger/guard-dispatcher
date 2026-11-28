@@ -1097,6 +1097,13 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   here); a path in no root is
   judged by the machine's own `host:<host>` line. Naming such a path marks an
   agent session as naming a folder here does.
+  Every host a `curl` pattern stands for (`{a,b}`, `[1-3]`) is a destination, and
+  a variable whose value the command line leaves in no doubt (a literal, `$HOME`,
+  `$PWD`, and a value built from them) is written out in the machine and the paths
+  of `scp`, `rsync` and `ssh`. A destination only known when the command runs (a
+  remote path whose machine such a variable does not give, `"$H:file"`), and an
+  address whose hosts cannot be listed or read, is `host:?`, treated like any
+  destination no line declares: only a line that matches it, such as `*`, holds it.
   Code written into the command — `python -c`, `node -e`, a heredoc fed to an
   interpreter — sends to each host a URL in it names, carrying the code. Python
   code that can only compute and read or write this machine's files (it imports
