@@ -1319,6 +1319,24 @@ session_files() {
     bash_in "$(dirname "${TRANSCRIPT}")" "python3 -c \"open('s1.jsonl','a').write('{}')\""; denied
 }
 
+@test "area-guard: after HOME is set to a folder mktemp -d makes, ~ and \$HOME are that folder; set in a subshell, they are not" {
+    local fake='export HOME="$(mktemp -d)/home"; mkdir -p "${HOME}/.claude/projects/-w"; printf "{}\n" > "${HOME}/.claude/projects/-w/s1.jsonl"'
+    bash_in "${H}" "${fake}"
+    passed || { echo "${output}"; return 1; }
+    bash_in "${H}" 'T="$(mktemp -d)"; export HOME="${T}/home"; printf x > ~/.claude/projects/-w/s1.jsonl'
+    passed || { echo "${output}"; return 1; }
+    local c
+    for c in '(export HOME="$(mktemp -d)"); printf x > ~/.claude/projects/-w/s1.jsonl' \
+             'T="$(mktemp -d)"; T=/real; export HOME="${T}/home"; printf x > ~/.claude/projects/-w/s1.jsonl' \
+             '(T="$(mktemp -d)"); export HOME="${T}/home"; printf x > ~/.claude/projects/-w/s1.jsonl' \
+             'x=$(export HOME="$(mktemp -d)"); printf x > $HOME/.claude/projects/-w/s1.jsonl' \
+             'export HOME="$(mktemp -d)"; export HOME=/tmp/elsewhere; printf x > $HOME/.claude/projects/-w/s1.jsonl' \
+             'printf x > ~/.claude/projects/-w/s1.jsonl'; do
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+    done
+}
+
 @test "area-guard: the agent does not replace the folder of transcripts either, whole or in part" {
     session_files
     mkdir -p "${H}/fake/-home-tool" "${H}/linked" "${H}/scratch"

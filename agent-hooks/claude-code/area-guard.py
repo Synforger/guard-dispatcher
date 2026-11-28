@@ -347,11 +347,58 @@ def repo_root(path: Path) -> Path | None:
     return real(r.stdout.strip()) if r.returncode == 0 else None
 
 
+#: A variable set to a folder mktemp makes, at the head of a command: `T="$(mktemp -d)"`.
+FRESH_VARIABLE = re.compile(r"""(?:^|(?<=[;&|\n]))\s*(?:export\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(["']?)\$\(\s*(mktemp\b[^()`$"';&|]*)\)\2(?=[\s;&|]|$)""")
+#: `HOME` set from such a folder: `export HOME="$(mktemp -d)/home"`, `export HOME="${T}/home"`.
+FRESH_HOME = re.compile(r"""(?:^|(?<=[;&|\n]))\s*(?:export\s+)?HOME=(["']?)(?:\$\(\s*(mktemp\b[^()`$"';&|]*)\)|\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?)([^\s"';&|$`]*)\1(?=[\s;&|]|$)""")
+#: Any other setting of HOME, after which the home folder is no longer the fresh one.
+HOME_SET = re.compile(r"(?:^|[\s;&|(])(?:export\s+)?HOME=")
+
+
 def spell_home(command: str) -> str:
-    """The command with ~/, $HOME and ${HOME} written out as the home folder."""
+    """The command with ~/, $HOME and ${HOME} written out as the home folder. Where the command, at
+    its top level, sets HOME to a folder `mktemp -d` makes, what follows up to another setting of HOME
+    is spelled with that folder instead (a test's throwaway home): a setting inside a subshell, a
+    substitution or a group does not reach past it, and is not followed."""
     home = str(Path.home())
-    text = command.replace("${HOME}", home).replace("$HOME", home)
-    return re.sub(r"(?<![\w/])~(?=/)", home, text)
+
+    def spelled(text: str, folder: str) -> str:
+        text = text.replace("${HOME}", folder).replace("$HOME", folder)
+        return re.sub(r"(?<![\w/])~(?=/)", folder, text)
+
+    m = FRESH_HOME.search(command)
+    if m is None or _nesting(command[:m.start()]) != 0:
+        return spelled(command, home)
+    if m.group(2) is not None:
+        folder = fresh_folder(f"$({m.group(2)})")
+    else:
+        # A variable that holds a fresh folder: set so at the top level before, and set once only.
+        sets = [v for v in FRESH_VARIABLE.finditer(command[:m.start()]) if v.group(1) == m.group(3)]
+        others = len(re.findall(rf"(?:^|[\s;&|(]){re.escape(m.group(3))}=", command[:m.start()]))
+        fresh = sets[0] if len(sets) == 1 and others == 1 and _nesting(command[:sets[0].start()]) == 0 else None
+        folder = fresh_folder(f"$({fresh.group(3)})") if fresh else None
+    if folder is None:
+        return spelled(command, home)
+    rest = command[m.end():]
+    again = HOME_SET.search(rest)
+    cut = again.start() if again else len(rest)
+    return (spelled(command[:m.end()], home) + spelled(rest[:cut], folder + m.group(4))
+            + spelled(rest[cut:], home))
+
+
+def _nesting(text: str) -> int:
+    """How many subshells, substitutions and groups are open at the end of `text`, quotes left out."""
+    depth, quote = 0, None
+    for char in text:
+        if quote:
+            quote = None if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char in "({":
+            depth += 1
+        elif char in ")}":
+            depth = max(0, depth - 1)
+    return depth
 
 
 GLOB = re.compile(r"[*?\[]")
