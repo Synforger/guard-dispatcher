@@ -757,6 +757,9 @@ step earlier, before each tool call, from the same `areas.txt`:
   `guard.exemptPrefix`, clearing the marks, creating the off switch, removing
   the installed hooks, or sending from a repository the git hooks do not reach. Each passes on
   the operator's yes (see *A change the operator approves* below), but clearing the marks.
+  Clearing the marks, creating the off switch and removing the hooks are read one command at a
+  time, a command line handed on (`eval`, a shell's `-c` string, a heredoc fed to a shell) as
+  commands of its own; the text of a heredoc fed to anything else is none.
   A command line that Python code runs (code written into the command or handed to it in a
   file: `subprocess`, `os.system`, `os.exec*`, `os.spawn*`, with the variables an `env=` mapping
   sets) is held to the same. So is a call that runs a command (or one made by name: `exec`,
