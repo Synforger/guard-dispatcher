@@ -106,7 +106,7 @@ import re
 import shlex
 import sys
 import urllib.parse
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import NamedTuple
 
@@ -223,12 +223,104 @@ RUNS_BODY = re.compile(r"(?:\S*/)?(?:(?:ba|z|da|k)?sh|python[\d.]*|node|perl|rub
 # another language is code the guard reads as that language (code_paths, code_writes), not as words.
 RUNS_SHELL_BODY = re.compile(r"(?:\S*/)?(?:(?:ba|z|da|k)?sh|eval|xargs|source|\.)")
 PASSES_ON = {"sudo", "env", "command", "exec", "nohup", "time", "nice"}
+# The names a program reads its own standard input by.
+STDIN_FILES = {"/dev/stdin", "/dev/fd/0", "-"}
+# Programs whose `exec` hands what they are fed to a program inside a container.
+CONTAINER_TOOLS = {"docker", "podman", "kubectl"}
+# A `cat` inside a command or process substitution, up to where its heredoc opens.
+SUBSTITUTED_CAT = re.compile(r"(?:\$\(|<\()\s*(?:\S*/)?cat\b[^()`;&|\n]*$")
+# A word ahead of a substitution, cut at what ends a command or redirects and at the quote around it.
+OUTER_WORD = re.compile(r"""[^\s;&|()<>"\\]+""")
+# Stands for a heredoc's opening while the words of its command are read.
+OPENING_MARK = "__GUARD_HEREDOC__"
+# The time a crontab line begins with: five fields, or one `@reboot` and its kind.
+CRON_FIELD = r"(?:\*|\d+|[A-Za-z]{3})(?:[-/,](?:\*|\d+|[A-Za-z]{3}))*"
+CRON_TIME = re.compile(rf"(?m)^[ \t]*(?:@[A-Za-z]+|(?:{CRON_FIELD}[ \t]+){{4}}{CRON_FIELD})[ \t]+")
 
 
-def heredocs(command: str):
-    """Each heredoc of the command, in order: (where the line that opens it ends, where its body
-    ends, the program it feeds)."""
+class Heredoc(NamedTuple):
+    """A heredoc of a command line, and who runs its body."""
+
+    opening_start: int
+    opening_end: int
+    line_end: int
+    body_end: int
+    program: str    # the program it feeds; `sh` when `runner` runs the body as shell
+    runner: str     # what runs the body as shell though the program fed is not named one, or ""
+    runs_at: int    # for a runner, where the body is read as run: its opening, or the word ahead of `$(cat`
+
+
+def marked_command(line: str) -> list[str] | None:
+    """The other words of the command that holds the word OPENING_MARK in `line` (a command with its
+    earlier heredoc bodies taken out). None when the mark is no word there: inside quotes or a
+    comment, or in a line that cannot be split."""
+    try:
+        for words, _, _, _ in stepped_commands(line):
+            if OPENING_MARK in words:
+                return [word for word in words if word != OPENING_MARK]
+    except ValueError:
+        pass
+    return None
+
+
+def crontab_reads_stdin(args: list[str]) -> bool:
+    """Whether crontab is handed no file but its standard input (`-`, or no file at all)."""
+    files, takes_user = [], False
+    for word in args:
+        if takes_user:
+            takes_user = False
+        elif word == "-u":
+            takes_user = True
+        elif word == "-" or not word.startswith("-"):
+            files.append(word)
+    return files in ([], ["-"])
+
+
+def stdin_runner(words: list[str]) -> str:
+    """The program of a command that runs what it is fed as shell though it is not named a shell
+    (`source /dev/stdin`, `at`, `crontab -`, `xargs sh -c`, `docker exec ... sh`), or ""."""
+    names = [os.path.basename(word) for word in words]
+    for at, name in enumerate(names):
+        if name == "xargs" and not program_of(words[:at + 1])[0]:   # xargs where a program stands
+            shell = next((i for i in range(at + 1, len(names)) if SHELL_CODE.fullmatch(names[i])), len(names))
+            return name if any(re.fullmatch(r"-[A-Za-z]*c", word) for word in words[shell + 1:]) else ""
+    program = program_of(words)[0]
+    if not program:
+        return ""
+    tool, args = os.path.basename(program[0]), program[1:]
+    if tool in ("source", "."):
+        files = args[1:] if args[:1] == ["--"] else args
+        runs = bool(files) and files[0] in STDIN_FILES
+    elif tool == "crontab":
+        runs = crontab_reads_stdin(args)
+    elif tool in CONTAINER_TOOLS:
+        runs = "exec" in args and any(SHELL_CODE.fullmatch(os.path.basename(word))
+                                      for word in args[args.index("exec") + 1:])
+    else:
+        runs = tool in ("at", "batch")
+    return tool if runs else ""
+
+
+def substitution_runner(before: str) -> int | None:
+    """Where in `before` (a command up to a heredoc's opening) the word stands that runs what a
+    substituted `cat` writes: `eval "$(cat`, `source <(cat`, `bash -c "$(cat`. None otherwise."""
+    cat = SUBSTITUTED_CAT.search(before)
+    if not cat:
+        return None
+    words = list(OUTER_WORD.finditer(before[:cat.start()]))
+    if words and words[-1].group() == "--":
+        words.pop()
+    if words and words[-1].group() in RUNS_SHELL:
+        return words[-1].start()
+    while words and words[-1].group().startswith("-"):
+        words.pop()
+    return words[-1].start() if words and SHELL_CODE.fullmatch(os.path.basename(words[-1].group())) else None
+
+
+def read_heredocs(command: str) -> Iterator[Heredoc]:
+    """Each heredoc of the command as a Heredoc, in order. Who runs a body is told here alone."""
     pos = 0
+    outside: list[str] = []     # the command before `pos`, its heredoc bodies taken out
     while (m := HEREDOC.search(command, pos)):
         line_end = command.find("\n", m.end())
         if line_end < 0:
@@ -237,8 +329,31 @@ def heredocs(command: str):
         end = re.compile(rf"^{tabs}{re.escape(m.group(3))}[ \t]*$", re.M).search(command, line_end + 1)
         body_end = end.start() if end else len(command)
         segment = re.split(r"[;&|(\n]", command[:m.start()])[-1].split()
-        yield line_end, body_end, next((w for w in segment if "=" not in w and w not in PASSES_ON), "")
+        program = next((w for w in segment if "=" not in w and w not in PASSES_ON), "")
+        before = "".join(outside)
+        word_at = substitution_runner(command[pos:m.start()])
+        # code is written ahead of that word only where a word of the line can stand
+        if word_at is not None and marked_command(f"{before}{command[pos:pos + word_at]} {OPENING_MARK}") is not None:
+            runner, runs_at = "cat", pos + word_at
+        else:
+            line = f"{before}{command[pos:m.start()]} {OPENING_MARK} {command[m.end():line_end]}"
+            runner, runs_at = stdin_runner(marked_command(line) or []), m.start()
+        yield Heredoc(m.start(), m.end(), line_end, body_end, "sh" if runner else program, runner, runs_at)
+        outside.append(command[pos:line_end + 1])
         pos = body_end
+
+
+def heredocs(command: str) -> Iterator[tuple[int, int, str]]:
+    """Each heredoc of the command, in order: (where the line that opens it ends, where its body
+    ends, the program it feeds, or `sh` when another runs the body as shell: read_heredocs)."""
+    for found in read_heredocs(command):
+        yield found.line_end, found.body_end, found.program
+
+
+def body_of(command: str, found: Heredoc) -> str:
+    """A heredoc's body as what reads it takes it: a crontab's lines without the times they begin with."""
+    body = command[found.line_end + 1:found.body_end]
+    return CRON_TIME.sub("", body) if found.runner == "crontab" else body
 
 
 def strip_heredocs(command: str, *, shell_only: bool = False) -> str:
@@ -682,10 +797,10 @@ def simple_commands(line: str):
 def split_heredocs(text: str) -> tuple[str, list[tuple[str, str]]]:
     """(the command line without the bodies of its heredocs, each body with the program it feeds)."""
     line, fed, pos = [], [], 0
-    for line_end, body_end, program in heredocs(text):
-        line.append(text[pos:line_end + 1])
-        fed.append((os.path.basename(program), text[line_end + 1:body_end]))
-        pos = body_end
+    for found in read_heredocs(text):
+        line.append(text[pos:found.line_end + 1])
+        fed.append((os.path.basename(found.program), body_of(text, found)))
+        pos = found.body_end
     line.append(text[pos:])
     return "".join(line), fed
 
@@ -693,16 +808,24 @@ def split_heredocs(text: str) -> tuple[str, list[tuple[str, str]]]:
 def shell_heredocs_as_code(command: str) -> str:
     """The command with each heredoc that feeds a shell written as that shell's `-c` string
     (`bash <<'SH' ... SH` is `bash -c '...'`), so what it runs is read where the command stands
-    when it reaches it, as a `-c` string is. The terminator line stays and reads as a word."""
-    out, kept_to, scanned = [], 0, 0
-    for line_end, body_end, program in heredocs(command):
-        opening = HEREDOC.search(command, scanned)
-        scanned = body_end
-        if opening and SHELL_CODE.fullmatch(os.path.basename(program)):
-            out.append(command[kept_to:opening.start()])
-            out.append("-c " + shlex.quote(command[line_end + 1:body_end]))
-            out.append(command[opening.end():line_end + 1])
-            kept_to = body_end
+    when it reaches it, as a `-c` string is. A body another runs as shell (read_heredocs) is
+    written as an `sh -c` of its own: after the command fed (`at now ; sh -c '...'`), or ahead of
+    the word that runs a substituted `cat`, outside the quotes around it (`sh -c '...'; eval
+    "$(cat ...)"`). The terminator line stays and reads as a word."""
+    out, kept_to = [], 0
+    for found in read_heredocs(command):
+        if not SHELL_CODE.fullmatch(os.path.basename(found.program)):
+            continue
+        code = "-c " + shlex.quote(body_of(command, found))
+        out.append(command[kept_to:found.runs_at])
+        if not found.runner:
+            out.append(code)
+        elif found.runs_at == found.opening_start:
+            out.append("; sh " + code)
+        else:
+            out.append(f"sh {code}; " + command[found.runs_at:found.opening_start])
+        out.append(command[found.opening_end:found.line_end + 1])
+        kept_to = found.body_end
     out.append(command[kept_to:])
     return "".join(out)
 
