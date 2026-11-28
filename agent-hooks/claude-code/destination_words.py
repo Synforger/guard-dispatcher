@@ -230,31 +230,43 @@ PLAIN_VALUE = re.compile(r"[\w@%+=,./:-]+")
 CHANGES_FOLDER = re.compile(r"\b(?:cd|pushd|popd)\b")
 # What closes a shell expansion that opens `$` and this character.
 CLOSERS = {"{": "}", "(": ")"}
+# `$HOME` or `$PWD` at the head of a value: the one variable a value may be built from.
+GIVEN_HEAD = re.compile(r"^\$(?:(HOME|PWD)(?!\w)|\{(HOME|PWD)\})")
+_HEAD = r"(?:\$(?:HOME|PWD)(?!\w)|\$\{(?:HOME|PWD)\})?"
 LITERAL_ASSIGNMENT = re.compile(
     r"(?:^|(?<=[;&|(\n]))[ \t]*(?:(?:export|local|readonly)[ \t]+)?([A-Za-z_]\w*)="
-    r"('[^'\n]*'|\"[^\"$`\\\n]*\"|[^\s;&|<>()$`\"'\\]*)(?=[ \t]*(?:[;&|)\n]|$))")
+    rf"('[^'\n]*'|\"{_HEAD}[^\"$`\\\n]*\"|{_HEAD}[^\s;&|<>()$`\"'\\]*)(?=[ \t]*(?:[;&|)\n]|$))")
 
 
 def known_values(command: str) -> dict[str, str]:
     """The variables whose value a command line leaves in no doubt: those it sets to a literal and
     nowhere else (each written once as `NAME=value` on a command of its own, or twice with the same
     value), and, where it does not set them itself, HOME and PWD (`.`, unless the line changes
-    folder). A name that is set another way too (`NAME+=`, `read NAME`, a loop, a substitution,
-    ahead of one command) is left out, as the value it has at a word cannot be told."""
+    folder). A value may begin with either of those two (`D=$HOME/x`), outside single quotes. A name
+    that is set another way too (`NAME+=`, `read NAME`, a loop, a substitution, ahead of one command)
+    is left out, as the value it has at a word cannot be told."""
+    given = _given(command)
     found: dict[str, list[str]] = {}
     for name, written in LITERAL_ASSIGNMENT.findall(command):
-        found.setdefault(name, []).append(written[1:-1] if written[:1] in "'\"" else written)
+        value = written[1:-1] if written[:1] in "'\"" else written
+        if not written.startswith("'"):
+            value = GIVEN_HEAD.sub(lambda m: given.get(m.group(1) or m.group(2), m.group(0)), value)
+        found.setdefault(name, []).append(value)
     values = {}
     for name, written in found.items():
         if _set_at(command, name) == len(written) and not _rebound(command, name) \
                 and len(set(written)) == 1 and PLAIN_VALUE.fullmatch(written[0]):
             values[name] = written[0]
+    return {**given, **values}
+
+
+def _given(command: str) -> dict[str, str]:
+    """HOME and PWD, each where the line does not set it itself."""
     given = {"HOME": os.path.expanduser("~")}
     if not CHANGES_FOLDER.search(command):
         given["PWD"] = "."
-    values.update({name: value for name, value in given.items()
-                   if not _set_at(command, name) and not _rebound(command, name) and PLAIN_VALUE.fullmatch(value)})
-    return values
+    return {name: value for name, value in given.items()
+            if not _set_at(command, name) and not _rebound(command, name) and PLAIN_VALUE.fullmatch(value)}
 
 
 def _set_at(command: str, name: str) -> int:
