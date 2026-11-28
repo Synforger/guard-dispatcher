@@ -1813,6 +1813,11 @@ Every test builds a throwaway git repo and a sentinel-only word list
 under the test tmpdir — no operator data is read and nothing outside
 the tmpdir is touched.
 
+`tests/contracts.txt` says in one row what each test file keeps (the code it
+guards and the promise); `tests/contracts.bats` fails when a test file has no
+row or a row names what is gone. A new test file comes with its row. The
+suite ends with its ten slowest tests.
+
 ## License
 
 Apache-2.0
