@@ -118,6 +118,7 @@ import children  # noqa: E402
 import code_writes  # noqa: E402
 import commit_options  # noqa: E402
 import commit_scope  # noqa: E402
+import word_table  # noqa: E402
 import force_push  # noqa: E402
 import guard_places  # noqa: E402
 import monitor_calls  # noqa: E402
@@ -156,6 +157,8 @@ CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus/corpus-scan.py"
 HANDOFF_SCAN_SECONDS = 180
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/destinations/send-scan.py"
 ANON_SCAN = Path(__file__).resolve().parents[2] / "scanners/words/anon-scan.sh"
+#: The line a word-list refusal ends with: the command that prints which words may go where.
+WORDS_HINT = "which words may go where: python3 ~/.git-hooks/agent-hooks/claude-code/area-guard.py words"
 # How many word-list hits a refusal of a write shows; the rest are counted.
 SHOWN_WORD_HITS = 5
 EXEMPT = area_roles.EXEMPT
@@ -2497,7 +2500,8 @@ def area_words_refusal(tool: str, args: dict, cwd: str, areas) -> str | None:
             shown = hits[:SHOWN_WORD_HITS] + ([f"... and {len(hits) - SHOWN_WORD_HITS} more"]
                                               if len(hits) > SHOWN_WORD_HITS else [])
             return (f"area-guard: this call writes into {target}, in {area}, a word {area}'s readers must not "
-                    f"meet ({words.name}): rewrite it" + "".join(f"\n    {hit}" for hit in shown))
+                    f"meet ({words.name}): rewrite it" + "".join(f"\n    {hit}" for hit in shown)
+                    + f"\n  {WORDS_HINT}")
     finally:
         os.unlink(fh.name)
     return None
@@ -2924,15 +2928,21 @@ def ask(argv: list[str]) -> int:
     areas, and for a session with no marks, but for the guard's own settings and a transcript, judged as
     an Edit of them is). Exit 1: one line per refused path on stderr. Exit 2: usage.
 
+    `words`: the table of the words the word lists hold and where each may go, for the areas a
+    session of `GUARD_WORK_FOLDER` may read (words_table). Exit 0.
+
     `reach`: the areas a session of `GUARD_WORK_FOLDER` may read inside, one name per line in name
     order; nothing when no work folder is named. Exit 0."""
+    if argv[:1] == ["words"]:
+        print(words_table(), end="")
+        return 0
     if argv[:1] == ["reach"]:
         names = reach(load_areas()) or set()
         if names:
             print("\n".join(sorted(names)))
         return 0
     if len(argv) < 3 or argv[0] != "may-write" or not argv[1]:
-        print("usage: area-guard.py may-write <session_id> <path>... | reach", file=sys.stderr)
+        print("usage: area-guard.py may-write <session_id> <path>... | reach | words", file=sys.stderr)
         return 2
     if OFF.exists():
         return 0
@@ -2955,6 +2965,39 @@ def ask(argv: list[str]) -> int:
         print(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
               f"write {target} (areas: {AREAS}). Do it in another session{handoff_unset_note()}", file=sys.stderr)
     return 1 if refused or kept_here else 0
+
+
+def words_table() -> str:
+    """The table of the words the machine's lists hold and where each may go (word_table), for the
+    areas a session of `GUARD_WORK_FOLDER` may read: the lists, the destination lines and the area
+    names of the others are left out."""
+    spec = importlib.util.spec_from_file_location("send_scan", SEND_SCAN)
+    send = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(send)
+    corpus = corpus_module()
+    named = corpus.load_areas(AREAS) if AREAS.is_file() else {}
+    visible = reach(load_areas())
+    shown = {name: roots for name, roots in named.items() if visible is None or name in visible}
+    every = send.rules()
+    # rules() puts the lines each area keeps after the machine's own: those of the areas the
+    # session may read are taken again on their own.
+    kept_all = corpus.kept_destinations(named) if corpus.area_folders() else []
+    machine = every[:len(every) - len(kept_all)]
+    kept = corpus.kept_destinations(shown) if corpus.area_folders() else []
+    destinations = [(pattern, where) for pattern, where, _ in [*machine, *kept]
+                    if where in (word_table.OUTSIDE, word_table.BLOCK) or where in shown]
+    folder = guard_places.words_folder()
+    lists = {}
+    if (master := guard_places.master_words()).is_file():
+        lists[word_table.MASTER] = word_table.words_of(master.read_text(encoding="utf-8").splitlines())
+    for name in shown:
+        if (path := folder / f"{name}.txt").is_file():
+            lists[name] = word_table.words_of(path.read_text(encoding="utf-8").splitlines())
+    names = sorted(set(named) - corpus.UNSCANNED)
+    roots = {name: [real(root) for root in named[name]] for name in names}
+    enclosing = {inner: {outer for outer in names if outer != inner and all(
+        any(o == r or o in r.parents for o in roots[outer]) for r in roots[inner])} for inner in names}
+    return word_table.table(lists, destinations, names, visible, enclosing)
 
 
 def child_guard() -> children.command.Guard:
