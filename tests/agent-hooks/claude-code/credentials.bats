@@ -79,6 +79,8 @@ CHANGES=(
     "gh auth --hostname github.com login"
     "gh auth --hostname=github.com login"
     "gcloud beta auth --quiet login"
+    $'ssh other-mac <<\'EOF\'\necho (x)\ngh auth login\nEOF'
+    $'cat > f <<EOF && gh auth login\nx)\nEOF'
     "gh auth switch"
     "gh auth setup-git"
     "gh secret set API_TOKEN"
@@ -200,6 +202,8 @@ LOOKS=(
     "direnv allow"
     "rm ~/.claude.json.bak"
     "gh auth --hostname github.com status"
+    $'cat > probes.txt <<\'EOF\'\n# names (a look)\npass docker run auth img\nEOF'
+    $'cat > notes.txt <<\'EOF\'\nthen; gh auth login | done\nEOF'
 )
 
 # judged <command>... — the hook's credential_change on each command, in one process: `held` or
