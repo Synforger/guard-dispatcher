@@ -593,6 +593,8 @@ def holds_credentials(path: Path, home: Path) -> bool:
         parts = path.relative_to(home).parts
     except ValueError:
         return any(Path(f) == path or path in Path(f).parents for f in MACHINE_FILES)
+    if path.is_file():
+        return False          # a file is the credential itself or none: its name is no folder of one
     for pattern in HOME_FILES:
         folder = pattern.rsplit("/", 1)[0].split("/") if "/" in pattern else []
         if folder and len(parts) <= len(folder) and all(

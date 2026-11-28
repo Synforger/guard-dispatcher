@@ -3194,14 +3194,6 @@ def main() -> int:
         deny("area-guard: an agent does not register a child: the client does, once it has opened the child's tab")
         return 0
     written = str(real(args.get("file_path") or args.get("notebook_path") or "", cwd)) if tool in WRITES else ""
-    # A password, a key, a token or a login is the operator's to change: an agent's call that changes
-    # one passes on the operator's yes to that very call, as a change of the guards does.
-    changed = credential_change(args.get("command", ""), cwd) if tool == "Bash" else \
-        f"writes {written}, which keeps a password, a key or a token" \
-        if tool in WRITES and credentials.credential_file(Path(written), real(str(Path.home()))) else None
-    if changed and (why := approval(tool, shown, event, [real(cwd)], areas)):
-        deny(f"area-guard: an agent does not change how the operator signs in ({changed}): {why}")
-        return 0
     if written.endswith("/agent-off") and (why := approval(tool, args, event, [Path(written)], areas)):
         deny(f"area-guard: an agent does not switch the entry guard off: {why}")
         return 0
@@ -3242,6 +3234,16 @@ def main() -> int:
                  f"(code written into a command counts as writing every path it names)"
                  + (f": {why}" if why else ""))
             return 0
+
+    # A password, a key, a token or a login is the operator's to change (after the settings and the
+    # transcripts, whose own reasons come first): an agent's call that changes
+    # one passes on the operator's yes to that very call, as a change of the guards does.
+    changed = credential_change(args.get("command", ""), cwd) if tool == "Bash" else \
+        f"writes {written}, which keeps a password, a key or a token" \
+        if tool in WRITES and credentials.credential_file(Path(written), real(str(Path.home()))) else None
+    if changed and (why := approval(tool, shown, event, [real(cwd)], areas)):
+        deny(f"area-guard: an agent does not change how the operator signs in ({changed}): {why}")
+        return 0
 
     if areas and (why := area_words_refusal(tool, args, cwd, areas)):
         deny(why)
