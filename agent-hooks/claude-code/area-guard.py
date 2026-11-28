@@ -105,6 +105,8 @@ import os
 import re
 import shlex
 import sys
+import urllib.parse
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
@@ -149,6 +151,9 @@ OFF = guard_places.setting("agent-off")
 GRANT = guard_places.setting("agent-writes.txt")
 OPERATOR_ONLY = (GRANT.name, "orders.txt", OFF.name)
 CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus/corpus-scan.py"
+# The seconds a handoff's private-document scan is given: the scan waits for a walk only in what is
+# left of them (corpus-scan.py --budget).
+HANDOFF_SCAN_SECONDS = 180
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/destinations/send-scan.py"
 ANON_SCAN = Path(__file__).resolve().parents[2] / "scanners/words/anon-scan.sh"
 # How many word-list hits a refusal of a write shows; the rest are counted.
@@ -346,6 +351,41 @@ def spell_home(command: str) -> str:
 
 
 GLOB = re.compile(r"[*?\[]")
+# A brace the shell expands (one with no brace inside it, so the innermost first), a range in one
+# (`1..3`, `a..c`, with a step), and how many words a word may stand for before the rest is left.
+BRACE = re.compile(r"\{([^{}]*)\}")
+BRACE_RANGE = re.compile(r"(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?|([A-Za-z])\.\.([A-Za-z])")
+BRACE_LIMIT = 256
+
+
+def brace_expanded(word: str) -> list[str]:
+    """The words a word stands for once the shell expands its braces (`a/{b,c}.txt` is `a/b.txt` and
+    `a/c.txt`, `{1..3}` is 1 2 3), or the word itself when it has none. Past BRACE_LIMIT words, the
+    rest stay as they are spelled."""
+    done: list[str] = []
+    waiting = [word]
+    while waiting and len(done) + len(waiting) < BRACE_LIMIT:
+        current = waiting.pop(0)
+        found = next((m for m in BRACE.finditer(current)
+                      if "," in m.group(1) or BRACE_RANGE.fullmatch(m.group(1))), None)
+        if found is None:
+            done.append(current)
+            continue
+        inside = found.group(1)
+        if span := BRACE_RANGE.fullmatch(inside):
+            if span.group(4):
+                first, last = ord(span.group(4)), ord(span.group(5))
+                items = [chr(c) for c in range(first, last + (1 if last >= first else -1), 1 if last >= first else -1)]
+            else:
+                first, last = int(span.group(1)), int(span.group(2))
+                step = abs(int(span.group(3) or 1)) or 1
+                items = [str(n) for n in range(first, last + (1 if last >= first else -1), step if last >= first else -step)]
+        else:
+            items = inside.split(",")
+        waiting += [current[:found.start()] + item + current[found.end():] for item in items]
+    return done + waiting
+
+
 # Where a path begins when a stretch of a command names it by itself: at the start of the stretch,
 # or after what joins it to an option, a variable, a remote or an upload (`--file=/a`, `A=/a:/b`,
 # `host:/a`, `-d @/a`), a short flag (`-C/a`), a file mode (`</a`) or `file://`.
@@ -1076,6 +1116,87 @@ def find_deletes(args: list[str]) -> list[str]:
     return roots if deletes else []
 
 
+# Options that name the file a program writes its output, a log or a record to: the long ones any
+# program means so, and the ones a program of these means so (a short `-o` means other things to
+# others: `ssh -o` an option, `grep -o` a way to print).
+OUTPUT_OPTIONS = frozenset({"--output", "--output-file", "--output-document", "--outfile", "--out-file", "--log-file"})
+OUTPUT_OPTIONS_OF = {
+    "curl": frozenset({"-o", "-D", "--dump-header", "-c", "--cookie-jar", "--trace", "--trace-ascii", "--stderr",
+                       "--etag-save", "--libcurl", "--hsts", "--alt-svc"}),
+    "wget": frozenset({"-O", "-o", "-a", "--append-output"}),
+    "sort": frozenset({"-o"}),
+    "pandoc": frozenset({"-o"}),
+    "yt-dlp": frozenset({"-o"}),
+    "openssl": frozenset({"-out"}),
+    **{compiler: frozenset({"-o"}) for compiler in ("cc", "gcc", "g++", "clang", "clang++", "ld", "swiftc", "rustc")},
+}
+
+
+def output_options(tool: str, args: list[str]) -> list[str]:
+    """The files the options of a command name as where it writes (OUTPUT_OPTIONS): the next word (after
+    short flags run together too: `-sSo file`), the value after `=` of a long one, or what is glued to a
+    short one (`-ofile`)."""
+    options = OUTPUT_OPTIONS | OUTPUT_OPTIONS_OF.get(tool, frozenset())
+    found: list[str] = []
+    for at, word in enumerate(args):
+        flag, eq, value = word.partition("=")
+        if eq and flag.startswith("--") and flag in options:
+            found.append(value)
+        elif word in options and at + 1 < len(args):
+            found.append(args[at + 1])
+        elif re.fullmatch(r"-[A-Za-z]{2,}", word) and f"-{word[-1]}" in options and at + 1 < len(args):
+            found.append(args[at + 1])      # short flags run together, the last one taking the next word (`-sSo f`)
+        elif re.fullmatch(r"-[A-Za-z].+", word) and word[:2] in options:
+            found.append(word[2:])
+    return found
+
+
+# A URL among a command's words, and the options of curl and wget that say how a download is named.
+URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
+CURL_REMOTE_NAME = re.compile(r"--remote-name(?:-all)?|-[A-Za-z]*O[A-Za-z]*")
+CURL_SERVER_NAME = re.compile(r"--remote-header-name|-[A-Za-z]*J[A-Za-z]*")
+WGET_NAMED = re.compile(r"--output-document(?:=.*)?|-[A-Za-z]*O.*|--spider")
+WGET_SERVER_NAME = re.compile(r"--content-disposition|--trust-server-names|--recursive|--mirror|-[A-Za-z]*[rm][A-Za-z]*")
+
+
+def option_value(args: list[str], long: str, short: str | None = None) -> str | None:
+    """The value of an option among a command's words (`--long v`, `--long=v`, `-s v`, `-sv`), or None."""
+    for at, word in enumerate(args):
+        if word == long or (short is not None and word == short):
+            return args[at + 1] if at + 1 < len(args) else None
+        if word.startswith(long + "="):
+            return word.partition("=")[2]
+        if short is not None and word.startswith(short) and len(word) > len(short) and not word.startswith("--"):
+            return word[len(short):]
+    return None
+
+
+def downloaded(tool: str, args: list[str]) -> list[str]:
+    """The files curl or wget writes a download to under the name its URL ends in (`curl -O`, `wget`
+    with no `-O`), in the folder the command stands in or the one an option names (`--output-dir`,
+    `-P`); that folder itself when the server names the file (`curl -J`, `wget --content-disposition`,
+    a recursive fetch), since the name is not known before it runs."""
+    if tool == "curl":
+        if not any(CURL_REMOTE_NAME.fullmatch(word) for word in args):
+            return []
+        server = any(CURL_SERVER_NAME.fullmatch(word) for word in args)
+        folder = option_value(args, "--output-dir")
+        fallback = ""
+    elif tool == "wget":
+        if any(WGET_NAMED.fullmatch(word) for word in args):
+            return []
+        server = any(WGET_SERVER_NAME.fullmatch(word) for word in args)
+        folder = option_value(args, "--directory-prefix", "-P")
+        fallback = "index.html"
+    else:
+        return []
+    base = folder or "."
+    if server:
+        return [base]
+    names = [os.path.basename(urllib.parse.urlparse(word).path) or fallback for word in args if URL.fullmatch(word)]
+    return [os.path.join(base, name) for name in names if name]
+
+
 def unpacks_into(tool: str, args: list[str]) -> str | None:
     """The folder `tar -x` or `unzip` puts the files of an archive in (`-C`, `-d`; the folder the
     command stands in without), or None when the command does not unpack."""
@@ -1245,6 +1366,7 @@ def named_with_folders(command: str, cwd: str,
             written.extend((p, here) for p in paths if Path(real(p, here)).is_file())
         elif tool == "dd":
             written.extend((a[3:], here) for a in args if a.startswith("of="))
+        written.extend((value, here) for value in [*output_options(tool, args), *downloaded(tool, args)])
         shell = bool(SHELL_CODE.fullmatch(tool))
         flags = code_flags(tool)
         for flag, code in zip(args, args[1:]):
@@ -1286,7 +1408,8 @@ def named_with_folders(command: str, cwd: str,
             return []
         base = os.path.expanduser(name)
         base = base if os.path.isabs(base) else os.path.join(stood, base)
-        return (glob.glob(base) if GLOB.search(name) else []) or [base]
+        return [match for each in brace_expanded(base)
+                for match in (glob.glob(each) if GLOB.search(each) else []) or [each]]
 
     def spelled(names: list[tuple[str, str]]) -> list[Path]:
         return [real(m) for name, stood in distinct(names) for m in matched(name, stood)]
@@ -1552,7 +1675,8 @@ def holds_transcripts(path: Path, reach: str) -> bool:
 
 
 def script_argument_orders(command: str, cwd: str, transcript: str | None, marks: set[str] | None = None,
-                           depth: int = 0) -> tuple[list[Path], list[FolderOrder]]:
+                           depth: int = 0, *, refuses: Callable[[Path], bool] | None = None,
+                           ) -> tuple[list[Path], list[FolderOrder]]:
     """(the paths, the orders on a folder) a file of code the command runs writes where its arguments say,
     when one of the words handed to it names what the agent may not write: a thing `kept` judges, or
     the folder of transcripts or one in it (`holds_transcripts`). A script that takes the path from its
@@ -1560,7 +1684,9 @@ def script_argument_orders(command: str, cwd: str, transcript: str | None, marks
     script by `$1`, `$@`, a loop over them, a `shift` and a default, and what it runs in turn by the words
     it hands on. A script that uses its words where the text does not say, and writes, writes every one;
     so does the code of another interpreter that uses its arguments and spells a call that writes. A
-    command that hands no such word is read as it always was."""
+    command that hands no such word is read as it always was. `refuses` (a path -> bool) names more
+    places a word may name to have the script read so: where a session that has read inside an area
+    may not write."""
     paths: list[Path] = []
     orders: list[FolderOrder] = []
 
@@ -1571,7 +1697,7 @@ def script_argument_orders(command: str, cwd: str, transcript: str | None, marks
     def guarded(word: str, here: str) -> bool:
         resolved, written = spelled(word, here)
         return bool(kept(resolved, transcript, marks) or holds_transcripts(resolved, RECORDS)
-                    or holds_transcripts(written, RECORDS))
+                    or holds_transcripts(written, RECORDS) or (refuses is not None and refuses(resolved)))
 
     def writes_all(words: list[str], here: str) -> None:
         for word in script_arguments.candidates(words):
@@ -1591,7 +1717,8 @@ def script_argument_orders(command: str, cwd: str, transcript: str | None, marks
                 orders += folders
                 wrote = wrote or bool(written or removed or folders)
                 if depth < NESTED:
-                    inner_paths, inner_orders = script_argument_orders(text, here, transcript, marks, depth + 1)
+                    inner_paths, inner_orders = script_argument_orders(text, here, transcript, marks, depth + 1,
+                                                                       refuses=refuses)
                     paths += inner_paths
                     orders += inner_orders
             if unreadable and wrote:
@@ -1624,11 +1751,73 @@ def kept_by(command: str, cwd: str, transcript: str | None,
             if what[1].endswith(ADDS_ONLY) and search_call.searches_only(command):
                 continue
             return what
+    # A folder written as itself takes a file under a name the command does not say (`curl -OJ`), so
+    # the folder of a setting only the operator writes is that setting's to keep.
+    operator_folders = {real(guard_places.setting(name)).parent for name in OPERATOR_ONLY}
+    for path in written:
+        if path in operator_folders:
+            return (f"the folder of a setting only the operator writes ({path})",
+                    f"{SETTINGS_WHY}; a file written into it under a name not known may be that setting")
     for path in removed:
         if path in real(CONFIG).parents or path in CONFIG.parents:
             return "the folder holding the guard's settings", SETTINGS_WHY
         if holds_openings(path):
             return "a folder holding openings of relayed messages", f"{SETTINGS_WHY}, and {ADDS_ONLY}"
+    if (handed := operator_file_handed(command, cwd)) is not None:
+        return (f"the guard's settings ({handed.name})",
+                f"{SETTINGS_WHY}; only the operator writes it, and a program the guard does not know may write a "
+                f"file it is handed")
+    return None
+
+
+# Programs that only read the files they are handed, or name them: a file only the operator writes may
+# be handed to these. A copy's file is judged as its destination or its source (named).
+READS_ONLY = frozenset({"cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "wc", "diff", "cmp",
+                        "comm", "sha256sum", "shasum", "md5", "md5sum", "file", "stat", "ls", "realpath", "readlink",
+                        "nl", "strings", "od", "hexdump", "xxd", "test", "[", "[[", "du", "bat"})
+
+
+def operator_only(path: Path) -> bool:
+    """Whether a path is a setting only the operator writes (OPERATOR_ONLY), under any spelling."""
+    name = settings_name(path)
+    return bool(name) and name.split(os.sep)[0] in {n.casefold() for n in OPERATOR_ONLY}
+
+
+def operator_file_handed(command: str, cwd: str, depth: int = 0) -> Path | None:
+    """A file only the operator writes that a command line hands as a word (alone, or after an option's
+    `=`) to a program that may write it -- one not in READS_ONLY, no copy, and no file of code the
+    guard reads, which is read again with the words in place (script_argument_orders) -- wherever it
+    runs: a command line handed on, a shell's `-c` string, a heredoc fed to a shell. None when there is
+    none. A file fed on the standard input (`< orders.txt`) is read, not handed."""
+    line, fed = split_heredocs(spell_home(in_run_order(command)))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return None
+    standing = Standing(cwd)
+    inner: list[tuple[str, str]] = [(body, standing.here) for program, body in fed if SHELL_CODE.fullmatch(program)]
+    for words, _, _, ended_by in steps:
+        head, lines, nested = program_words(words)
+        inner += [(code, standing.here) for code in [*lines, *map(shlex.join, nested)]]
+        tool = os.path.basename(head[0]) if head else ""
+        if head and not standing.move(tool, head[1:]):
+            if SHELL_CODE.fullmatch(tool):
+                inner += [(head[at + 1], standing.here) for at, word in enumerate(head[1:-1], 1)
+                          if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
+            # A file of code the guard reads is read again with its words in place (script_argument_orders).
+            if tool not in READS_ONLY | COPIES and script_files.ran(head, standing.here) is None:
+                for word in head[1:]:
+                    for spelled in {each for part in {word, word.partition("=")[2]} - {""}
+                                    for each in brace_expanded(part)}:
+                        if operator_only(real(spelled, standing.here)):
+                            return real(spelled, standing.here)
+        if ended_by == "(":
+            standing.open()
+        elif ended_by == ")":
+            standing.close()
+    for code, here in inner if depth < NESTED else []:
+        if (found := operator_file_handed(code, here, depth + 1)) is not None:
+            return found
     return None
 
 
@@ -2229,8 +2418,9 @@ def handoff_refusal(folder: Path, text: str, areas) -> str | None:
                                      dir=os.environ.get("TMPDIR") or None) as fh:
         fh.write(text)
     try:
-        r = subprocess.run(["python3", str(CORPUS), "--dest-area", ",".join(own), "--text", fh.name],
-                           capture_output=True, text=True, timeout=180)
+        r = subprocess.run(["python3", str(CORPUS), "--dest-area", ",".join(own), "--text", fh.name,
+                            "--budget", str(HANDOFF_SCAN_SECONDS)],
+                           capture_output=True, text=True, timeout=HANDOFF_SCAN_SECONDS)
     except (subprocess.TimeoutExpired, OSError):
         return "the private-document scan could not run, so what it holds could not be judged"
     finally:
@@ -3193,7 +3383,11 @@ def main() -> int:
         command = args.get("command", "")
         touched += bash_marks(command, cwd, areas)
         remote = remote_marks(command, cwd)
-        for target in write_targets(command, cwd) if marks else []:
+        def refuses(path: Path) -> bool:
+            return not may_write(path, marks, areas)
+
+        argument_writes = script_argument_orders(command, cwd, None, marks, refuses=refuses)[0] if marks else []
+        for target in [*write_targets(command, cwd), *argument_writes] if marks else []:
             if not may_write(target, marks, areas):
                 deny(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
                      f"write {target} (areas: {AREAS}). Do it in another session{handoff_unset_note()}")
