@@ -543,6 +543,8 @@ def program_of(words: list[Word]) -> tuple[list[Word], list[str], list[list[Word
                     lines.append(value)
                 if name == "xargs":
                     replace = value if flag in XARGS_REPLACE else "{}" if flag == "-i" else replace
+            if name == "env" and at < len(words) and words[at] == "-":
+                at += 1   # `env - cmd`: the same as `env -i cmd`
             at += positional
             fed |= name == "xargs"
         else:

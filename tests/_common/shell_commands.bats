@@ -54,7 +54,7 @@ count() { grep -c . <<< "${output}"; }
     local c
     for c in "for i in 1; do ssh h x; done" "if true; then ssh h x; fi" "while true; do ssh h x; done" \
              "A=1 B=2 ssh h x" "! ssh h x" "time -p ssh h x" "{ ssh h x; }" "( ssh h x )" \
-             "sudo -u me ssh h x" "env -u A B=1 ssh h x" "nohup ssh h x" "timeout -s KILL 10 ssh h x" \
+             "sudo -u me ssh h x" "env -u A B=1 ssh h x" "env - ssh h x" "env -i - ssh h x" "nohup ssh h x" "timeout -s KILL 10 ssh h x" \
              "nice -n 5 ssh h x" "command ssh h x" "exec ssh h x" "caffeinate -i ssh h x" \
              "timeout 10 sudo env A=1 nohup ssh h x" "eval \"ssh h x\"" "env -S 'ssh h x'" \
              "function f { ssh h x; }" "f() { ssh h x; }" "coproc ssh h x" "coproc C { ssh h x; }" \
