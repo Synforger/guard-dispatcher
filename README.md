@@ -147,7 +147,8 @@ sections below spell the places the first way.
 
 Every hook follows the same AND-composition:
 
-1. If the repository ships its own `.githooks/<hook>`, run it first. A
+1. If the repository ships its own `.githooks/<hook>` and the machine
+   trusts the repository (*Repository hooks* below), run it first. A
    failing repo hook fails the operation — but a passing one does not
    skip the baseline. Repo hooks add rules; they never replace the
    guard.
@@ -205,7 +206,7 @@ written into any repository:
 `guard.wordlist` feeds the scanners a scope-specific list (resolution
 order is single-sourced in *Word list* above).
 `guard.allowedEmails` (comma-separated) replaces the built-in identity
-list for that scope. Existing repo-local `.githooks/` keep running
+list for that scope. The `.githooks/` of a trusted repository keep running
 first (AND-composition), so per-repo rules still apply on top.
 
 The push-time identity check additionally accepts GitHub bot accounts
@@ -248,7 +249,31 @@ session's folder at the same place in that worktree.
 Scanners always come from this checkout's `scanners/` — individual
 repositories need no toolkit of their own, and a copy a repository carries
 (`.tooling/local-ci/anon-scan.sh`) does not replace them. A repository's own
-checks run from its `.githooks/`, before the machine's scan.
+checks run from its `.githooks/` (when the machine trusts it), before the
+machine's scan.
+
+### Repository hooks
+
+A repository's `.githooks/<hook>` runs with the operator's rights, so the
+dispatcher runs it only for a repository the machine trusts. The decision comes
+from the machine's git settings and the repository's remote, never from a file
+the repository's own tree carries:
+
+| Setting | Trusts |
+|---|---|
+| `guard.localHooks = true` | the repository it is set in (`.git/config`), or every repository under a folder that an `includeIf "gitdir:…"` file of the machine's config covers |
+| `guard.hookOwners = a,b` | the repositories whose `origin` fetch address is a GitHub address of owner `a` or `b` (case-insensitive) |
+| built in | the Synforger org |
+
+A GitHub address is `https://github.com/<owner>/<repo>`, or an ssh form
+(`ssh://git@host/<owner>/<repo>`, `git@host:<owner>/<repo>`) whose host is
+`github.com` or `github-<alias>`, an ssh host entry of the machine. The address
+is the one git uses (`url.<base>.insteadOf` applied). A repository with no
+`origin`, or an address of any other shape, is not trusted.
+
+A hook that is not run does not stop the commit or the push: one line on stderr
+names the hook and the two settings that allow it, and the dispatcher's own
+checks run as always.
 
 ### Private documents
 
@@ -707,9 +732,14 @@ step earlier, before each tool call, from the same `areas.txt`:
   syntax tree, and counts only the parts that reach a call that writes (an
   `open` in a writing mode, `Path.write_text` and the other methods of a path
   that write it, the destination of a rename) or a call the guard does not
-  know (`shutil.copy`, `subprocess.run`, a library's `save`), following a name
+  know (`shutil.copy`, a library's `save`), following a name
   back to the values it was given: a path handed to `os.path.relpath`, a
-  string's methods, `print` or an `open` that reads is text. A name the code
+  string's methods, `print` or an `open` that reads is text. A call that runs a
+  command (`subprocess.run`, `os.system`) counts what it is handed, as a program
+  the guard does not know may write any path it is given, but for the program
+  itself (the first word of a list) and the variables it sets (`env=`); its
+  command line is also read as one typed into Bash. What the command gave back
+  (`.stdout`, `.returncode`) is a value and names no file. A name the code
   rebinds (loops over, takes as a parameter, binds twice) is a call the guard
   does not know, whatever it is spelled; a name one plain assignment alone
   binds is read as what it is given (`esc = html.escape` is `html.escape`,
@@ -749,9 +779,13 @@ step earlier, before each tool call, from the same `areas.txt`:
 - On every machine, areas or not, a `Bash` command that switches the guards off
   or around is refused: `--no-verify`, `git commit -n`, the skip variables,
   `git -c core.hooksPath=…`, setting `core.hooksPath` / `guard.scope` /
-  `guard.exemptPrefix`, clearing the marks, creating the off switch, removing
+  `guard.exemptPrefix`, widening the trust in a repository's own hooks
+  (`guard.localHooks` / `guard.hookOwners`, set or given to one call with `git -c`), clearing the marks, creating the off switch, removing
   the installed hooks, or sending from a repository the git hooks do not reach. Each passes on
   the operator's yes (see *A change the operator approves* below), but clearing the marks.
+  Clearing the marks, creating the off switch and removing the hooks are read one command at a
+  time, a command line handed on (`eval`, a shell's `-c` string, a heredoc fed to a shell) as
+  commands of its own; the text of a heredoc fed to anything else is none.
   A command line that Python code runs (code written into the command or handed to it in a
   file: `subprocess`, `os.system`, `os.exec*`, `os.spawn*`, with the variables an `env=` mapping
   sets) is held to the same. So is a call that runs a command (or one made by name: `exec`,
@@ -822,8 +856,13 @@ step earlier, before each tool call, from the same `areas.txt`:
   other branches left out; an `if` any of whose conditions holds more is read whole.
 - What an agent writes into an area's folders is held to that area's word list when the area keeps
   one of its own beside the operator's (`company.txt` in the word lists' folder), as a send to that
-  area is: the text an Edit or a Write puts there, and for a command that writes there (a
-  redirection, `sed -i`, a program's code) its line and the code of the scripts it runs. A word of
+  area is: the text an Edit or a Write puts there, and of a command line every command up to the
+  last one that writes there (a redirection, `sed -i`, a program's code) and to the close of the loop
+  or group around it: their words, what is fed to them and the code of the scripts they run. A copy's
+  paths are read by their last name, the folder a `cd` goes to and a file a program that writes what
+  it holds reads (`cat`, `sed`, `sort`, `head` or `tail` of one file, …) not at all. The commands after, which
+  put nothing there, are not read for the list; a line with a command in that stretch that acts later
+  (sent to the background, a trap, a function, an `exec` that opens a file) is read whole. A word of
   the list is refused before it is written, with the words it met. A file in an agent's own folder
   (`<platform root>/agents/…`) is the agent's notes and is not held to it. What a program reads
   from elsewhere and writes is not seen.
@@ -1625,7 +1664,14 @@ contract:
 - **No push publishes** matching content: every outgoing commit is
   deep-scanned — all blobs (full diffs), the message, and the
   author/committer name+email — and the pushed branch or tag name is
-  scanned as well (`pre-push`). A new-branch push scans exactly the
+  scanned as well (`pre-push`). On a push to
+  `git@github.com:<owner>/<repo>` or `https://github.com/<owner>/<repo>`,
+  what that account already shows of itself passes in the author/committer
+  fields alone: a name that is exactly `<owner>`, and an address that is
+  exactly `<owner>@users.noreply.github.com` or
+  `<digits>+<owner>@users.noreply.github.com` (`--dest <push URL>` of
+  `anon-audit-deep.sh`; pinned in `tests/scanners/words/scanners.bats` and
+  `tests/git-hooks/hooks.bats`). A new-branch push scans exactly the
   commits the remote does not already have, less those another remote holds
   when a push there is checked against the same areas
   (`corpus-scan.py --checked`): they have crossed every boundary this push

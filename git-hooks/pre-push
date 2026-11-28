@@ -3,7 +3,8 @@
 # Global pre-push dispatcher
 # =============================================================================
 # Behaviour:
-#   1. If the repo ships `.githooks/pre-push`, run it first (AND — a pass
+#   1. If the repo ships `.githooks/pre-push` and the machine trusts the
+#      repo (dispatcher::local_hooks_trusted), run it first (AND — a pass
 #      does not skip the baseline below). stdin ref lines are captured
 #      once and re-fed to both consumers.
 #   2. On every repo except an explicit `exempt`, parse the captured ref
@@ -206,7 +207,7 @@ at_once() {
     [ "${corpus_only}" = "1" ] && return 0
 
     printf '[pre-push] anon-audit-deep --range %s (%s refs at once)\n' "${revspec}" "$(grep -c . <<< "${ref_lines}")" >&2
-    GUARD_DEST_KNOWN="${dest_env}" bash "${scanner}" --range "${revspec}" || return 1
+    GUARD_DEST_KNOWN="${dest_env}" bash "${scanner}" --range "${revspec}" --dest "${push_url}" || return 1
 }
 
 if [ "$(grep -c . <<< "${ref_lines}")" -gt 1 ]; then
@@ -334,7 +335,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
 
     printf '[pre-push] anon-audit-deep --range %s (ref %s)\n' "${revspec}" "${local_ref}" >&2
-    if ! GUARD_DEST_KNOWN="${dest_env}" bash "${scanner}" --range "${revspec}"; then
+    if ! GUARD_DEST_KNOWN="${dest_env}" bash "${scanner}" --range "${revspec}" --dest "${push_url}"; then
         # Try to self-heal only when the operator opted in — a silent
         # filter-repo pass on every push would be too surprising, and it
         # can't undo a mis-scoped rewrite.
