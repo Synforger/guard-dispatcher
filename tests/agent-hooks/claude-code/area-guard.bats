@@ -1337,6 +1337,31 @@ session_files() {
     done
 }
 
+@test "area-guard: a fresh HOME is not followed where the command can put HOME back without writing HOME=" {
+    local w='printf x > ~/.claude/projects/-w/s1.jsonl' c
+    bash_in "${H}" "# the throwaway HOME"$'\n''T="$(mktemp -d)"; export HOME="${T}/home"; '"${w}"
+    passed || { echo "${output}"; return 1; }
+    for c in 'export HOME="$(mktemp -d)/home"; unset HOME; '"${w}" \
+             'export HOME="$(mktemp -d)/home"; env -u HOME bash -c "'"${w}"'"' \
+             'export HOME="$(mktemp -d)/home"; env -i bash -c "'"${w}"'"' \
+             'export HOME="$(mktemp -d)"; read HOME < saved; '"${w}" \
+             'export HOME="$(mktemp -d)"; . ./restore.sh; '"${w}" \
+             'g() { source ./restore.sh; }; export HOME="$(mktemp -d)"; g; '"${w}" \
+             'export HOME="$(mktemp -d)"; eval "$restore"; '"${w}" \
+             'export HOME="$(mktemp -d)"; sudo -u me sh -c '"'${w}'" \
+             'export HOME="$(mktemp -d)"; exec -c bash -c '"'${w}'" \
+             "f() { export HOME=${H}; }; "'export HOME="$(mktemp -d)"; f; '"${w}" \
+             'export HOME="$(mktemp -d)"; export H\OME='"${H}; ${w}" \
+             'export HOME="$(mktemp -d)"; a=HO; export "${a}ME='"${H}\"; ${w}" \
+             'export HOME="$(mktemp -d)"; printf -v "$n" %s '"${H}; ${w}" \
+             'export HOME="$(mktemp -d)/../../../../../../../..'"${H}\"; ${w}" \
+             'T="$(mktemp -d)"; T+="/../../../../../../../..'"${H}\"; "'export HOME="${T}"; '"${w}" \
+             'echo "#"; export HOME="$(mktemp -d)"; unset HOME; '"${w}"; do
+        bash_in "${H}" "${c}"
+        denied || { echo "passed: ${c}"; return 1; }
+    done
+}
+
 @test "area-guard: the agent does not replace the folder of transcripts either, whole or in part" {
     session_files
     mkdir -p "${H}/fake/-home-tool" "${H}/linked" "${H}/scratch"
