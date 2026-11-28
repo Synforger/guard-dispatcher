@@ -183,6 +183,9 @@ VALUE_ATTRIBUTES = frozenset({
 #: value handed on, `sorted(xs, key=eval)`), they make the code one this module does not know.
 #: How much of a part of the code a refusal line shows.
 SHOWN_SOURCE_LENGTH = 60
+#: The name of an exception class (`json.JSONDecodeError`, `subprocess.TimeoutExpired` is not one):
+#: handed on (`except`, `isinstance`) it writes nothing, as a constant does not.
+EXCEPTION_CLASS = re.compile(r"[A-Z]\w*(?:Error|Exception|Warning|Exit)")
 DYNAMIC = frozenset({"eval", "exec", "compile", "getattr", "setattr", "delattr", "globals", "locals", "vars",
                      "breakpoint", "help"})
 
@@ -408,7 +411,8 @@ class _Reader:
                     continue
             else:
                 continue
-            if not (_pure(name) or name in MODULE_VALUES or name.rpartition(".")[2].isupper()):
+            last = name.rpartition(".")[2]
+            if not (_pure(name) or name in MODULE_VALUES or last.isupper() or EXCEPTION_CLASS.fullmatch(last)):
                 return node
         return None
 
