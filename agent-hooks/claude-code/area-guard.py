@@ -113,6 +113,7 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "git-hooks" / "_internal"))
+import agent_roots  # noqa: E402
 import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
@@ -1513,6 +1514,55 @@ def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
     return distinct(found)
 
 
+#: Programs that copy what files hold and print none of their names: the files `cat` is given, and
+#: all but the last that `cp` and `mv` are given, are read.
+COPIERS = {"cat", "cp", "mv"}
+
+
+@functools.lru_cache(maxsize=None)
+def read_or_run_paths(command: str, cwd: str, depth: int = 0) -> tuple[str, ...]:
+    """The words of a command that stand where a path is only read or run, following where the
+    command stands and the command lines it hands on, as ran_scripts does: each program, the file of
+    code it runs and the files that code is handed, the file of a `<` redirection, and the files
+    `cat`, `cp` and `mv` copy. The folder of a `cd` is not one: whatever the command runs there can
+    print where it stands (`pwd`, `env`, `ls ..`). A program or a script that prints its own path or
+    the names of the files it is handed is not told apart from one that does not."""
+    line, _ = split_heredocs(spell_home(in_run_order(command)))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return ()
+    found: list[str] = []
+    standing = Standing(cwd)
+    for index, (words, redirects, _, ended_by) in enumerate(steps):
+        rest, lines, nested = program_words(words)
+        for code in [*lines, *map(shlex.join, nested)] if depth < NESTED else []:
+            found += read_or_run_paths(code, standing.here, depth + 1)
+        found += [target for operator, target in redirects if operator == "<"]
+        if rest and not standing.move(os.path.basename(rest[0]), rest[1:]):
+            tool, here = os.path.basename(rest[0]), standing.here
+            found.append(rest[0])
+            fed = fed_files(redirects, steps[index - 1] if index else None)
+            if readings := script_files.ran_with_arguments(rest, here, fed):
+                # Each reading takes the same words of the line as its arguments: they are counted once.
+                arguments = readings[0][2]
+                at = len(rest) - len(arguments) - 1
+                handed = [rest[at]] if at > 0 else []
+                found += [word for word in [*handed, *arguments] if os.path.isfile(os.path.join(here, word))]
+            elif depth < NESTED and SHELL_CODE.fullmatch(tool):
+                codes = [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
+                for code in codes:
+                    found += read_or_run_paths(code, here, depth + 1)
+            elif tool in COPIERS:
+                files = [word for word in rest[1:] if not word.startswith("-")]
+                found += files if tool == "cat" else files[:-1]
+        if ended_by == "(":
+            standing.open()
+        elif ended_by == ")":
+            standing.close()
+    return tuple(found)
+
+
 def write_targets(command: str, cwd: str) -> list[Path]:
     """Paths a Bash command names as a place it writes (see named)."""
     return named(command, cwd)[0]
@@ -2633,7 +2683,7 @@ def put_words(words: list[str], head: list[str], here: str, *, errors_redirected
     return list(words)
 
 
-def writing_parts(command: str, cwd: str, holds) -> list[str]:
+def writing_parts(command: str, cwd: str, holds, *, mask: Callable[[str], str] | None = None) -> list[str]:
     """What a command line puts where `holds` says yes, read command by command as the shell runs
     them (a `cd` moves the rest, a subshell gives the place back): every command from the head of the
     line up to the last one that writes there, and up to the close of the loop or group around it.
@@ -2644,8 +2694,10 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
     line cannot be split, when nothing in it is seen to write there command by command, when its
     loops and groups do not close, and when a command within that stretch acts later in the line
     (one sent to the background, a trap, a function defined, an `exec` that only opens a file), or
-    hands on to run what does, at any depth (code_acts_later)."""
-    whole = [command, *(code for _, code, _ in ran_scripts(command, cwd))]
+    hands on to run what does, at any depth (code_acts_later). `mask` is put over what comes from the
+    line itself (its words, heredocs and here-strings), not over the code of the scripts it runs."""
+    mask = mask or (lambda line: line)
+    whole = [mask(command), *(code for _, code, _ in ran_scripts(command, cwd))]
     line, fed = split_heredocs(spell_home(in_run_order(command)))
     try:
         steps = list(stepped_commands(line))
@@ -2668,7 +2720,7 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
         writing = False
         if head and standing.move(os.path.basename(head[0]), head[1:]):
             # Where the line stands can be written from there on (`pwd`, `env`, `ls ..`): the folder is put.
-            put = list(words)
+            put = [mask(word) for word in words]
         elif words or redirects or mine or here_string is not None:
             step = " ".join(shlex.quote(word) for word in words) + "".join(
                 f" {operator} {shlex.quote(target)}" for operator, target in redirects if operator not in ("<<", "<<-"))
@@ -2677,9 +2729,9 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
                 step += f" <<< {shlex.quote(here_string)}"
             writing = any(holds(target) for target in write_targets(step, standing.here))
             later = later or code_acts_later(step, standing.here)
-            put = put_words(words, head, standing.here, errors_redirected=errors_redirected) \
-                + [body for _, body in mine] \
-                + ([here_string] if here_string is not None else []) \
+            put = [mask(part) for part in put_words(words, head, standing.here, errors_redirected=errors_redirected)] \
+                + [mask(body) for _, body in mine] \
+                + ([mask(here_string)] if here_string is not None else []) \
                 + [code for _, code, _ in ran_scripts(step, standing.here)]
         puts.append(put)
         writes.append(writing)
@@ -2714,7 +2766,14 @@ def area_words_refusal(tool: str, args: dict, cwd: str, areas) -> str | None:
         targets = write_targets(command, cwd)
         held = area_word_lists(targets, areas)
         held_targets = {target for _, target in held.values()}
-        text = "\n".join(writing_parts(command, cwd, lambda path: bool(area_word_lists([path], areas)))) \
+        # A path into an agent's folder that the command only reads or runs names the folder, not
+        # what is written: the folder's name is left out of the line there (agent_roots).
+        spellings = agent_roots.pattern(guard_places.agents_folder())
+        read_or_run = agent_roots.inside(spellings, read_or_run_paths(command, cwd))
+        masks = agent_roots.masked(command, spellings, read_or_run) != command
+        text = "\n".join(writing_parts(
+            command, cwd, lambda path: bool(area_word_lists([path], areas)),
+            mask=(lambda line: spellings.sub(agent_roots.PLACEHOLDER, line)) if masks else None)) \
             if held_targets else ""
     else:
         return None
