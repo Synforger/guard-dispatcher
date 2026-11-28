@@ -1276,6 +1276,35 @@ wait_for_walk() {
     [[ "$output" != *"walking the private documents"* ]]
 }
 
+@test "corpus: a scan given a time waits for a walk only in what is left of it, and what changed is still caught" {
+    export GUARD_CORPUS_MAX_AGE=0
+    spotlight_stub ""
+    printf '#!/bin/sh\necho "\tIndexing disabled."\n' > "${STUB}/mdutil"
+    mk_repo other
+    commit_line "nothing private"
+    PATH="${STUB}:${PATH}" scan_last               # first look: nothing built yet, waited for
+    [ "$status" -eq 0 ]
+    local before
+    before="$(built_at)"
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${CLIENT}/received/late.md"
+    printf 'the dye lot for the spring run arrives on the ninth\n' > "${BATS_TEST_TMPDIR}/payload.txt"
+    # the whole time given is kept for judging the text: none is left to wait for the walk
+    GUARD_CORPUS_LOOKUP_ROOM=120 PATH="${STUB}:${PATH}" run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" \
+        --text "${BATS_TEST_TMPDIR}/payload.txt" --dest-area OUTSIDE --budget 120
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"this scan has no time left to wait for a walk: its walk goes on apart from this scan"* ]]
+    [[ "$output" != *"longer than 0s"* ]]
+    wait_for_walk "${before}"
+    # time left: the walk is waited for as without a time
+    before="$(built_at)"
+    PATH="${STUB}:${PATH}" run python3 "${GUARD_ROOT}/scanners/corpus/corpus-scan.py" \
+        --text "${BATS_TEST_TMPDIR}/payload.txt" --dest-area OUTSIDE --budget 120
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"walking the private documents"* ]]
+    [[ "$output" != *"goes on apart"* ]]
+    python3 -c "import json,sys; sys.exit(0 if json.load(open('${GUARD_CORPUS_CACHE}/summary.json'))['built'] > float(sys.argv[1]) else 1)" "${before}"
+}
+
 @test "corpus: a read the reads so far say will be long is announced with its time, and its time is kept" {
     export GUARD_CORPUS_MAX_AGE=3600
     spotlight_stub ""

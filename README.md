@@ -677,7 +677,13 @@ step earlier, before each tool call, from the same `areas.txt`:
     above, and once the repository has a remote it holds nothing of the others.
   The shell's writes are the paths a command names as written (a `>` / `>>`
   redirection, `tee`, `touch`, `truncate`, the destination of `cp` / `mv` /
-  `install` / `ln`, `sed -i`, `dd of=`), whatever stands before the command:
+  `install` / `ln`, `sed -i`, `dd of=`, the file an option names as output: `--output`,
+  `--output-file`, `--log-file` and the like for any program, and the short ones of a
+  program that means so, `curl -o`, `wget -O`, `sort -o`, a compiler's `-o`; the file a
+  download is named after its URL in, the folder the command stands in or `--output-dir` /
+  `-P`: `curl -O`, `wget` with no `-O`, and that folder itself where the server names it,
+  `curl -J`, `wget --content-disposition`, a recursive fetch), whatever
+  stands before the command:
   a variable, and every program that runs the next words, read past its options
   as a send is (`sudo -u USER`, `timeout 5`, `nice -n 10`, `ionice`, `stdbuf`,
   `xargs`, …). A command line handed on (`eval`, `trap`, `env -S`, `watch`, the
@@ -692,7 +698,8 @@ step earlier, before each tool call, from the same `areas.txt`:
   command stands in when it reaches that word: `cd`, `pushd` / `popd` move it
   and a `( … )` subshell gives the place back, so `cd /a && echo x > out`
   writes `/a/out`. A variable the command line set to a literal before
-  (`D=/a/b; echo x > $D/out`) is written out. Where neither can be read
+  (`D=/a/b; echo x > $D/out`) is written out, and so are its braces
+  (`{orders,x}.txt` is both names). Where neither can be read
   (`cd $X`, a value that comes from a substitution), the name is judged as it
   was written, from where the command stood. A shell's `-c` string, and a heredoc fed to a
   shell, is read as a command line of its own. Python code written into the
@@ -814,6 +821,10 @@ step earlier, before each tool call, from the same `areas.txt`:
   `rsync --remove-source-files`), whether the path is written directly or reached
   through a link. A project's `memory` folder stays writable. Reading them and copying them
   out pass; a change of the settings passes on the operator's yes, a change of a transcript never.
+  A setting only the operator writes (`orders.txt`, `agent-writes.txt`, `agent-off`) is also
+  refused where a command hands it as a word to a program that may write it: any but one that
+  only reads or names the files it is handed (`cat`, `grep`, `wc`, `diff`, `stat`, `ls`, …) or a
+  copy, whose destination is judged as above. Fed on the standard input (`< orders.txt`) it is read.
 - **A transcript holds what its session read.** Every session's transcript sits under the
   same folders, wherever the session worked, and holds the words of each file it read. A
   call that reads one (`Read`, `Grep`, a command that names it, or a recursive read of a

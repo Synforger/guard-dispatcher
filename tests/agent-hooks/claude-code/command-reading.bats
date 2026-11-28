@@ -131,6 +131,39 @@ judged() {
         "ruby -e 'puts \"echo x >> ${KEPT}\"'"
 }
 
+@test "command reading: a file only the operator writes is held where an option names it as output or a program that may write it is handed it" {
+    judged denied \
+        "curl -o ${KEPT} https://example.com" \
+        "curl -sSo ${KEPT} https://example.com" \
+        "curl --output=${KEPT} https://example.com" \
+        "wget -O ${KEPT} https://example.com" \
+        "sort -o ${KEPT} ${REPO}/list.txt" \
+        "some-tool ${KEPT}" \
+        "some-tool --file=${KEPT}" \
+        "bash -c 'some-tool ${KEPT}'" \
+        "curl -o ${GUARD_CONFIG_DIR}/{orders,x}.txt https://example.com" \
+        "some-tool ${GUARD_CONFIG_DIR}/{x,orders}.txt" \
+        "cd ${GUARD_CONFIG_DIR} && curl -O https://example.com/orders.txt" \
+        "cd ${GUARD_CONFIG_DIR} && curl -sSLO https://example.com/orders.txt" \
+        "cd ${GUARD_CONFIG_DIR} && wget -N https://example.com/orders.txt" \
+        "cd ${GUARD_CONFIG_DIR} && curl -OJ https://example.com/download"
+}
+
+@test "command reading: a file only the operator writes may be read, copied from and fed to a program" {
+    judged passed \
+        "cat ${KEPT}" \
+        "grep -c x ${KEPT}" \
+        "wc -l ${KEPT}" \
+        "diff ${KEPT} ${REPO}/list.txt" \
+        "cp ${KEPT} ${REPO}/orders.copy" \
+        "some-tool < ${KEPT}" \
+        "curl -o ${REPO}/out.html https://example.com" \
+        "ssh -o StrictHostKeyChecking=no example.com true" \
+        "cd ${REPO} && curl -O https://example.com/orders.txt" \
+        "cd ${REPO} && wget -N https://example.com/orders.txt" \
+        "curl -o ${REPO}/{a,b}.txt https://example.com"
+}
+
 @test "command reading: text the shell does not run, and everyday substitutions, pass" {
     judged passed \
         "echo '\$(echo x > ${KEPT})'" \

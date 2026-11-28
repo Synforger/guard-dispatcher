@@ -1852,6 +1852,22 @@ area_words() {
     done
 }
 
+@test "area-guard: a session that read inside an area runs no script that writes outside it where its arguments say" {
+    read_case
+    printf '%s\n' 'import subprocess, sys' "subprocess.run(['touch', sys.argv[1]])" > "${H}/touch.py"
+    printf '%s\n' 'import sys' "open(sys.argv[1], 'w').write('x')" > "${H}/open.py"
+    printf '%s\n' '#!/bin/sh' 'touch "$1"' > "${H}/touch.sh"
+    local c
+    for c in "python3 ${H}/touch.py ${PERSONAL}/x" "python3 ${H}/open.py ${PERSONAL}/x" "sh ${H}/touch.sh ${PERSONAL}/x"; do
+        bash_in "${H}" "${c}"
+        denied || { echo "not refused: ${c}"; return 1; }
+    done
+    for c in "python3 ${H}/touch.py ${CASE}/received/x" "sh ${H}/touch.sh ${CASE}/received/x" "python3 ${H}/touch.py ${H}/scratch.txt"; do
+        bash_in "${H}" "${c}"
+        passed || { echo "refused: ${c}: ${output}"; return 1; }
+    done
+}
+
 @test "area-guard: an agent's own folder inside an area holds its own names" {
     area_words
     export AGENT_PLATFORM_ROOT="${H}/platform"

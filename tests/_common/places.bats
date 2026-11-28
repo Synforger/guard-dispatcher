@@ -121,3 +121,23 @@ write_areas() {
     [ -f "${ROOT}/state/guard/marks/root-session.json" ]
     [ ! -e "${H}/.cache/area-guard/root-session.json" ]
 }
+
+# bash_decision <cwd> <command> — the entry guard's decision on one Bash call of a session that has read nothing.
+bash_decision() {
+    decision "$(jq -n --arg command "$2" --arg cwd "$1" \
+        '{session_id: "s1", tool_name: "Bash", tool_input: {command: $command}, cwd: $cwd, hook_event_name: "PreToolUse"}')"
+}
+
+@test "places: under a root, a download named by the server does not land in the folder of the operator's own settings" {
+    lay_out_fixture
+    unset GIT_CONFIG_GLOBAL
+    export AGENT_PLATFORM_ROOT="${ROOT}"
+    write_areas "${ROOT}/config/guard/boundaries/areas.txt"
+    mkdir -p "${ROOT}/config/guard/entry" "${ROOT}/config/guard/exit"
+    printf '*\n' > "${ROOT}/config/guard/entry/agent-writes.txt"
+    printf 'a phrase\n' > "${ROOT}/config/guard/exit/allow.txt"
+    [ "$(bash_decision "${ROOT}/config/guard/exit" "curl -OJ https://example.com/download")" = deny ]
+    [ "$(bash_decision "${ROOT}/config/guard/exit" "curl -O https://example.com/orders.txt")" = deny ]
+    [ "$(bash_decision "${ROOT}/config/guard/exit" "curl -O https://example.com/allow.txt")" = allow ]
+    [ "$(bash_decision "${H}/repos/public-tool" "curl -OJ https://example.com/download")" = allow ]
+}
