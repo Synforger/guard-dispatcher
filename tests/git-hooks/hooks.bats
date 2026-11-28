@@ -415,6 +415,52 @@ rewrite_under_colleague() {
     done
 }
 
+# own_identity_commit — a commit under a made-up account's handle and noreply address, the handle
+# being a word of the list. Sets base, tip and the URL of that account's repository.
+own_identity_commit() {
+    mk_repo other
+    base="$(git rev-parse HEAD)"
+    echo "clean" > clean.txt && git add clean.txt
+    local address="12345+${SENTINEL}@users.noreply.github.com"
+    GIT_AUTHOR_NAME="${SENTINEL}" GIT_COMMITTER_NAME="${SENTINEL}" GIT_AUTHOR_EMAIL="${address}" \
+        GIT_COMMITTER_EMAIL="${address}" commit_bypassing_hooks "feat: clean"
+    tip="$(git rev-parse HEAD)"
+    own_url="git@github.com:${SENTINEL}/notes.git"
+    seed_visibility "$(printf '%s' "${SENTINEL}/notes" | tr '[:upper:]' '[:lower:]')" private
+}
+
+# push_to <url> <branch>... — pre-push for the tip of own_identity_commit under each branch name.
+push_to() {
+    local url="$1" branch lines=""
+    shift
+    for branch in "$@"; do
+        lines+="refs/heads/${branch} ${tip} refs/heads/${branch} ${base}"$'\n'
+    done
+    run bash -c "printf '%s' '${lines}' | bash '${GUARD_ROOT}/git-hooks/pre-push' origin '${url}'"
+}
+
+@test "pre-push: an account's own handle and noreply address pass to its own repository" {
+    own_identity_commit
+    push_to "${own_url}" topic
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"author/committer: clean"* ]]
+}
+
+@test "pre-push: the same identity is blocked on the way to another account's repository" {
+    own_identity_commit
+    push_to "${OTHER_URL}" topic
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"author/committer: 1 hit(s)"* ]]
+}
+
+@test "pre-push: a push of several refs hands the destination to the one check over all of them" {
+    own_identity_commit
+    push_to "${own_url}" topic other-topic
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s\n' "${output}" | grep -c 'anon-audit-deep --range')" -eq 1 ]
+    [[ "$output" == *"2 refs at once"* ]]
+}
+
 @test "pre-push: empty stdin passes" {
     mk_repo synforger
     run_pre_push ""

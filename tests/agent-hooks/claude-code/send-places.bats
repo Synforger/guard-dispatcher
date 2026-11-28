@@ -201,3 +201,26 @@ pick_script() {
     bash_in "${TOOL}" "DEST=${AGENT} bash skip.sh"; denied
     [[ "${output}" == *"guard.scope = exempt"* ]]
 }
+
+@test "send places: a commit in a folder mktemp -d makes is judged where that folder lies" {
+    export TMPDIR="${H}/tmp"
+    local c
+    for c in 'T="$(mktemp -d)"; REPO="${T}/repos/tool"; git init -q "${REPO}"; git -C "${REPO}" commit -q --allow-empty -m base' \
+             'T=$(mktemp -d); cd "$T" && git init -q && git commit -q --allow-empty -m x' \
+             'T=$(mktemp -d -t guard); git -C "$T/r" commit -m x' \
+             'T=`mktemp -d`; git -C "$T" commit -m x'; do
+        bash_in "${TOOL}" "${c}"
+        passed || { echo "held: ${c}: ${output}"; return 1; }
+    done
+}
+
+@test "send places: a push from a folder mktemp makes, and a commit in a file it makes, stay unknown until they run" {
+    export TMPDIR="${H}/tmp"
+    local c
+    for c in 'T=$(mktemp -d); git -C "$T" push origin main' 'T=$(mktemp -d); cd $T; git push' \
+             'T=$(mktemp); git -C "$T" commit -m x' 'echo "T=$(mktemp -d)"; git -C "$T" commit -m x'; do
+        bash_in "${TOOL}" "${c}"
+        unread || { echo "not refused as unknown: ${c}: ${output}"; return 1; }
+    done
+}
+
