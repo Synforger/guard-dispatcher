@@ -785,6 +785,33 @@ step earlier, before each tool call, from the same `areas.txt`:
   Taking a repository's own `core.hooksPath` away (`--unset` in the repository's config) is not
   refused at all: it puts the repository back under the machine's hooks. The same unset in the
   global or system config, or in a file named with `--file`, is refused like any other change.
+- On every machine, an agent's call that changes how the operator signs in is held for the
+  operator's yes to that very call (*A change the operator approves*), as switching the guards
+  is: a password, a PIN, a key, a token or a login (`credentials.py`). That is the machine's
+  password and keychain (`passwd`, `dscl -passwd`, `sysadminctl -resetPasswordFor`, `security`
+  but its `find-*` and other looks, `fdesetup`, a disk's passphrase, Touch ID, the login window),
+  Kerberos, ssh keys and the hosts trusted (`ssh-keygen` but `-l`/`-y`/`-F` and the other looks,
+  `ssh-add` but its lists, `ssh-copy-id`), gpg, openssl, age, minisign, signify and WireGuard keys,
+  git's stored logins (`git credential approve|reject|store|erase`, a `credential.*` key), the
+  logins, tokens, keys and secrets of a service's tool (`gh auth login|refresh|switch|setup-git`,
+  `gh secret set`, `gh ssh-key add`, `gh api` writing to a keys, tokens or secrets endpoint,
+  `tailscale login|logout|switch|cert`, `tailscale up --auth-key`, `tailscale lock` but its status,
+  `npm login`, `npm token create`, a credential key set through `config`, `docker login`,
+  `gcloud auth login`, `aws configure`, `kubectl create secret`, `claude setup-token`, a password
+  store's changes, and the same words of the other tools of that kind, also run through `npx` and
+  the like), and writing a file that keeps one (`~/.ssh/id_*`, `authorized_keys`, `~/.gnupg/`,
+  `~/Library/Keychains/`, `gh`'s `hosts.yml`, `~/.netrc`, `~/.git-credentials`, a tool's
+  credentials file, the platform's `secrets/`). A command that only looks (`gh auth status`,
+  `gh auth token`, `security find-generic-password`, `ssh-keygen -l`) passes. The command is read
+  past what runs it (`sudo`, `env`, `xargs`), inside `bash -c`, `eval`, a command substitution
+  and a heredoc fed to a shell, and in a shell script it runs from a file and the command lines
+  Python code runs. So are the command lines a command hands on as text: `su -c`, `ssh <host> <command>`
+  (the other machine runs it), `tmux send-keys`, `expect`'s `spawn` and osascript's `do shell script`;
+  and the programs that run what follows their own words (`direnv exec`, `arch`, `script`, `op run --`,
+  `launchctl asuser`). Taking away, moving away or opening up (`rm`, `trash`, `mv`, `chmod`) a file that
+  keeps one, or a folder that holds one, is held too. Not read: a shell function defined in the same
+  command and called by another name. What the operator types is not judged: the hook sees an agent's
+  calls only.
 - On every machine, a `git` commit or push and a sending `gh` call are judged where they run:
   the command is followed through `cd`, `pushd` / `popd`, a subshell and `git -C`, with a
   variable set to a literal earlier in the command (`W=/a/b; cd $W`) or in the session's
@@ -967,7 +994,19 @@ step earlier, before each tool call, from the same `areas.txt`:
   name (`python3 -m`), a program found on PATH by its bare name, what the code
   imports or starts in turn, a file over 512 KiB and one that is not text. A
   shell script's comment lines are not held to the lines about switching the
-  guards off.
+  guards off. A file the same command writes first is read too: one it writes
+  from text the line holds (a heredoc or here-string given to `cat` or `tee`,
+  the text `echo` and `printf` print, written by `>` or `>>`), or puts there
+  with `cp`, `mv` or `install` from a source the line can name (a file on the
+  disk, or one the command writes). The file is read as the disk holds it and,
+  as a second reading, with what the command writes there added, since a write
+  may fail and the old file then runs; nothing a command adds takes away what
+  the disk's reading is refused for. Code the command line holds or writes is
+  no file the guard has read before it runs, so a file only the operator writes
+  handed to it is refused as before. A shell given its code on standard input (a heredoc, a
+  here-string, or a pipe from `cat`, `echo` or `printf`) is read as that code.
+  A file written another way (a download, `sed -i`, a copy from a source the
+  line cannot name) is read as the disk holds it.
 - **A script asks before it writes where its arguments say.** The guard reads
   the script, not where the words handed to it go, and a relative path handed
   to a script resolves where the script runs, not where the session stands —
@@ -1160,6 +1199,12 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   and one inside an area gets that area's own word list when the machine keeps
   one beside the master (`company.txt` next to `master.txt`: the company takes
   real names but not the operator's handles).
+- **Which words may go where**: `area-guard.py words` prints, from the word lists and
+  `destinations.txt`, each list with the destinations it is held to, and each word with the lists
+  that stop it and the places it passes. A send into an area takes that area's own list; a write
+  into its folders takes the lists of the areas around it too. A session is shown only the areas
+  it may read (`GUARD_WORK_FOLDER`): the lists, destination lines and names of the others are left
+  out. A word-list refusal (a send, a write into an area, a commit's scan) ends with the command.
 - **Where a destination sits** is declared per machine in
   `$GUARD_CONFIG_DIR/destinations.txt`, first match winning:
 
@@ -1585,7 +1630,14 @@ contract:
 - **No push publishes** matching content: every outgoing commit is
   deep-scanned — all blobs (full diffs), the message, and the
   author/committer name+email — and the pushed branch or tag name is
-  scanned as well (`pre-push`). A new-branch push scans exactly the
+  scanned as well (`pre-push`). On a push to
+  `git@github.com:<owner>/<repo>` or `https://github.com/<owner>/<repo>`,
+  what that account already shows of itself passes in the author/committer
+  fields alone: a name that is exactly `<owner>`, and an address that is
+  exactly `<owner>@users.noreply.github.com` or
+  `<digits>+<owner>@users.noreply.github.com` (`--dest <push URL>` of
+  `anon-audit-deep.sh`; pinned in `tests/scanners/words/scanners.bats` and
+  `tests/git-hooks/hooks.bats`). A new-branch push scans exactly the
   commits the remote does not already have, less those another remote holds
   when a push there is checked against the same areas
   (`corpus-scan.py --checked`): they have crossed every boundary this push
@@ -1811,6 +1863,11 @@ The tests run in parallel, one per core (`--jobs` needs GNU parallel);
 Every test builds a throwaway git repo and a sentinel-only word list
 under the test tmpdir — no operator data is read and nothing outside
 the tmpdir is touched.
+
+`tests/contracts.txt` says in one row what each test file keeps (the code it
+guards and the promise); `tests/contracts.bats` fails when a test file has no
+row or a row names what is gone. A new test file comes with its row. The
+suite ends with its ten slowest tests.
 
 ## License
 
