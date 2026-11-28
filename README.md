@@ -1155,6 +1155,12 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   and one inside an area gets that area's own word list when the machine keeps
   one beside the master (`company.txt` next to `master.txt`: the company takes
   real names but not the operator's handles).
+- **Which words may go where**: `area-guard.py words` prints, from the word lists and
+  `destinations.txt`, each list with the destinations it is held to, and each word with the lists
+  that stop it and the places it passes. A send into an area takes that area's own list; a write
+  into its folders takes the lists of the areas around it too. A session is shown only the areas
+  it may read (`GUARD_WORK_FOLDER`): the lists, destination lines and names of the others are left
+  out. A word-list refusal (a send, a write into an area, a commit's scan) ends with the command.
 - **Where a destination sits** is declared per machine in
   `$GUARD_CONFIG_DIR/destinations.txt`, first match winning:
 
