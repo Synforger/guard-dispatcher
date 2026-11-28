@@ -800,7 +800,13 @@ step earlier, before each tool call, from the same `areas.txt`:
   `gh auth token`, `security find-generic-password`, `ssh-keygen -l`) passes. The command is read
   past what runs it (`sudo`, `env`, `xargs`), inside `bash -c`, `eval`, a command substitution
   and a heredoc fed to a shell, and in a shell script it runs from a file and the command lines
-  Python code runs. What the operator types is not judged: the hook sees an agent's calls only.
+  Python code runs. So are the command lines a command hands on as text: `su -c`, `ssh <host> <command>`
+  (the other machine runs it), `tmux send-keys`, `expect`'s `spawn` and osascript's `do shell script`;
+  and the programs that run what follows their own words (`direnv exec`, `arch`, `script`, `op run --`,
+  `launchctl asuser`). Taking away, moving away or opening up (`rm`, `trash`, `mv`, `chmod`) a file that
+  keeps one, or a folder that holds one, is held too. Not read: a shell function defined in the same
+  command and called by another name. What the operator types is not judged: the hook sees an agent's
+  calls only.
 - On every machine, a `git` commit or push and a sending `gh` call are judged where they run:
   the command is followed through `cd`, `pushd` / `popd`, a subshell and `git -C`, with a
   variable set to a literal earlier in the command (`W=/a/b; cd $W`) or in the session's

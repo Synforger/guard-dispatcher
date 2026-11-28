@@ -2892,8 +2892,10 @@ def credential_change(command: str, cwd: str, depth: int = 0) -> str | None:
     """What a Bash command changes of how the operator signs in (credentials.change: a password,
     a key, a token, a login), or None. Every simple command is read past what runs it, inside
     command substitutions, `-c` strings, `eval` and `trap`; a shell script it runs from a file and
-    the command lines Python code runs are held to the same lines, as `bypass` holds them. A file
-    it writes that keeps a password, a key or a token changes one too."""
+    the command lines Python code runs are held to the same lines, as `bypass` holds them, and so are
+    the command lines a command hands on as text (`su -c`, `ssh <host> …`, `tmux send-keys`, `expect`,
+    `do shell script`: credentials.handed_lines). A file it writes, takes away, moves away or opens up
+    that keeps a password, a key or a token changes one too, and so does a folder that holds one."""
     for program, code, here in ran_scripts(command, cwd) if depth < NESTED else []:
         lines = "\n".join(line for line in code.splitlines() if not line.lstrip().startswith("#"))
         if SHELL_CODE.fullmatch(program) and (reason := credential_change(lines, here, depth + 1)):
@@ -2912,13 +2914,19 @@ def credential_change(command: str, cwd: str, depth: int = 0) -> str | None:
         for found in (credentials.change(rest), *(credentials.change(program_words(inner)[0]) for inner in nested)):
             if found:
                 return found
-        tool = os.path.basename(rest[0]) if rest else ""
+        ran = credentials.past_runners(rest)
+        tool = os.path.basename(ran[0]) if ran else ""
         if SHELL_CODE.fullmatch(tool):
-            flagged = [i for i, w in enumerate(rest[1:], 1) if re.fullmatch(r"-[A-Za-z]*c", w)]
-            lines = [*lines, *(rest[flagged[0] + 1:flagged[0] + 2] if flagged else [])]
+            flagged = [i for i, w in enumerate(ran[1:], 1) if re.fullmatch(r"-[A-Za-z]*c", w)]
+            lines = [*lines, *(ran[flagged[0] + 1:flagged[0] + 2] if flagged else [])]
+        lines = [*lines, *credentials.handed_lines(ran)]
         for line in lines if depth < NESTED else []:
             if reason := credential_change(line, cwd, depth + 1):
                 return reason
+        home = real(str(Path.home()))
+        for word in credentials.changed_paths(ran):
+            if credentials.holds_credentials(real(os.path.expanduser(word), cwd), home):
+                return f"{tool} {word} takes away, moves or opens up what keeps a password, a key or a token"
     home = real(str(Path.home()))
     for target in write_targets(command, cwd):
         if credentials.credential_file(real(target), home):

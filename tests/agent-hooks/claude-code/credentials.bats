@@ -105,6 +105,29 @@ CHANGES=(
     "htpasswd -c users me"
     "poetry config pypi-token.pypi abc"
     "ngrok config add-authtoken abc"
+    "direnv exec . gh auth login"
+    "arch -arm64 gh auth login"
+    "script -q /dev/null gh auth login"
+    "op run -- gh auth login"
+    "launchctl asuser 501 gh auth login"
+    "su - someone -c 'passwd'"
+    "ssh other-mac 'tailscale logout'"
+    "ssh -p 22 other-mac gh auth login"
+    "tmux send-keys -t 1 'passwd' Enter"
+    "expect -c 'spawn passwd'"
+    "osascript -e 'do shell script \"passwd\"'"
+    "rm -f ~/.ssh/id_ed25519"
+    "rm -rf ~/.ssh"
+    "rm -rf ~/.gnupg"
+    "trash ~/.ssh/id_ed25519"
+    "unlink ~/.netrc"
+    "mv ~/.config/gh/hosts.yml ~/.config/gh/hosts.yml.bak"
+    "chmod 644 ~/.ssh/id_ed25519"
+    "curl -X POST https://api.github.com/user/keys -d @k.json"
+    "git remote set-url origin https://user:tok@github.com/o/r"
+    "vercel env add SECRET production"
+    "launchctl setenv ANTHROPIC_API_KEY x"
+    "printf x > ~/.claude-work/.credentials.json"
 )
 
 # Each line: a command that only looks, beside the ones above.
@@ -150,20 +173,51 @@ LOOKS=(
     "grep -rn 'gh auth login' docs"
     "cargo build"
     "uv run pytest"
+    "gh pr list --search login"
+    "gh pr create --title login --body x"
+    "claude -p 'login'"
+    "gh search issues token reset"
+    "docker run --rm img token create"
+    "gh label create secret"
+    "uv add secret"
+    "cargo add secret"
+    "npm config set auth-type legacy"
+    "chpass -s /bin/zsh"
+    "gh --repo o/r pr list"
+    "ssh other-mac uptime"
+    "rm -f ~/.ssh/known_hosts.old"
+    "mv ~/.ssh/config ~/.ssh/config.bak"
+    "chmod 600 ~/notes.md"
+    "curl https://api.github.com/user/keys"
+    "git remote set-url origin https://github.com/o/r"
+    "launchctl setenv PATH /usr/bin"
+    "direnv allow"
 )
 
+# judged <command>... — the hook's credential_change on each command, in one process: `held` or
+# `passes`, a tab, the command. The tables are judged this way; the hook's own refusal is the tests below.
+judged() {
+    run python3 - "${H}/work" "$@" <<PY
+import importlib.util, sys
+sys.path.insert(0, "${GUARD_ROOT}/agent-hooks/claude-code")
+spec = importlib.util.spec_from_file_location("area_guard", "${HOOK}")
+guard = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(guard)
+for command in sys.argv[2:]:
+    print(("held" if guard.credential_change(command, sys.argv[1]) else "passes") + "\t" + command)
+PY
+}
+
 @test "credentials: every kind of change to a password, a key, a token or a login is held" {
-    for c in "${CHANGES[@]}"; do
-        bash_call "${c}"
-        held || { echo "passed: ${c}"; echo "${output}"; return 1; }
-    done
+    judged "${CHANGES[@]}"
+    [ "${status}" -eq 0 ]
+    [ "$(grep -c $'^held\t' <<< "${output}")" -eq "${#CHANGES[@]}" ] || { grep $'^passes\t' <<< "${output}"; return 1; }
 }
 
 @test "credentials: a command that only looks at a key, a token or a login passes" {
-    for c in "${LOOKS[@]}"; do
-        bash_call "${c}"
-        passed || { echo "held: ${c}"; echo "${output}"; return 1; }
-    done
+    judged "${LOOKS[@]}"
+    [ "${status}" -eq 0 ]
+    [ "$(grep -c $'^passes\t' <<< "${output}")" -eq "${#LOOKS[@]}" ] || { grep $'^held\t' <<< "${output}"; return 1; }
 }
 
 @test "credentials: a change is read past what runs it and inside what it hands on" {

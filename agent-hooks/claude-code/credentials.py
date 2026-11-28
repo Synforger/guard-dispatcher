@@ -12,12 +12,17 @@ from pathlib import Path
 
 #: Programs that change a password or a login of the machine whatever their arguments.
 ALWAYS = {
-    "passwd", "chpass", "chpasswd", "smbpasswd", "vncpasswd", "kpasswd", "kinit", "kdestroy",
+    "passwd", "chpasswd", "smbpasswd", "vncpasswd", "kpasswd", "kinit", "kdestroy",
     "kswitch", "ssh-copy-id", "age-keygen",
 }
 
 #: Programs that hand the rest of their words on to another program to run.
 RUNNERS = {"npx", "bunx", "uvx", "pnpx"}
+#: Programs that run the command after a fixed number of their own words, past their options:
+#: `direnv exec <folder> cmd`, `script -q <file> cmd`, `launchctl asuser <uid> cmd`.
+LEADING_RUNNERS = {"direnv": ("exec", 1), "script": (None, 1), "launchctl": ("asuser", 1), "arch": (None, 0)}
+#: The options of those programs that take a value.
+LEADING_VALUED = {"script": {"-F", "-t"}, "arch": {"-arch", "-e"}}
 #: Programs whose subcommand of these words hands the words after it on to another program.
 RUNNER_SUBCOMMANDS = {
     "pnpm": {"dlx", "exec"}, "yarn": {"dlx", "exec"}, "npm": {"exec"}, "pipx": {"run"},
@@ -58,6 +63,10 @@ CHANGE_VERBS = {
     "regenerate", "renew", "reset", "revoke", "delete", "remove", "rm", "destroy", "import",
     "upload", "change", "insert", "init", "mv", "cp", "move", "forget", "unlock", "change-pass",
 }
+#: Tools whose verb comes before the noun (`kubectl create secret`).
+VERB_FIRST = {"kubectl", "oc"}
+#: Tools whose `env` holds the secrets a deployment reads (`vercel env add`).
+ENV_TOOLS = {"vercel", "netlify", "railway"}
 #: Programs that keep passwords, where any change verb as the first subcommand changes one.
 PASSWORD_STORES = {"pass", "gopass", "bw", "lpass"}
 #: How many subcommand words of a service tool are read: options and their values come later.
@@ -66,7 +75,7 @@ SUBCOMMAND_WORDS = 4
 #: A configuration key that holds a credential (`credential.helper`, `//registry/:_authToken`,
 #: `pypi-token.pypi`, `http.extraHeader`).
 CREDENTIAL_KEY = re.compile(
-    r"(?:^|[._:/-])(?:token|_?authtoken|password|passwd|secret|credentials?|auth|api[-_]?key"
+    r"(?:^|[._:/-])(?:token|_?authtoken|_auth|password|passwd|secret|credentials?|api[-_]?key"
     r"|private[-_]?key|extraheader)(?:$|[._:/-])", re.IGNORECASE)
 CONFIG_SET_VERBS = {"set", "add", "unset", "delete", "rm", "remove"}
 CONFIG_WRITE_OPTIONS = {"--unset", "--unset-all", "--add", "--replace-all", "--remove-section"}
@@ -115,6 +124,8 @@ OPENSSL_KEY_TOOLS = {"rsa", "pkey", "ec", "dsa", "pkcs8", "pkcs12"}
 OPENSSL_ENCRYPTS = re.compile(r"^-(?:passout|cipher|aes|des|camellia|seed|idea|bf|cast|sm4|chacha)")
 GIT_GLOBAL_VALUED = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
 GIT_CREDENTIAL_CHANGES = {"approve", "reject", "store", "erase"}
+#: A URL that holds a user and a password or token (`https://user:token@host/...`).
+URL_WITH_LOGIN = re.compile(r"^[a-z][a-z0-9+.-]*://[^/@\s:]+:[^/@\s]+@", re.IGNORECASE)
 TAILSCALE_REAUTH = re.compile(r"^--(?:auth-?key|force-reauth)(?:=|$)")
 #: `gh api` endpoints of keys, tokens and secrets.
 GH_API_CREDENTIALS = re.compile(
@@ -128,7 +139,7 @@ LOGIN_WINDOW = re.compile(r"loginwindow|askforpassword", re.IGNORECASE)
 def change(words: list[str]) -> str | None:
     """What a simple command changes of how the operator signs in, or None. `words` start at the
     program, past what runs it (`sudo`, `env`, `xargs`: area-guard.py's program_words)."""
-    words = _past_runners(words)
+    words = past_runners(words)
     if not words:
         return None
     program = os.path.basename(words[0]).lower()
@@ -148,7 +159,7 @@ def change(words: list[str]) -> str | None:
     return None
 
 
-def _past_runners(words: list[str]) -> list[str]:
+def past_runners(words: list[str]) -> list[str]:
     """The words from the program a package runner runs (`npx vercel login` -> `vercel login`)."""
     for _ in range(4):
         if not words:
@@ -157,11 +168,36 @@ def _past_runners(words: list[str]) -> list[str]:
         rest = words[1:]
         if program in RUNNERS:
             words = _from_first_positional(rest)
+        elif program in LEADING_RUNNERS and (after := _after_leading(program, rest)) is not None:
+            words = after
+        elif program == "op" and rest[:1] == ["run"] and "--" in rest:
+            words = rest[rest.index("--") + 1:]
         elif rest and _positional(rest)[:1] and _positional(rest)[0] in RUNNER_SUBCOMMANDS.get(program, ()):
             words = _from_first_positional(rest[rest.index(_positional(rest)[0]) + 1:])
         else:
             return words
     return words
+
+
+def _after_leading(program: str, rest: list[str]) -> list[str] | None:
+    """The command a leading runner runs, or None when it runs none (`direnv allow`, `script` alone)."""
+    verb, taken = LEADING_RUNNERS[program]
+    valued = LEADING_VALUED.get(program, set())
+    words, skip = [], False
+    for i, word in enumerate(rest):
+        if skip:
+            skip = False
+        elif word.startswith("-") and not words:
+            skip = word in valued
+        else:
+            words = rest[i:]
+            break
+    if verb is not None:
+        if words[:1] != [verb]:
+            return None
+        words = words[1:]
+    words = words[taken:]
+    return words or None
 
 
 def _from_first_positional(words: list[str]) -> list[str]:
@@ -178,9 +214,43 @@ def _letters(args: list[str]) -> set[str]:
     return {c for a in args if a.startswith("-") and not a.startswith("--") for c in a[1:]}
 
 
+#: Global options of a tool that take a value, read before its subcommand (`gh -R o/r secret set`).
+GLOBAL_VALUED = {
+    "gh": {"-R", "--repo", "--hostname"}, "gcloud": {"--project", "--account", "--configuration"},
+    "docker": {"-H", "--host", "--context", "--config", "-c"}, "kubectl": {"-n", "--namespace", "--context",
+    "--kubeconfig", "--cluster", "--user"}, "npm": {"--prefix", "-C", "--userconfig"},
+    "claude": {"-p", "--print", "--model", "--append-system-prompt", "-r", "--resume"},
+    "aws": {"--profile", "--region"}, "az": {"--subscription"}, "op": {"--account"},
+}
+#: Subcommands that only look, so nothing after them changes a login.
+LOOKING = {"search", "view", "status", "list", "ls", "show", "get", "describe", "help"}
+
+
+def _subcommands(program: str, args: list[str]) -> list[str]:
+    """The subcommand words of a service tool: the words before its first option, past the global
+    options it is given first (and their values). An option's value is no subcommand."""
+    valued = GLOBAL_VALUED.get(program, set())
+    words: list[str] = []
+    skip = False
+    for word in args:
+        if skip:
+            skip = False
+        elif word == "--":
+            break
+        elif word.startswith("-"):
+            if words:
+                break
+            skip = word in valued
+        else:
+            words.append(word)
+    return words[:SUBCOMMAND_WORDS]
+
+
 def _service_change(program: str, args: list[str]) -> str | None:
-    words = _positional(args)[:SUBCOMMAND_WORDS]
+    words = _subcommands(program, args)
     pieces = [piece for w in words for piece in w.split(":")]
+    if pieces[:1] and pieces[0] in LOOKING:
+        return None
     if program in PASSWORD_STORES and pieces[:1] and pieces[0] in CHANGE_VERBS | LOGIN_WORDS:
         return f"{program} {pieces[0]} changes a stored password"
     for i, word in enumerate(pieces):
@@ -190,9 +260,12 @@ def _service_change(program: str, args: list[str]) -> str | None:
             return f"{program} {' '.join(pieces[:i + 2])} changes a login"
         if word in KEY_NOUNS and i + 1 < len(pieces) and pieces[i + 1] in CHANGE_VERBS:
             return f"{program} {' '.join(pieces[:i + 2])} changes a key, a token or a secret"
-        if word in CHANGE_VERBS and i + 1 < len(pieces) and pieces[i + 1] in {"secret", "secrets"}:
+        if program in VERB_FIRST and word in CHANGE_VERBS and i + 1 < len(pieces) \
+                and pieces[i + 1] in {"secret", "secrets"}:
             return f"{program} {' '.join(pieces[:i + 2])} changes a secret"
-    if key := _config_key(words, args):
+        if program in ENV_TOOLS and word == "env" and i + 1 < len(pieces) and pieces[i + 1] in CHANGE_VERBS:
+            return f"{program} env {pieces[i + 1]} changes a secret the service keeps"
+    if key := _config_key(_positional(args)[:SUBCOMMAND_WORDS], args):
         return f"{program} config {key} sets a credential"
     if program == "gh" and pieces[:1] == ["api"]:
         return _gh_api(args)
@@ -330,6 +403,8 @@ def _git(args: list[str]) -> str | None:
     if rest[:1] and (rest[0] == "credential" or rest[0].startswith("credential-")) \
             and set(_positional(rest[1:])[:1]) & GIT_CREDENTIAL_CHANGES:
         return f"{rest[0]} {_positional(rest[1:])[0]} changes a stored login"
+    if rest[:2] in (["remote", "set-url"], ["remote", "add"]) and any(URL_WITH_LOGIN.search(a) for a in rest[2:]):
+        return f"remote {rest[1]} keeps a login in the URL"
     if rest[:1] == ["config"] and (key := _config_key(["config", *_positional(rest[1:])], rest[1:])):
         return f"config {key} sets a credential"
     return None
@@ -393,14 +468,138 @@ def _op(args: list[str]) -> str | None:
     return None
 
 
+def _chpass(args: list[str]) -> str | None:
+    """chpass edits the password too, but for `-s <shell>` (and `-u <user>`), which sets the shell only."""
+    rest, skip = [], False
+    for word in args:
+        if skip:
+            skip = False
+        elif word in ("-s", "-u"):
+            skip = True
+        else:
+            rest.append(word)
+    return None if "-s" in args and not rest else "changes a password or a login"
+
+
+def _curl(args: list[str]) -> str | None:
+    urls = [a for a in args if GITHUB_API.match(a)]
+    if not any(GH_API_CREDENTIALS.search(GITHUB_API.sub("", url).split("?", 1)[0]) for url in urls):
+        return None
+    method = next((args[i + 1] for i, a in enumerate(args[:-1]) if a in ("-X", "--request")), None)
+    writes = method.upper() != "GET" if method else any(
+        a in CURL_BODY or a.startswith(CURL_BODY_PREFIXES) for a in args)
+    return "writes to a keys, tokens or secrets endpoint of GitHub" if writes else None
+
+
+#: A GitHub API address, and the options that give curl a body (which make it a POST).
+GITHUB_API = re.compile(r"^https?://api\.github\.com/")
+CURL_BODY = {"-d", "-F", "-T", "--json", "--form", "--upload-file"}
+CURL_BODY_PREFIXES = ("--data", "-d", "--form", "--json")
+
+
+def _launchctl(args: list[str]) -> str | None:
+    if args[:1] == ["setenv"] and len(args) > 1 and SECRET_NAME.search(args[1]):
+        return f"setenv {args[1]} hands a secret to every program of the session"
+    return None
+
+
+#: A variable's name that holds a secret.
+SECRET_NAME = re.compile(r"token|key|secret|passw|credential", re.IGNORECASE)
+
+
 #: The programs judged by their own reading of the arguments.
 SPECIFIC = {
     "security": _security, "fdesetup": _fdesetup, "sysadminctl": _sysadminctl,
     "diskutil": _diskutil, "dscl": _dscl, "pwpolicy": _pwpolicy, "ssh-keygen": _ssh_keygen,
     "ssh-add": _ssh_add, "gpg": _gpg, "gpg2": _gpg, "git": _git, "openssl": _openssl,
     "htpasswd": _htpasswd, "minisign": _key_maker("GC"), "signify": _key_maker("G"), "wg": _wg,
-    "bioutil": _bioutil, "defaults": _defaults, "op": _op,
+    "bioutil": _bioutil, "defaults": _defaults, "op": _op, "chpass": _chpass, "curl": _curl,
+    "launchctl": _launchctl,
 }
+
+def handed_lines(words: list[str]) -> list[str]:
+    """The command lines a simple command hands on as text to run: `su -c '…'`, `ssh <host> <command>`
+    (the other machine runs it), `tmux send-keys '…' Enter` (typed into a shell), the `spawn` lines of
+    `expect -c`, and the `do shell script "…"` strings of `osascript -e`. `words` start at the program."""
+    if not words:
+        return []
+    program, args = os.path.basename(words[0]).lower(), words[1:]
+    if program == "su" and "-c" in args[:-1]:
+        return [args[args.index("-c") + 1]]
+    if program == "ssh":
+        rest, skip = [], False
+        for i, word in enumerate(args):
+            if skip:
+                skip = False
+            elif word.startswith("-") and not rest:
+                skip = word in SSH_VALUED
+            else:
+                rest = args[i:]
+                break
+        return [" ".join(rest[1:])] if len(rest) > 1 else []
+    if program == "tmux" and set(args) & {"send-keys", "send"}:
+        at = next(i for i, w in enumerate(args) if w in ("send-keys", "send"))
+        keys, skip = [], False
+        for word in args[at + 1:]:
+            if skip:
+                skip = False
+            elif word in ("-t", "-N"):
+                skip = True
+            elif not word.startswith("-") and word not in TMUX_KEY_NAMES:
+                keys.append(word)
+        return [" ".join(keys)] if keys else []
+    if program == "expect" and "-c" in args[:-1]:
+        return [m.group(1) for m in EXPECT_SPAWN.finditer(args[args.index("-c") + 1])]
+    if program == "osascript":
+        scripts = [args[i + 1] for i, a in enumerate(args[:-1]) if a == "-e"]
+        return [m.group(1).replace('\\"', '"') for code in scripts for m in DO_SHELL_SCRIPT.finditer(code)]
+    return []
+
+
+#: The options of ssh that take a value: the first word after the others is the host.
+SSH_VALUED = {"-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O", "-o", "-p",
+              "-Q", "-R", "-S", "-W", "-w", "-B"}
+#: The names tmux sends as one key, not as text typed.
+TMUX_KEY_NAMES = {"Enter", "C-m", "KPEnter", "Space", "Tab", "Escape", "C-c", "C-d"}
+EXPECT_SPAWN = re.compile(r"\bspawn\s+([^;\n]+)")
+DO_SHELL_SCRIPT = re.compile(r'do shell script\s+"((?:[^"\\]|\\.)*)"')
+#: Programs that take away, move away or open up the files they are given.
+REMOVERS = {"rm", "unlink", "trash", "srm", "shred", "rmdir"}
+MODE_CHANGERS = {"chmod", "chown", "chgrp", "chflags"}
+
+
+def changed_paths(words: list[str]) -> list[str]:
+    """The paths a simple command takes away (`rm`, `trash`, `unlink`), moves away (the sources of
+    `mv`) or opens up (`chmod`, `chown`), as written: what it writes is read elsewhere."""
+    if not words:
+        return []
+    program = os.path.basename(words[0]).lower()
+    paths = _positional(words[1:])
+    if program in REMOVERS:
+        return paths
+    if program == "mv":
+        return paths[:-1]
+    if program in MODE_CHANGERS:
+        return paths[1:]
+    return []
+
+
+def holds_credentials(path: Path, home: Path) -> bool:
+    """Whether taking away, moving away or opening up `path` (resolved) reaches a file that keeps a
+    password, a key or a token: the file itself, or a folder that holds one (`~/.ssh`, the home)."""
+    if credential_file(path, home):
+        return True
+    try:
+        parts = path.relative_to(home).parts
+    except ValueError:
+        return any(Path(f) == path or path in Path(f).parents for f in MACHINE_FILES)
+    for pattern in HOME_FILES:
+        folder = pattern.rsplit("/", 1)[0].split("/") if "/" in pattern else []
+        if folder and len(parts) <= len(folder) and all(
+                fnmatch.fnmatchcase(part, glob) for part, glob in zip(parts, folder)):
+            return True
+    return not parts
+
 
 #: Files that hold a password, a key or a token, from the home folder.
 HOME_FILES = (
@@ -409,7 +608,7 @@ HOME_FILES = (
     ".netrc", ".git-credentials", ".config/git/credentials", ".docker/config.json", ".npmrc",
     ".aws/credentials", ".config/gcloud/**", ".azure/**", ".config/op/**", ".password-store/**",
     ".pypirc", ".cargo/credentials", ".cargo/credentials.toml", ".gem/credentials",
-    ".cache/huggingface/token", ".huggingface/token", ".claude/.credentials.json",
+    ".cache/huggingface/token", ".huggingface/token", ".claude*/.credentials.json",
     "agent-platform/secrets/**",
 )
 #: Files outside the home folder that hold the machine's sign-in.
