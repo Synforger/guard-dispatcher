@@ -105,6 +105,7 @@ import os
 import re
 import shlex
 import sys
+import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
@@ -115,8 +116,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "git-hooks" / "_int
 import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
+import credentials  # noqa: E402
 import commit_options  # noqa: E402
 import commit_scope  # noqa: E402
+import word_table  # noqa: E402
 import force_push  # noqa: E402
 import guard_places  # noqa: E402
 import monitor_calls  # noqa: E402
@@ -150,8 +153,13 @@ OFF = guard_places.setting("agent-off")
 GRANT = guard_places.setting("agent-writes.txt")
 OPERATOR_ONLY = (GRANT.name, "orders.txt", OFF.name)
 CORPUS = Path(__file__).resolve().parents[2] / "scanners/corpus/corpus-scan.py"
+# The seconds a handoff's private-document scan is given: the scan waits for a walk only in what is
+# left of them (corpus-scan.py --budget).
+HANDOFF_SCAN_SECONDS = 180
 SEND_SCAN = Path(__file__).resolve().parents[2] / "scanners/destinations/send-scan.py"
 ANON_SCAN = Path(__file__).resolve().parents[2] / "scanners/words/anon-scan.sh"
+#: The line a word-list refusal ends with: the command that prints which words may go where.
+WORDS_HINT = "which words may go where: python3 ~/.git-hooks/agent-hooks/claude-code/area-guard.py words"
 # How many word-list hits a refusal of a write shows; the rest are counted.
 SHOWN_WORD_HITS = 5
 EXEMPT = area_roles.EXEMPT
@@ -347,6 +355,41 @@ def spell_home(command: str) -> str:
 
 
 GLOB = re.compile(r"[*?\[]")
+# A brace the shell expands (one with no brace inside it, so the innermost first), a range in one
+# (`1..3`, `a..c`, with a step), and how many words a word may stand for before the rest is left.
+BRACE = re.compile(r"\{([^{}]*)\}")
+BRACE_RANGE = re.compile(r"(-?\d+)\.\.(-?\d+)(?:\.\.(-?\d+))?|([A-Za-z])\.\.([A-Za-z])")
+BRACE_LIMIT = 256
+
+
+def brace_expanded(word: str) -> list[str]:
+    """The words a word stands for once the shell expands its braces (`a/{b,c}.txt` is `a/b.txt` and
+    `a/c.txt`, `{1..3}` is 1 2 3), or the word itself when it has none. Past BRACE_LIMIT words, the
+    rest stay as they are spelled."""
+    done: list[str] = []
+    waiting = [word]
+    while waiting and len(done) + len(waiting) < BRACE_LIMIT:
+        current = waiting.pop(0)
+        found = next((m for m in BRACE.finditer(current)
+                      if "," in m.group(1) or BRACE_RANGE.fullmatch(m.group(1))), None)
+        if found is None:
+            done.append(current)
+            continue
+        inside = found.group(1)
+        if span := BRACE_RANGE.fullmatch(inside):
+            if span.group(4):
+                first, last = ord(span.group(4)), ord(span.group(5))
+                items = [chr(c) for c in range(first, last + (1 if last >= first else -1), 1 if last >= first else -1)]
+            else:
+                first, last = int(span.group(1)), int(span.group(2))
+                step = abs(int(span.group(3) or 1)) or 1
+                items = [str(n) for n in range(first, last + (1 if last >= first else -1), step if last >= first else -step)]
+        else:
+            items = inside.split(",")
+        waiting += [current[:found.start()] + item + current[found.end():] for item in items]
+    return done + waiting
+
+
 # Where a path begins when a stretch of a command names it by itself: at the start of the stretch,
 # or after what joins it to an option, a variable, a remote or an upload (`--file=/a`, `A=/a:/b`,
 # `host:/a`, `-d @/a`), a short flag (`-C/a`), a file mode (`</a`) or `file://`.
@@ -1077,6 +1120,87 @@ def find_deletes(args: list[str]) -> list[str]:
     return roots if deletes else []
 
 
+# Options that name the file a program writes its output, a log or a record to: the long ones any
+# program means so, and the ones a program of these means so (a short `-o` means other things to
+# others: `ssh -o` an option, `grep -o` a way to print).
+OUTPUT_OPTIONS = frozenset({"--output", "--output-file", "--output-document", "--outfile", "--out-file", "--log-file"})
+OUTPUT_OPTIONS_OF = {
+    "curl": frozenset({"-o", "-D", "--dump-header", "-c", "--cookie-jar", "--trace", "--trace-ascii", "--stderr",
+                       "--etag-save", "--libcurl", "--hsts", "--alt-svc"}),
+    "wget": frozenset({"-O", "-o", "-a", "--append-output"}),
+    "sort": frozenset({"-o"}),
+    "pandoc": frozenset({"-o"}),
+    "yt-dlp": frozenset({"-o"}),
+    "openssl": frozenset({"-out"}),
+    **{compiler: frozenset({"-o"}) for compiler in ("cc", "gcc", "g++", "clang", "clang++", "ld", "swiftc", "rustc")},
+}
+
+
+def output_options(tool: str, args: list[str]) -> list[str]:
+    """The files the options of a command name as where it writes (OUTPUT_OPTIONS): the next word (after
+    short flags run together too: `-sSo file`), the value after `=` of a long one, or what is glued to a
+    short one (`-ofile`)."""
+    options = OUTPUT_OPTIONS | OUTPUT_OPTIONS_OF.get(tool, frozenset())
+    found: list[str] = []
+    for at, word in enumerate(args):
+        flag, eq, value = word.partition("=")
+        if eq and flag.startswith("--") and flag in options:
+            found.append(value)
+        elif word in options and at + 1 < len(args):
+            found.append(args[at + 1])
+        elif re.fullmatch(r"-[A-Za-z]{2,}", word) and f"-{word[-1]}" in options and at + 1 < len(args):
+            found.append(args[at + 1])      # short flags run together, the last one taking the next word (`-sSo f`)
+        elif re.fullmatch(r"-[A-Za-z].+", word) and word[:2] in options:
+            found.append(word[2:])
+    return found
+
+
+# A URL among a command's words, and the options of curl and wget that say how a download is named.
+URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://\S+")
+CURL_REMOTE_NAME = re.compile(r"--remote-name(?:-all)?|-[A-Za-z]*O[A-Za-z]*")
+CURL_SERVER_NAME = re.compile(r"--remote-header-name|-[A-Za-z]*J[A-Za-z]*")
+WGET_NAMED = re.compile(r"--output-document(?:=.*)?|-[A-Za-z]*O.*|--spider")
+WGET_SERVER_NAME = re.compile(r"--content-disposition|--trust-server-names|--recursive|--mirror|-[A-Za-z]*[rm][A-Za-z]*")
+
+
+def option_value(args: list[str], long: str, short: str | None = None) -> str | None:
+    """The value of an option among a command's words (`--long v`, `--long=v`, `-s v`, `-sv`), or None."""
+    for at, word in enumerate(args):
+        if word == long or (short is not None and word == short):
+            return args[at + 1] if at + 1 < len(args) else None
+        if word.startswith(long + "="):
+            return word.partition("=")[2]
+        if short is not None and word.startswith(short) and len(word) > len(short) and not word.startswith("--"):
+            return word[len(short):]
+    return None
+
+
+def downloaded(tool: str, args: list[str]) -> list[str]:
+    """The files curl or wget writes a download to under the name its URL ends in (`curl -O`, `wget`
+    with no `-O`), in the folder the command stands in or the one an option names (`--output-dir`,
+    `-P`); that folder itself when the server names the file (`curl -J`, `wget --content-disposition`,
+    a recursive fetch), since the name is not known before it runs."""
+    if tool == "curl":
+        if not any(CURL_REMOTE_NAME.fullmatch(word) for word in args):
+            return []
+        server = any(CURL_SERVER_NAME.fullmatch(word) for word in args)
+        folder = option_value(args, "--output-dir")
+        fallback = ""
+    elif tool == "wget":
+        if any(WGET_NAMED.fullmatch(word) for word in args):
+            return []
+        server = any(WGET_SERVER_NAME.fullmatch(word) for word in args)
+        folder = option_value(args, "--directory-prefix", "-P")
+        fallback = "index.html"
+    else:
+        return []
+    base = folder or "."
+    if server:
+        return [base]
+    names = [os.path.basename(urllib.parse.urlparse(word).path) or fallback for word in args if URL.fullmatch(word)]
+    return [os.path.join(base, name) for name in names if name]
+
+
 def unpacks_into(tool: str, args: list[str]) -> str | None:
     """The folder `tar -x` or `unzip` puts the files of an archive in (`-C`, `-d`; the folder the
     command stands in without), or None when the command does not unpack."""
@@ -1246,6 +1370,7 @@ def named_with_folders(command: str, cwd: str,
             written.extend((p, here) for p in paths if Path(real(p, here)).is_file())
         elif tool == "dd":
             written.extend((a[3:], here) for a in args if a.startswith("of="))
+        written.extend((value, here) for value in [*output_options(tool, args), *downloaded(tool, args)])
         shell = bool(SHELL_CODE.fullmatch(tool))
         flags = code_flags(tool)
         for flag, code in zip(args, args[1:]):
@@ -1254,9 +1379,9 @@ def named_with_folders(command: str, cwd: str,
                 run(tool, code, here)
         if stdin is not None:
             run(tool, stdin, here)
-        if depth < NESTED and (script := script_files.ran([filled(words[0]), *args], here,
-                                                          [filled(f) for f in fed])) is not None:
-            run(*script, here, from_file=True)
+        if depth < NESTED:
+            for script in script_files.ran([filled(words[0]), *args], here, [filled(f) for f in fed]):
+                run(*script, here, from_file=True)
 
     # The command line is read in order, following where it stands, as sends_of does for a send:
     # `cd`, `pushd` / `popd` move it and a `( ... )` subshell gives the place back, so
@@ -1287,7 +1412,8 @@ def named_with_folders(command: str, cwd: str,
             return []
         base = os.path.expanduser(name)
         base = base if os.path.isabs(base) else os.path.join(stood, base)
-        return (glob.glob(base) if GLOB.search(name) else []) or [base]
+        return [match for each in brace_expanded(base)
+                for match in (glob.glob(each) if GLOB.search(each) else []) or [each]]
 
     def spelled(names: list[tuple[str, str]]) -> list[Path]:
         return [real(m) for name, stood in distinct(names) for m in matched(name, stood)]
@@ -1372,10 +1498,11 @@ def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
         if rest and not standing.move(os.path.basename(rest[0]), rest[1:]):
             tool, here = os.path.basename(rest[0]), standing.here
             fed = fed_files(redirects, steps[index - 1] if index else None)
-            if (script := script_files.ran_with_arguments(rest, here, fed)) is not None:
-                if not fed_only or script_files.ran(rest, here) is None:
-                    found.append((*script[:2], here, script[2]))
-            elif depth < NESTED and SHELL_CODE.fullmatch(tool):
+            # `fed_only` keeps the code a program reads from files: it is handed none by its words.
+            if not fed_only or (fed and script_files.ran_from_disk(rest, here) is None):
+                found += [(*script[:2], here, script[2])
+                          for script in script_files.ran_with_arguments(rest, here, fed)]
+            if script_files.ran_from_disk(rest, here, fed) is None and depth < NESTED and SHELL_CODE.fullmatch(tool):
                 codes = [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
                 for code in codes:
                     found += ran_scripts_with_arguments(code, here, depth + 1, fed_only=fed_only)
@@ -1607,6 +1734,10 @@ def script_argument_orders(command: str, cwd: str, transcript: str | None, marks
                 resolved, written = spelled(name, here)
                 paths.append(resolved)
                 orders.append(FolderOrder(resolved, written, RECORDS))
+            for line in code_writes.python.commands_run(code_writes.python.with_arguments(code, words)):
+                written, removed, folders = named_with_folders(line, here)
+                paths += [*written, *removed]
+                orders += folders
         elif script_arguments.writes_where_told(program, code):
             writes_all(words, here)
     return paths, orders
@@ -1629,11 +1760,73 @@ def kept_by(command: str, cwd: str, transcript: str | None,
             if what[1].endswith(ADDS_ONLY) and search_call.searches_only(command):
                 continue
             return what
+    # A folder written as itself takes a file under a name the command does not say (`curl -OJ`), so
+    # the folder of a setting only the operator writes is that setting's to keep.
+    operator_folders = {real(guard_places.setting(name)).parent for name in OPERATOR_ONLY}
+    for path in written:
+        if path in operator_folders:
+            return (f"the folder of a setting only the operator writes ({path})",
+                    f"{SETTINGS_WHY}; a file written into it under a name not known may be that setting")
     for path in removed:
         if path in real(CONFIG).parents or path in CONFIG.parents:
             return "the folder holding the guard's settings", SETTINGS_WHY
         if holds_openings(path):
             return "a folder holding openings of relayed messages", f"{SETTINGS_WHY}, and {ADDS_ONLY}"
+    if (handed := operator_file_handed(command, cwd)) is not None:
+        return (f"the guard's settings ({handed.name})",
+                f"{SETTINGS_WHY}; only the operator writes it, and a program the guard does not know may write a "
+                f"file it is handed")
+    return None
+
+
+# Programs that only read the files they are handed, or name them: a file only the operator writes may
+# be handed to these. A copy's file is judged as its destination or its source (named).
+READS_ONLY = frozenset({"cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "rg", "wc", "diff", "cmp",
+                        "comm", "sha256sum", "shasum", "md5", "md5sum", "file", "stat", "ls", "realpath", "readlink",
+                        "nl", "strings", "od", "hexdump", "xxd", "test", "[", "[[", "du", "bat"})
+
+
+def operator_only(path: Path) -> bool:
+    """Whether a path is a setting only the operator writes (OPERATOR_ONLY), under any spelling."""
+    name = settings_name(path)
+    return bool(name) and name.split(os.sep)[0] in {n.casefold() for n in OPERATOR_ONLY}
+
+
+def operator_file_handed(command: str, cwd: str, depth: int = 0) -> Path | None:
+    """A file only the operator writes that a command line hands as a word (alone, or after an option's
+    `=`) to a program that may write it -- one not in READS_ONLY, no copy, and no file of code the
+    guard reads, which is read again with the words in place (script_argument_orders) -- wherever it
+    runs: a command line handed on, a shell's `-c` string, a heredoc fed to a shell. None when there is
+    none. A file fed on the standard input (`< orders.txt`) is read, not handed."""
+    line, fed = split_heredocs(spell_home(in_run_order(command)))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return None
+    standing = Standing(cwd)
+    inner: list[tuple[str, str]] = [(body, standing.here) for program, body in fed if SHELL_CODE.fullmatch(program)]
+    for words, _, _, ended_by in steps:
+        head, lines, nested = program_words(words)
+        inner += [(code, standing.here) for code in [*lines, *map(shlex.join, nested)]]
+        tool = os.path.basename(head[0]) if head else ""
+        if head and not standing.move(tool, head[1:]):
+            if SHELL_CODE.fullmatch(tool):
+                inner += [(head[at + 1], standing.here) for at, word in enumerate(head[1:-1], 1)
+                          if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
+            # A file of code the guard reads is read again with its words in place (script_argument_orders).
+            if tool not in READS_ONLY | COPIES and script_files.ran_from_disk(head, standing.here) is None:
+                for word in head[1:]:
+                    for spelled in {each for part in {word, word.partition("=")[2]} - {""}
+                                    for each in brace_expanded(part)}:
+                        if operator_only(real(spelled, standing.here)):
+                            return real(spelled, standing.here)
+        if ended_by == "(":
+            standing.open()
+        elif ended_by == ")":
+            standing.close()
+    for code, here in inner if depth < NESTED else []:
+        if (found := operator_file_handed(code, here, depth + 1)) is not None:
+            return found
     return None
 
 
@@ -1750,10 +1943,14 @@ def _program_walked(rest: list[str], steps: list, index: int, standing: Standing
     cwd = standing.here
     ended_by = steps[index][3]
     found: list[tuple[Path, list[str]]] = []
-    script = script_files.ran(rest, cwd, fed_files(steps[index][1], steps[index - 1] if index else None)) \
-        if depth < NESTED else None
-    if script is not None and SHELL_CODE.fullmatch(script[0]):
-        return recursive_reads(script[1], cwd, depth + 1)
+    if depth < NESTED:
+        fed = fed_files(steps[index][1], steps[index - 1] if index else None)
+        for program, code in script_files.ran(rest, cwd, fed):
+            if SHELL_CODE.fullmatch(program):
+                found += recursive_reads(code, cwd, depth + 1)
+        script = script_files.ran_from_disk(rest, cwd, fed)
+        if script is not None and SHELL_CODE.fullmatch(script[0]):
+            return found
     if SHELL_CODE.fullmatch(tool) and depth < NESTED:
         for at, word in enumerate(args[:-1]):
             if re.fullmatch(r"-[A-Za-z]*c", word):
@@ -1848,6 +2045,46 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
     return list(send_places(command, cwd)[0])
 
 
+#: An assignment of mktemp's output left unquoted (`T=$(mktemp -d)`), which splits into words at its spaces.
+UNQUOTED_MKTEMP = re.compile(r"(?<![\w\"'])([A-Za-z_][A-Za-z0-9_]*=)(\$\(\s*mktemp\b[^()`$\"']*\)|`\s*mktemp\b[^`$\"']*`)")
+#: A word that is the whole of a command substitution running mktemp (`$(mktemp -d)`, `` `mktemp -d -t x` ``).
+MKTEMP_WORD = re.compile(r"\$\(\s*(mktemp\b[^()`$]*)\)|`\s*(mktemp\b[^()`$]*)`")
+
+
+def fresh_folder(value: str) -> str | None:
+    """The folder a variable set to `$(mktemp -d ...)` names, as a path in the folder mktemp makes it in
+    (the template's folder, `-p`/`--tmpdir`, else `$TMPDIR`), or None when the value is not that. The
+    folder is new: no remote, nothing in it but what the command puts there."""
+    m = MKTEMP_WORD.fullmatch(value.strip())
+    if not m:
+        return None
+    try:
+        words = shlex.split(m.group(1) or m.group(2))[1:]
+    except ValueError:
+        return None
+    if not {"-d", "--directory"} & set(words) and not any(re.fullmatch(r"-[A-Za-z]*d[A-Za-z]*", w) for w in words):
+        return None
+    parent = os.environ.get("TMPDIR") or "/tmp"
+    templates: list[str] = []
+    valued = False
+    for i, word in enumerate(words):
+        if valued:
+            valued = False
+            if words[i - 1] in ("-p", "--tmpdir"):
+                parent = word
+        elif word in ("-p", "--tmpdir", "-t"):
+            valued = True
+        elif word.startswith("--tmpdir="):
+            parent = word.split("=", 1)[1]
+        elif not word.startswith("-"):
+            templates.append(word)
+    if templates and "/" in templates[-1]:
+        parent = os.path.dirname(templates[-1])
+    if UNKNOWN.search(parent):
+        return None
+    return str(Path(os.path.expanduser(parent)) / "mktemp.XXXXXX")
+
+
 @functools.lru_cache(maxsize=None)
 def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, str], ...] = ()) -> tuple[
         tuple[tuple[Path, list[str]], ...], tuple[str, ...], tuple[str, ...], tuple[tuple[Path, str, str], ...]]:
@@ -1874,7 +2111,7 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
     try:
         # Python written into the command is no command line: a quote it leaves open turns the words
         # into plain spaces, and a shell line quoted inside it would be read as a send.
-        words = shell_words(shell_heredocs_as_code(command), shell_only=True)
+        words = shell_words(UNQUOTED_MKTEMP.sub(r'\1"\2"', shell_heredocs_as_code(command)), shell_only=True)
     except ValueError:
         return (), (), (), ()
     breaks = outgoing_module().SHELL_BREAK
@@ -1897,6 +2134,12 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
     head = {} if starts_elsewhere else {name: value for name, value in given if not rebinds(command, name)}
     redefined = bool(REDEFINES_TEST.search(command))
     values: dict[str, str] = dict(head)
+    # Folders a variable was set to by `$(mktemp -d)`: a commit there is judged where the folder lies;
+    # a push from one has no remote the command shows, so its destination is not known before it runs.
+    fresh: set[str] = set()
+    # Names once given a value not known: a branch read before may have left it there, so a fresh
+    # folder given later does not stand for it. Nor does it for a name that holds a value already.
+    once_unknown: set[str] = set()
     branches = Branches({} if redefined else head)
     lost: str | None = None            # the word that took the command where it cannot be read
     pushed: list[str | None] = []
@@ -1922,8 +2165,13 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
             # `W=/a/b` alone on its command (or after export / local): later words may spell it $W.
             for word in assigned:
                 name, _, value = word.partition("=")
-                if UNKNOWN.search(value):
+                folder = fresh_folder(value)
+                if folder is not None and name not in once_unknown and name not in values:
+                    values[name] = folder
+                    fresh.update({folder, str(real(folder))})
+                elif UNKNOWN.search(value):
                     values.pop(name, None)
+                    once_unknown.add(name)
                 else:
                     values[name] = value
             return
@@ -1995,9 +2243,12 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
             inner(code)
         if not argv:
             return
-        script = script_files.ran(argv, str(here))
+        for program, code in script_files.ran(argv, str(here)):
+            if SHELL_CODE.fullmatch(program):
+                inner(code)
+        script = script_files.ran_from_disk(argv, str(here))
         if script is not None and SHELL_CODE.fullmatch(script[0]):
-            inner(script[1])
+            pass                        # the words run that file: they are not read as a command of their own
         elif name in SHELLS and "-c" in args[:-1]:
             inner(args[args.index("-c") + 1])
         elif name == "git":
@@ -2023,8 +2274,11 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
                 skipping.append("git commit -n (= --no-verify)")
             if sub == "push" and push_options.skips_hooks(rest):
                 skipping.append("git push --no-verify")
+            in_fresh = any(str(repo) == f or str(repo).startswith(f + "/") for f in fresh)
             if sub in ("commit", "push") and place:
                 unread.append(place)
+            elif sub == "push" and in_fresh:
+                unread.append(str(repo))
             elif sub == "commit":
                 found.append((repo, []))
             elif sub == "push":
@@ -2234,8 +2488,9 @@ def handoff_refusal(folder: Path, text: str, areas) -> str | None:
                                      dir=os.environ.get("TMPDIR") or None) as fh:
         fh.write(text)
     try:
-        r = subprocess.run(["python3", str(CORPUS), "--dest-area", ",".join(own), "--text", fh.name],
-                           capture_output=True, text=True, timeout=180)
+        r = subprocess.run(["python3", str(CORPUS), "--dest-area", ",".join(own), "--text", fh.name,
+                            "--budget", str(HANDOFF_SCAN_SECONDS)],
+                           capture_output=True, text=True, timeout=HANDOFF_SCAN_SECONDS)
     except (subprocess.TimeoutExpired, OSError):
         return "the private-document scan could not run, so what it holds could not be judged"
     finally:
@@ -2312,7 +2567,8 @@ def area_words_refusal(tool: str, args: dict, cwd: str, areas) -> str | None:
             shown = hits[:SHOWN_WORD_HITS] + ([f"... and {len(hits) - SHOWN_WORD_HITS} more"]
                                               if len(hits) > SHOWN_WORD_HITS else [])
             return (f"area-guard: this call writes into {target}, in {area}, a word {area}'s readers must not "
-                    f"meet ({words.name}): rewrite it" + "".join(f"\n    {hit}" for hit in shown))
+                    f"meet ({words.name}): rewrite it" + "".join(f"\n    {hit}" for hit in shown)
+                    + f"\n  {WORDS_HINT}")
     finally:
         os.unlink(fh.name)
     return None
@@ -2745,6 +3001,52 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
     return None
 
 
+def credential_change(command: str, cwd: str, depth: int = 0) -> str | None:
+    """What a Bash command changes of how the operator signs in (credentials.change: a password,
+    a key, a token, a login), or None. Every simple command is read past what runs it, inside
+    command substitutions, `-c` strings, `eval` and `trap`; a shell script it runs from a file and
+    the command lines Python code runs are held to the same lines, as `bypass` holds them, and so are
+    the command lines a command hands on as text (`su -c`, `ssh <host> …`, `tmux send-keys`, `expect`,
+    `do shell script`: credentials.handed_lines). A file it writes, takes away, moves away or opens up
+    that keeps a password, a key or a token changes one too, and so does a folder that holds one."""
+    for program, code, here in ran_scripts(command, cwd) if depth < NESTED else []:
+        lines = "\n".join(line for line in code.splitlines() if not line.lstrip().startswith("#"))
+        if SHELL_CODE.fullmatch(program) and (reason := credential_change(lines, here, depth + 1)):
+            return reason
+    for program, code, here in handed_code(command, cwd) if depth < NESTED else []:
+        if script_files.kind_of(program) == "python":
+            for line in code_writes.python.commands_run(code):
+                if reason := credential_change(line, here, depth + 1):
+                    return f"{reason}, in a command the Python code runs"
+    try:
+        commands = list(simple_commands(in_run_order(shell_heredocs_as_code(command))))
+    except ValueError:
+        commands = []
+    for words, _, _ in commands:
+        rest, lines, nested = program_words(words)
+        for found in (credentials.change(rest), *(credentials.change(program_words(inner)[0]) for inner in nested)):
+            if found:
+                return found
+        ran = credentials.past_runners(rest)
+        tool = os.path.basename(ran[0]) if ran else ""
+        if SHELL_CODE.fullmatch(tool):
+            flagged = [i for i, w in enumerate(ran[1:], 1) if re.fullmatch(r"-[A-Za-z]*c", w)]
+            lines = [*lines, *(ran[flagged[0] + 1:flagged[0] + 2] if flagged else [])]
+        lines = [*lines, *credentials.handed_lines(ran)]
+        for line in lines if depth < NESTED else []:
+            if reason := credential_change(line, cwd, depth + 1):
+                return reason
+        home = real(str(Path.home()))
+        for word in credentials.changed_paths(ran):
+            if credentials.holds_credentials(real(os.path.expanduser(word), cwd), home):
+                return f"{tool} {word} takes away, moves or opens up what keeps a password, a key or a token"
+    home = real(str(Path.home()))
+    for target in write_targets(command, cwd):
+        if credentials.credential_file(real(target), home):
+            return f"writes {target}, which keeps a password, a key or a token"
+    return None
+
+
 def forced_push_needs_order(url: str) -> bool:
     """Whether the repository a push goes to is one whose forced pushes wait for the operator
     (`repo:` line ending `order`, corpus-scan.py --force-order). A scan that cannot answer holds
@@ -2786,15 +3088,21 @@ def ask(argv: list[str]) -> int:
     areas, and for a session with no marks, but for the guard's own settings and a transcript, judged as
     an Edit of them is). Exit 1: one line per refused path on stderr. Exit 2: usage.
 
+    `words`: the table of the words the word lists hold and where each may go, for the areas a
+    session of `GUARD_WORK_FOLDER` may read (words_table). Exit 0.
+
     `reach`: the areas a session of `GUARD_WORK_FOLDER` may read inside, one name per line in name
     order; nothing when no work folder is named. Exit 0."""
+    if argv[:1] == ["words"]:
+        print(words_table(), end="")
+        return 0
     if argv[:1] == ["reach"]:
         names = reach(load_areas()) or set()
         if names:
             print("\n".join(sorted(names)))
         return 0
     if len(argv) < 3 or argv[0] != "may-write" or not argv[1]:
-        print("usage: area-guard.py may-write <session_id> <path>... | reach", file=sys.stderr)
+        print("usage: area-guard.py may-write <session_id> <path>... | reach | words", file=sys.stderr)
         return 2
     if OFF.exists():
         return 0
@@ -2817,6 +3125,39 @@ def ask(argv: list[str]) -> int:
         print(f"area-guard: this session has read inside {', '.join(sorted(marks))}, so it cannot "
               f"write {target} (areas: {AREAS}). Do it in another session{handoff_unset_note()}", file=sys.stderr)
     return 1 if refused or kept_here else 0
+
+
+def words_table() -> str:
+    """The table of the words the machine's lists hold and where each may go (word_table), for the
+    areas a session of `GUARD_WORK_FOLDER` may read: the lists, the destination lines and the area
+    names of the others are left out."""
+    spec = importlib.util.spec_from_file_location("send_scan", SEND_SCAN)
+    send = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(send)
+    corpus = corpus_module()
+    named = corpus.load_areas(AREAS) if AREAS.is_file() else {}
+    visible = reach(load_areas())
+    shown = {name: roots for name, roots in named.items() if visible is None or name in visible}
+    every = send.rules()
+    # rules() puts the lines each area keeps after the machine's own: those of the areas the
+    # session may read are taken again on their own.
+    kept_all = corpus.kept_destinations(named) if corpus.area_folders() else []
+    machine = every[:len(every) - len(kept_all)]
+    kept = corpus.kept_destinations(shown) if corpus.area_folders() else []
+    destinations = [(pattern, where) for pattern, where, _ in [*machine, *kept]
+                    if where in (word_table.OUTSIDE, word_table.BLOCK) or where in shown]
+    folder = guard_places.words_folder()
+    lists = {}
+    if (master := guard_places.master_words()).is_file():
+        lists[word_table.MASTER] = word_table.words_of(master.read_text(encoding="utf-8").splitlines())
+    for name in shown:
+        if (path := folder / f"{name}.txt").is_file():
+            lists[name] = word_table.words_of(path.read_text(encoding="utf-8").splitlines())
+    names = sorted(set(named) - corpus.UNSCANNED)
+    roots = {name: [real(root) for root in named[name]] for name in names}
+    enclosing = {inner: {outer for outer in names if outer != inner and all(
+        any(o == r or o in r.parents for o in roots[outer]) for r in roots[inner])} for inner in names}
+    return word_table.table(lists, destinations, names, visible, enclosing)
 
 
 def child_guard() -> children.command.Guard:
@@ -2924,6 +3265,8 @@ def main() -> int:
         deny(HELD)
         return 0
     tool, args = monitor_calls.as_shell(tool, args)
+    if tool == "Bash":
+        script_files.judging(args.get("command", ""), cwd)
     tab = os.environ.get("PWA_SID")
     if areas:
         children.registry.save_session(tab, session)
@@ -3006,6 +3349,16 @@ def main() -> int:
                  f"(code written into a command counts as writing every path it names)"
                  + (f": {why}" if why else ""))
             return 0
+
+    # A password, a key, a token or a login is the operator's to change (after the settings and the
+    # transcripts, whose own reasons come first): an agent's call that changes
+    # one passes on the operator's yes to that very call, as a change of the guards does.
+    changed = credential_change(args.get("command", ""), cwd) if tool == "Bash" else \
+        f"writes {written}, which keeps a password, a key or a token" \
+        if tool in WRITES and credentials.credential_file(Path(written), real(str(Path.home()))) else None
+    if changed and (why := approval(tool, shown, event, [real(cwd)], areas)):
+        deny(f"area-guard: an agent does not change how the operator signs in ({changed}): {why}")
+        return 0
 
     if areas and (why := area_words_refusal(tool, args, cwd, areas)):
         deny(why)

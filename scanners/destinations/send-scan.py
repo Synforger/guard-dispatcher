@@ -92,8 +92,13 @@ OUTSIDE = "outside"
 BLOCK = "block"
 UNDECLARED = "undeclared"
 ORDER = "order"
+#: The line a word-list refusal shows under its hits: the command that prints which words may go where.
+WORDS_HINT = "which words may go where: python3 ~/.git-hooks/agent-hooks/claude-code/area-guard.py words"
 # How many word-list hits a refusal shows; the rest are counted.
 SHOWN_HITS = 5
+# The seconds the private-document scan is given: corpus-scan.py waits for a walk only in what is
+# left of them (--budget), so a scan that first reads many changed documents still answers in time.
+DOCUMENT_SCAN_SECONDS = 120
 # Destinations outside every area with no line in destinations.txt: they publish to the internet
 # (a search, a fetched URL) or to the operator's personal account on claude.ai. The Artifact tools
 # reach a session either built in or through an MCP server of their own, under either spelling.
@@ -289,6 +294,7 @@ def judge(name: str, payload: Path, reading: bool = False, handles: Path | None 
             # agent that wrote it rewrites that word, not a guess at it.
             for line in word_hits(r.stdout, payload, handles):
                 print(f"    {line}", file=sys.stderr)
+            print(f"    {WORDS_HINT}", file=sys.stderr)
             return 1, f"not sent to {name} ({place}): it carries a flagged identifier (word list)"
     if (held and not reading) or name.lower().startswith(FILE):
         # 人に届く前に operator が中身を見る (= 指示の枠に出した呼び、 operator が送る下書き、 operator が
@@ -319,12 +325,13 @@ def documents(name: str, place: str, dest_area: str, payload: Path, env: dict, r
     `--dest-area`: an area, several joined by commas, or OUTSIDE)."""
     import subprocess
     try:
-        r = subprocess.run(["python3", str(CORPUS), "--text", str(payload), "--dest-area", dest_area],
-                           capture_output=True, text=True, timeout=120, env=env)
+        r = subprocess.run(["python3", str(CORPUS), "--text", str(payload), "--dest-area", dest_area,
+                            "--budget", str(DOCUMENT_SCAN_SECONDS)],
+                           capture_output=True, text=True, timeout=DOCUMENT_SCAN_SECONDS, env=env)
     except subprocess.TimeoutExpired:
-        return 2, (f"not sent to {name}: the private-document scan did not finish within 120s -- "
-                   f"refused because it could not be judged in time (often a full walk of the "
-                   f"documents), not because of what it found")
+        return 2, (f"not sent to {name}: the private-document scan did not finish within {DOCUMENT_SCAN_SECONDS}s -- "
+                   f"refused because it could not be judged in time (often many documents "
+                   f"changed since the last look, read first), not because of what it found")
     except OSError as error:
         return 2, f"not sent to {name}: the private-document scan could not run ({error})"
     if r.returncode == 1:

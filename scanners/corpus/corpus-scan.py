@@ -267,9 +267,13 @@ FOLDERS = DOCS / "folders.json"
 # written, so nothing changed goes unseen until the walk folds it into the area's table).
 MAX_DELTA = int(os.environ.get("GUARD_CORPUS_MAX_DELTA", "200"))
 # How long a scan waits for a full walk it started (walk_apart). Past it the scan goes on with the
-# tables on disk and the walk finishes apart. send-scan.py gives the whole scan 120s; this leaves room
-# for Spotlight's answer (up to 30s, spotlight_changes) and the scan itself.
+# tables on disk and the walk finishes apart. A caller that gives the whole scan a time (--budget,
+# send-scan.py) gets less when bringing the tables up to date has already used it: reading thousands
+# of documents a checkout rewrote takes most of a minute.
 WALK_WAIT = int(os.environ.get("GUARD_CORPUS_WALK_WAIT", "60"))
+# What a scan given a time keeps of it for judging the text once the tables are read: under 1s on a
+# machine of 156,000 documents, 20 times that.
+LOOKUP_ROOM = float(os.environ.get("GUARD_CORPUS_LOOKUP_ROOM", "20"))
 # How often a scan with no tables that fit looks for the ones the build started apart writes.
 BUILD_POLL = 0.1
 # An area this small has its table merged anew within the scan that sees one of its documents
@@ -1976,12 +1980,13 @@ def say_built(summary: dict) -> None:
         say(unreadable_line(summary["unreadable"]))
 
 
-def walk_apart(summary: dict, wait: float = WALK_WAIT) -> dict:
+def walk_apart(summary: dict, wait: float = WALK_WAIT, *,
+               unwaited: str = "this scan has no time left to wait for a walk") -> dict:
     """A full walk is due (the tables are past MAX_AGE, or the delta past MAX_DELTA). Start it as a
-    process of its own -- unless one is at it -- and wait for it up to WALK_WAIT: a walk done by then
+    process of its own -- unless one is at it -- and wait for it up to `wait`: a walk done by then
     is used as if walked here. Past that, this scan goes on with the tables on disk, which catch_up()
     has just brought up to date, and the walk finishes apart: a scan given up on by its caller does
-    not stop it half way, and the next scan finds it done."""
+    not stop it half way, and the next scan finds it done. `unwaited` is why, when `wait` is 0."""
     with lock_file(wait=False) as free:
         if not free:
             return summary
@@ -1996,8 +2001,8 @@ def walk_apart(summary: dict, wait: float = WALK_WAIT) -> dict:
             say(f"the walk takes longer than {wait:g}s: it goes on apart from this scan, which uses the "
                 "tables brought up to date just now")
         else:
-            say("a document of a large area was rewritten: its walk goes on apart from this scan, which "
-                "uses the tables brought up to date just now")
+            say(f"{unwaited}: its walk goes on apart from this scan, which uses the tables brought up to "
+                "date just now")
         return summary
     built = built_summary()
     if code != 0 or built is None or built["built"] <= summary["built"]:
@@ -2008,7 +2013,15 @@ def walk_apart(summary: dict, wait: float = WALK_WAIT) -> dict:
 
 
 class NotBuilt(Exception):
-    """No tables on disk fit the areas, and the build started apart did not finish within WALK_WAIT."""
+    """No tables on disk fit the areas, and the build started apart did not finish while the scan waited."""
+
+
+def walk_wait(deadline: float | None) -> float:
+    """How long this scan may wait for a walk: WALK_WAIT, or less when the caller gave the scan a
+    time (`deadline`) and LOOKUP_ROOM of it is all that is left after bringing the tables up to date."""
+    if deadline is None:
+        return WALK_WAIT
+    return max(0.0, min(WALK_WAIT, deadline - time.time() - LOOKUP_ROOM))
 
 
 def fits(summary: dict, areas: dict[str, list[Path]]) -> bool:
@@ -2045,11 +2058,13 @@ def build_apart(areas: dict[str, list[Path]], wait: float = WALK_WAIT) -> dict:
             break
         time.sleep(BUILD_POLL)
     raise NotBuilt(f"the tables of the private documents are being built apart from this scan and were "
-                   f"not ready within {wait:g}s: nothing is judged until they are (try again in a few minutes)")
+                   f"not ready in the {wait:.0f}s it could wait: nothing is judged until they are "
+                   "(try again in a few minutes)")
 
 
-def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
-    """Per area, the tables a sent line is looked up in: the full build and what changed since."""
+def load(areas: dict[str, list[Path]], refresh: bool, deadline: float | None = None) -> dict[str, list[array]]:
+    """Per area, the tables a sent line is looked up in: the full build and what changed since.
+    `deadline` is when the caller gives up on the scan (none: it waits WALK_WAIT for a walk)."""
     summary_path = CACHE / "summary.json"
     summary = None
     # The table of public text first: an edited background.txt is read before the areas' tables
@@ -2065,21 +2080,21 @@ def load(areas: dict[str, list[Path]], refresh: bool) -> dict[str, list[array]]:
             # settings: what became public or was kept out since is still in them, and what is
             # public no longer is still missing. They are merged anew apart; the tables on disk
             # answer meanwhile.
-            summary = walk_apart(summary)
+            summary = walk_apart(summary, walk_wait(deadline))
         else:
             summary = catch_up(areas, summary)
             if summary is not None and (summary.get("walk_due") or time.time() - summary["built"] >= MAX_AGE):
-                summary = walk_apart(summary)
+                summary = walk_apart(summary, walk_wait(deadline))
             elif summary is not None and summary.get("walk_soon"):
                 # A large area's document was rewritten: its old prints go with a walk this scan
                 # does not wait for.
-                summary = walk_apart(summary, wait=0)
+                summary = walk_apart(summary, wait=0, unwaited="a document of a large area was rewritten")
     if summary is None and refresh:
         say("walking the private documents (unchanged ones are reused)...")
         summary = build(areas, full=True, wait=True)
         say_built(summary)
     elif summary is None:
-        summary = build_apart(areas)
+        summary = build_apart(areas, walk_wait(deadline))
     return {name: [read_table(CACHE / f"{name}.bin"), read_table(CACHE / f"{name}.delta.bin")]
             for name in summary["areas"]}
 
@@ -2480,6 +2495,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--refresh", action="store_true")
     parser.add_argument("--refresh-public", action="store_true")
     parser.add_argument("--walk", action="store_true", help="the full walk a scan found due (walk_apart)")
+    parser.add_argument("--budget", type=float, help="the seconds the caller gives this whole scan before it "
+                        "gives up on it (send-scan.py): a walk is waited for only in what is left of them")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--summary", action="store_true")
     args = parser.parse_args(argv)
@@ -2667,7 +2684,7 @@ def main(argv: list[str] | None = None) -> int:
         lines = [(where, where, line) for where, line in outgoing(args.span)]
 
     try:
-        prints = load(areas, refresh=False)
+        prints = load(areas, refresh=False, deadline=started + args.budget if args.budget else None)
     except NotBuilt as not_built:
         say(f"NOT JUDGED — {not_built}")
         return 2
