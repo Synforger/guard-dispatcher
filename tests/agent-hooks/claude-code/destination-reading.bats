@@ -35,6 +35,28 @@ denied() { [ "${status}" -eq 0 ] && [[ "${output}" == *'"permissionDecision": "d
 blocked() { denied && [[ "${output}" == *"is blocked for sending"* ]]; }
 not_known() { denied && [[ "${output}" == *"host:?"* ]]; }
 
+# judged <passed|denied> <command>... — run the hook on each command at once, each a call of its own.
+judged() {
+    local want="$1" n=0 command waited=() out="${BATS_TEST_TMPDIR}/answers"
+    shift
+    mkdir -p "${out}"
+    for command in "$@"; do
+        n=$((n + 1))
+        jq -n --arg c "${command}" --arg d "${H}/repos/tool" \
+            '{session_id: "s1", tool_name: "Bash", tool_input: {command: $c}, cwd: $d, hook_event_name: "PreToolUse"}' \
+            > "${out}/${n}.event"
+        python3 "${HOOK}" < "${out}/${n}.event" > "${out}/${n}.answer" &
+        waited+=($!)
+    done
+    for n in "${waited[@]}"; do wait "${n}" || return 1; done
+    n=0
+    for command in "$@"; do
+        n=$((n + 1))
+        output="$(cat "${out}/${n}.answer")" status=0
+        "${want}" || { echo "not ${want}: ${command}"; echo "${output}"; return 1; }
+    done
+}
+
 # places <command>... — the destination names the sends of each command are named by, one line a
 # command (`-` for none), read in one process: a call through the hook takes a second each.
 places() {
@@ -241,15 +263,13 @@ PY
 @test "destination reading: a machine or a source only known as the command runs is a destination that is not known" {
     printf 'x\n' > "${H}/repos/tool/f.txt"
     places 'scp f.txt "u@$H:/tmp/x"' \
-        'scp f.txt "$DEST"' \
         'H=a.example; H=b.example; ssh "$H" ls' \
         'scp "$F" u@fine.example:/tmp/x' \
         'scp f.txt u@fine.example:"$DIR/x"'
     [ "${lines[0]}" = "host:?" ]
     [ "${lines[1]}" = "host:?" ]
-    [ "${lines[2]}" = "host:?" ]
-    [ "${lines[3]}" = "host:fine.example:/tmp/x" ]
-    [[ "${lines[4]}" == "host:fine.example:"* ]]
+    [ "${lines[2]}" = "host:fine.example:/tmp/x" ]
+    [[ "${lines[3]}" == "host:fine.example:"* ]]
     bash_call 'scp "$F" u@fine.example:/tmp/x'
     denied
     [[ "${output}" == *"only known when the command runs"* ]]
@@ -259,26 +279,40 @@ PY
 
 @test "destination reading: only a word the shell fills in is filled, and it keeps the quoting it was typed with" {
     printf 'x\n' > "${H}/repos/tool/a[1].txt"
-    bash_call "scp 'a[1].txt' u@fine.example:/tmp/x"
-    passed
-    bash_call 'D=.; scp "$D/a[1].txt" u@fine.example:/tmp/x'
-    passed
+    judged passed "scp 'a[1].txt' u@fine.example:/tmp/x" 'D=.; scp "$D/a[1].txt" u@fine.example:/tmp/x'
 }
 
 @test "destination reading: a file named from \$HOME or \$PWD is read where it is" {
     printf 'x\n' > "${H}/clean.txt"
     printf '%s\n' "${SENTINEL}" > "${H}/marked.txt"
     printf 'x\n' > "${H}/repos/tool/f.txt"
-    bash_call 'scp "$HOME/clean.txt" u@fine.example:/tmp/x'
-    passed
-    bash_call 'rsync -a "$PWD/f.txt" u@fine.example:/tmp/x'
-    passed
+    judged passed 'scp "$HOME/clean.txt" u@fine.example:/tmp/x' 'rsync -a "$PWD/f.txt" u@fine.example:/tmp/x'
+    # a folder the line moved to, and a name the line sets another way, stay unknown
+    judged denied 'cd .. && scp "$PWD/f.txt" u@fine.example:/tmp/x' \
+        'HOME=$(pwd); scp "$HOME/clean.txt" u@fine.example:/tmp/x'
     bash_call 'scp "${HOME}/marked.txt" u@fine.example:/tmp/x'
     denied
     [[ "${output}" == *"flagged identifier"* ]]
-    # a folder the line moved to, and a name the line sets another way, stay unknown
-    bash_call 'cd .. && scp "$PWD/f.txt" u@fine.example:/tmp/x'
-    denied
-    bash_call 'HOME=$(pwd); scp "$HOME/clean.txt" u@fine.example:/tmp/x'
-    denied
+}
+
+@test "destination reading: a copy to a folder a variable names stays a copy on this machine" {
+    printf 'x\n' > "${H}/repos/tool/f.txt"
+    places 'rsync -a f.txt "$d/"' \
+        'd=$(mktemp -d); rsync -a f.txt "$d/"' \
+        'rsync -a "$SRC/" "$DST/"' \
+        'scp f.txt "$DEST"' \
+        'scp u@fine.example:/tmp/x "$d/"'
+    for line in 0 1 2 3 4; do [ "${lines[line]}" = "-" ] || { echo "${line}: ${lines[line]}"; return 1; }; done
+    # a `:` inside the shell's own expansion is not the one of a remote path
+    judged passed 'rsync -a f.txt "${d:-/tmp}/x"' 'rsync -a f.txt "$(date +%H:%M)/x"'
+}
+
+@test "destination reading: a remote path whose machine a variable names is a destination that is not known" {
+    printf 'x\n' > "${H}/repos/tool/f.txt"
+    places 'rsync f.txt "$H::module"' \
+        'rsync f.txt "${H:-a.example}:x"' \
+        'scp f.txt "$(cat host.txt):/tmp/x"'
+    [ "${lines[0]}" = "host:?" ]
+    [ "${lines[1]}" = "host:?" ]
+    [ "${lines[2]}" = "host:?" ]
 }

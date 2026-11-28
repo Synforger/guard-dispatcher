@@ -660,9 +660,14 @@ def split_options(words: list[str], short_valued: set[str], long_valued: set[str
 
 
 def machine_unknown(arg: str) -> bool:
-    """Whether the machine a remote argument names is only known when the command runs: a variable
-    or a substitution stands before its first `:` or `/`, where the machine's name is written."""
-    return expands(arg) and expands(re.split(r"[:/]", arg, maxsplit=1)[0])
+    """Whether the machine a remote argument names is only known when the command runs: it is written
+    as a remote path (a `:` before the first `/`, as scp and rsync read one), and a variable or a
+    substitution stands before that `:`. An argument with no such `:` (`"$d/"`, `"$DEST"`) is read
+    as a path on this machine."""
+    if not expands(arg):
+        return False
+    head, colon, _ = destination_words.without_expansions(arg).partition(":")
+    return bool(colon) and "/" not in head and expands(head)
 
 
 def remote_host(arg: str) -> str | None:

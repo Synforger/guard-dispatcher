@@ -216,6 +216,8 @@ VARIABLE = re.compile(r"\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)")
 # What a value may be written with to be put in a word as it stands: no space, glob, `~` or quote.
 PLAIN_VALUE = re.compile(r"[\w@%+=,./:-]+")
 CHANGES_FOLDER = re.compile(r"\b(?:cd|pushd|popd)\b")
+# What closes a shell expansion that opens `$` and this character.
+CLOSERS = {"{": "}", "(": ")"}
 LITERAL_ASSIGNMENT = re.compile(
     r"(?:^|(?<=[;&|(\n]))[ \t]*(?:(?:export|local|readonly)[ \t]+)?([A-Za-z_]\w*)="
     r"('[^'\n]*'|\"[^\"$`\\\n]*\"|[^\s;&|<>()$`\"'\\]*)(?=[ \t]*(?:[;&|)\n]|$))")
@@ -252,6 +254,31 @@ def _rebound(command: str, name: str) -> bool:
     """Whether the line gives `name` a value by a command that takes names (`read`, a loop, `-v`)."""
     return bool(re.search(rf"\b(?:read|for|select|unset|getopts|mapfile|readarray)\b[^\n;&|]*\b{name}\b|-v\s+{name}\b",
                           command))
+
+
+def expansion_end(word: str, at: int) -> int | None:
+    """Where the shell expansion that opens at `at` (`${…}`, `$(…)`) closes, or None when none opens
+    there or it does not close."""
+    opener = word[at + 1:at + 2]
+    if word[at:at + 1] != "$" or opener not in CLOSERS:
+        return None
+    depth = 0
+    for end in range(at + 1, len(word)):
+        depth += (word[end] == opener) - (word[end] == CLOSERS[opener])
+        if depth == 0:
+            return end
+    return None
+
+
+def without_expansions(word: str) -> str:
+    """The word with each `${…}` and `$(…)` written as a lone `$`, so that what stands inside one is
+    not taken for the word's own text."""
+    text, at = [], 0
+    while at < len(word):
+        end = expansion_end(word, at)
+        text.append(word[at] if end is None else "$")
+        at = at + 1 if end is None else end + 1
+    return "".join(text)
 
 
 def filled(word: str, values: dict[str, str]) -> str:
