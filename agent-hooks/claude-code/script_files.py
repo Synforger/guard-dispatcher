@@ -17,12 +17,15 @@ keeps:
 
 A relative file is the one in the folder the command stands in when it reaches it (the caller says).
 
-What the command line itself writes is read as well (`judging`; written_files): a file it writes from
-text it holds, or copies from a source it can name, and then runs, is read as what the disk holds
-and what the command writes there, both, since a write may fail and the old file then runs. A
-shell given its code on standard input by a heredoc, a here-string or a pipe from `cat`, `echo` or
-`printf` runs that text. A file the command writes in a way that holds no text in the line (a
-download, `sed -i`) is read as the disk holds it.
+What the command line itself writes is read as well (`judging`; written_files), as a second reading
+beside the disk's: a file it writes from text it holds, or copies from a source it can name, and then
+runs, is read once as the disk holds it and once with what the command writes there added, since a
+write may fail and the old file then runs. Nothing a command adds can then take away what the disk's
+reading finds. A shell given its code on standard input by a heredoc, a here-string or a pipe from
+`cat`, `echo` or `printf` runs that text. A file the command writes in a way that holds no text in
+the line (a download, `sed -i`) is read as the disk holds it. Where a reader must decide what the
+words themselves are (code the guard cannot read, handed a file), the disk's reading alone decides
+(`ran_from_disk`).
 
 What is not read: a module run by name (`python3 -m pkg`), a program found on PATH by its bare name,
 a file named only as the command runs (`xargs bash`, `find -exec bash {} +`, a variable the line
@@ -104,18 +107,40 @@ def judging(command: str, here: str) -> None:
     _command, _writes = (command, here), None
 
 
-def ran(words: list[str], here: str, fed: list[str] | None = None) -> tuple[str, str] | None:
-    """(the program the readers read the code as, the code) for the file `words` hand to the program
-    that runs it, or None when they hand none (see the module's docstring). `words` start at the
-    program, past what stands before it (`sudo`, `env`, an assignment); `here` is the folder the
-    command stands in; `fed` are the files its standard input comes from (`< f`, `cat f |`), when the
-    caller can name them."""
-    found = ran_with_arguments(words, here, fed)
-    return None if found is None else found[:2]
+def ran(words: list[str], here: str, fed: list[str] | None = None) -> list[tuple[str, str]]:
+    """(the program the readers read the code as, the code) for each reading of the file `words` hand
+    to the program that runs it; none when they hand none (see the module's docstring). `words` start
+    at the program, past what stands before it (`sudo`, `env`, an assignment); `here` is the folder
+    the command stands in; `fed` are the files its standard input comes from (`< f`, `cat f |`), when
+    the caller can name them."""
+    return [reading[:2] for reading in ran_with_arguments(words, here, fed)]
 
 
-def ran_with_arguments(words: list[str], here: str, fed: list[str] | None = None) -> tuple[str, str, list[str]] | None:
-    """`ran`, and the words the command hands the code as its arguments (the words after the file)."""
+def ran_with_arguments(words: list[str], here: str,
+                       fed: list[str] | None = None) -> list[tuple[str, str, list[str]]]:
+    """`ran`, each reading with the words the command hands the code as its arguments (the words after
+    the file): the disk's (ran_from_disk), then the one with what the command line writes or feeds,
+    where that reads otherwise."""
+    disk = ran_from_disk(words, here, fed)
+    written = _reading(words, here, fed)
+    return [reading for reading in (disk, written if written != disk else None) if reading is not None]
+
+
+def ran_from_disk(words: list[str], here: str, fed: list[str] | None = None) -> tuple[str, str, list[str]] | None:
+    """The reading of the file `words` run as the disk alone holds it, what the command line writes and
+    feeds left out, or None when the disk holds no such code."""
+    global _command, _writes
+    judged = _command, _writes
+    _command = _writes = None
+    try:
+        return _reading(words, here, fed)
+    finally:
+        _command, _writes = judged
+
+
+def _reading(words: list[str], here: str, fed: list[str] | None) -> tuple[str, str, list[str]] | None:
+    """(the program, the code, its arguments) of the file `words` run, read with the writes of the
+    command line being judged, when one is."""
     found = _file_run(words, here)
     if found is None:
         return None

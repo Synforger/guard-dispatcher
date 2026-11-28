@@ -966,9 +966,12 @@ step earlier, before each tool call, from the same `areas.txt`:
   from text the line holds (a heredoc or here-string given to `cat` or `tee`,
   the text `echo` and `printf` print, written by `>` or `>>`), or puts there
   with `cp`, `mv` or `install` from a source the line can name (a file on the
-  disk, or one the command writes). The file is read as what the disk holds
-  and what the command writes there, both, since a write may fail and the old
-  file then runs. A shell given its code on standard input (a heredoc, a
+  disk, or one the command writes). The file is read as the disk holds it and,
+  as a second reading, with what the command writes there added, since a write
+  may fail and the old file then runs; nothing a command adds takes away what
+  the disk's reading is refused for. Code the command line holds or writes is
+  no file the guard has read before it runs, so a file only the operator writes
+  handed to it is refused as before. A shell given its code on standard input (a heredoc, a
   here-string, or a pipe from `cat`, `echo` or `printf`) is read as that code.
   A file written another way (a download, `sed -i`, a copy from a source the
   line cannot name) is read as the disk holds it.

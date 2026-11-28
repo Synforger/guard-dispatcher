@@ -1378,9 +1378,9 @@ def named_with_folders(command: str, cwd: str,
                 run(tool, code, here)
         if stdin is not None:
             run(tool, stdin, here)
-        if depth < NESTED and (script := script_files.ran([filled(words[0]), *args], here,
-                                                          [filled(f) for f in fed])) is not None:
-            run(*script, here, from_file=True)
+        if depth < NESTED:
+            for script in script_files.ran([filled(words[0]), *args], here, [filled(f) for f in fed]):
+                run(*script, here, from_file=True)
 
     # The command line is read in order, following where it stands, as sends_of does for a send:
     # `cd`, `pushd` / `popd` move it and a `( ... )` subshell gives the place back, so
@@ -1497,10 +1497,11 @@ def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
         if rest and not standing.move(os.path.basename(rest[0]), rest[1:]):
             tool, here = os.path.basename(rest[0]), standing.here
             fed = fed_files(redirects, steps[index - 1] if index else None)
-            if (script := script_files.ran_with_arguments(rest, here, fed)) is not None:
-                if not fed_only or script_files.ran(rest, here) is None:
-                    found.append((*script[:2], here, script[2]))
-            elif depth < NESTED and SHELL_CODE.fullmatch(tool):
+            # `fed_only` keeps the code a program reads from files: it is handed none by its words.
+            if not fed_only or (fed and script_files.ran_from_disk(rest, here) is None):
+                found += [(*script[:2], here, script[2])
+                          for script in script_files.ran_with_arguments(rest, here, fed)]
+            if script_files.ran_from_disk(rest, here, fed) is None and depth < NESTED and SHELL_CODE.fullmatch(tool):
                 codes = [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
                 for code in codes:
                     found += ran_scripts_with_arguments(code, here, depth + 1, fed_only=fed_only)
@@ -1808,7 +1809,7 @@ def operator_file_handed(command: str, cwd: str, depth: int = 0) -> Path | None:
                 inner += [(head[at + 1], standing.here) for at, word in enumerate(head[1:-1], 1)
                           if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
             # A file of code the guard reads is read again with its words in place (script_argument_orders).
-            if tool not in READS_ONLY | COPIES and script_files.ran(head, standing.here) is None:
+            if tool not in READS_ONLY | COPIES and script_files.ran_from_disk(head, standing.here) is None:
                 for word in head[1:]:
                     for spelled in {each for part in {word, word.partition("=")[2]} - {""}
                                     for each in brace_expanded(part)}:
@@ -1937,10 +1938,14 @@ def _program_walked(rest: list[str], steps: list, index: int, standing: Standing
     cwd = standing.here
     ended_by = steps[index][3]
     found: list[tuple[Path, list[str]]] = []
-    script = script_files.ran(rest, cwd, fed_files(steps[index][1], steps[index - 1] if index else None)) \
-        if depth < NESTED else None
-    if script is not None and SHELL_CODE.fullmatch(script[0]):
-        return recursive_reads(script[1], cwd, depth + 1)
+    if depth < NESTED:
+        fed = fed_files(steps[index][1], steps[index - 1] if index else None)
+        for program, code in script_files.ran(rest, cwd, fed):
+            if SHELL_CODE.fullmatch(program):
+                found += recursive_reads(code, cwd, depth + 1)
+        script = script_files.ran_from_disk(rest, cwd, fed)
+        if script is not None and SHELL_CODE.fullmatch(script[0]):
+            return found
     if SHELL_CODE.fullmatch(tool) and depth < NESTED:
         for at, word in enumerate(args[:-1]):
             if re.fullmatch(r"-[A-Za-z]*c", word):
@@ -2182,9 +2187,12 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
             inner(code)
         if not argv:
             return
-        script = script_files.ran(argv, str(here))
+        for program, code in script_files.ran(argv, str(here)):
+            if SHELL_CODE.fullmatch(program):
+                inner(code)
+        script = script_files.ran_from_disk(argv, str(here))
         if script is not None and SHELL_CODE.fullmatch(script[0]):
-            inner(script[1])
+            pass                        # the words run that file: they are not read as a command of their own
         elif name in SHELLS and "-c" in args[:-1]:
             inner(args[args.index("-c") + 1])
         elif name == "git":

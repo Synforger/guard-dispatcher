@@ -130,6 +130,29 @@ TICKET_REASON='a ticket is written with `tabs ticket`'
         "printf '\\nprint(2)\\n' >> fix.py; ./fix.py"
 }
 
+# --- what the command adds opens nothing ----------------------------------------------------------
+
+@test "written files: a text added to a file leaves what the disk holds refused, whatever the added text makes of it" {
+    git -C "${TOOL}" remote add origin git@github.com:synforger/fixture-repo.git
+    script fix.py "#!/usr/bin/env python3${NL}${TICKET_CODE}"
+    chmod +x "${TOOL}/fix.py"
+    script skip.py "import subprocess${NL}subprocess.run(['git', 'push', '--no-verify'])"
+    script run.sh "echo x >> ${PLACE}/a.jsonl"
+    judged denied \
+        "echo ')' >> skip.py; python3 skip.py" \
+        "echo \"'\" >> run.sh; bash run.sh" \
+        "printf '#!/bin/sh\\n' >> fix.py; ./fix.py"
+}
+
+@test "written files: a file only the operator writes, handed to code the command line holds, is refused" {
+    local orders="${GUARD_CONFIG_DIR}/orders.txt"
+    : > "${orders}"
+    judged denied \
+        "bash -s ${orders} <<'EOF'${NL}some-tool \"\$1\"${NL}EOF" \
+        "echo 'some-tool \"\$1\"' > f.sh; bash f.sh ${orders}" \
+        "echo 'some-tool \"\$1\"' | bash -s -- ${orders}"
+}
+
 # --- what stays as it was -----------------------------------------------------------------------
 
 @test "written files: a file written with harmless code and run passes, and so does one that is only written" {
