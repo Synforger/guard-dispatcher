@@ -1379,9 +1379,9 @@ def named_with_folders(command: str, cwd: str,
                 run(tool, code, here)
         if stdin is not None:
             run(tool, stdin, here)
-        if depth < NESTED and (script := script_files.ran([filled(words[0]), *args], here,
-                                                          [filled(f) for f in fed])) is not None:
-            run(*script, here, from_file=True)
+        if depth < NESTED:
+            for script in script_files.ran([filled(words[0]), *args], here, [filled(f) for f in fed]):
+                run(*script, here, from_file=True)
 
     # The command line is read in order, following where it stands, as sends_of does for a send:
     # `cd`, `pushd` / `popd` move it and a `( ... )` subshell gives the place back, so
@@ -1498,10 +1498,11 @@ def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
         if rest and not standing.move(os.path.basename(rest[0]), rest[1:]):
             tool, here = os.path.basename(rest[0]), standing.here
             fed = fed_files(redirects, steps[index - 1] if index else None)
-            if (script := script_files.ran_with_arguments(rest, here, fed)) is not None:
-                if not fed_only or script_files.ran(rest, here) is None:
-                    found.append((*script[:2], here, script[2]))
-            elif depth < NESTED and SHELL_CODE.fullmatch(tool):
+            # `fed_only` keeps the code a program reads from files: it is handed none by its words.
+            if not fed_only or (fed and script_files.ran_from_disk(rest, here) is None):
+                found += [(*script[:2], here, script[2])
+                          for script in script_files.ran_with_arguments(rest, here, fed)]
+            if script_files.ran_from_disk(rest, here, fed) is None and depth < NESTED and SHELL_CODE.fullmatch(tool):
                 codes = [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
                 for code in codes:
                     found += ran_scripts_with_arguments(code, here, depth + 1, fed_only=fed_only)
@@ -1809,7 +1810,7 @@ def operator_file_handed(command: str, cwd: str, depth: int = 0) -> Path | None:
                 inner += [(head[at + 1], standing.here) for at, word in enumerate(head[1:-1], 1)
                           if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
             # A file of code the guard reads is read again with its words in place (script_argument_orders).
-            if tool not in READS_ONLY | COPIES and script_files.ran(head, standing.here) is None:
+            if tool not in READS_ONLY | COPIES and script_files.ran_from_disk(head, standing.here) is None:
                 for word in head[1:]:
                     for spelled in {each for part in {word, word.partition("=")[2]} - {""}
                                     for each in brace_expanded(part)}:
@@ -1938,10 +1939,14 @@ def _program_walked(rest: list[str], steps: list, index: int, standing: Standing
     cwd = standing.here
     ended_by = steps[index][3]
     found: list[tuple[Path, list[str]]] = []
-    script = script_files.ran(rest, cwd, fed_files(steps[index][1], steps[index - 1] if index else None)) \
-        if depth < NESTED else None
-    if script is not None and SHELL_CODE.fullmatch(script[0]):
-        return recursive_reads(script[1], cwd, depth + 1)
+    if depth < NESTED:
+        fed = fed_files(steps[index][1], steps[index - 1] if index else None)
+        for program, code in script_files.ran(rest, cwd, fed):
+            if SHELL_CODE.fullmatch(program):
+                found += recursive_reads(code, cwd, depth + 1)
+        script = script_files.ran_from_disk(rest, cwd, fed)
+        if script is not None and SHELL_CODE.fullmatch(script[0]):
+            return found
     if SHELL_CODE.fullmatch(tool) and depth < NESTED:
         for at, word in enumerate(args[:-1]):
             if re.fullmatch(r"-[A-Za-z]*c", word):
@@ -2036,6 +2041,46 @@ def sends_of(command: str, cwd: str) -> list[tuple[Path, list[str]]]:
     return list(send_places(command, cwd)[0])
 
 
+#: An assignment of mktemp's output left unquoted (`T=$(mktemp -d)`), which splits into words at its spaces.
+UNQUOTED_MKTEMP = re.compile(r"(?<![\w\"'])([A-Za-z_][A-Za-z0-9_]*=)(\$\(\s*mktemp\b[^()`$\"']*\)|`\s*mktemp\b[^`$\"']*`)")
+#: A word that is the whole of a command substitution running mktemp (`$(mktemp -d)`, `` `mktemp -d -t x` ``).
+MKTEMP_WORD = re.compile(r"\$\(\s*(mktemp\b[^()`$]*)\)|`\s*(mktemp\b[^()`$]*)`")
+
+
+def fresh_folder(value: str) -> str | None:
+    """The folder a variable set to `$(mktemp -d ...)` names, as a path in the folder mktemp makes it in
+    (the template's folder, `-p`/`--tmpdir`, else `$TMPDIR`), or None when the value is not that. The
+    folder is new: no remote, nothing in it but what the command puts there."""
+    m = MKTEMP_WORD.fullmatch(value.strip())
+    if not m:
+        return None
+    try:
+        words = shlex.split(m.group(1) or m.group(2))[1:]
+    except ValueError:
+        return None
+    if not {"-d", "--directory"} & set(words) and not any(re.fullmatch(r"-[A-Za-z]*d[A-Za-z]*", w) for w in words):
+        return None
+    parent = os.environ.get("TMPDIR") or "/tmp"
+    templates: list[str] = []
+    valued = False
+    for i, word in enumerate(words):
+        if valued:
+            valued = False
+            if words[i - 1] in ("-p", "--tmpdir"):
+                parent = word
+        elif word in ("-p", "--tmpdir", "-t"):
+            valued = True
+        elif word.startswith("--tmpdir="):
+            parent = word.split("=", 1)[1]
+        elif not word.startswith("-"):
+            templates.append(word)
+    if templates and "/" in templates[-1]:
+        parent = os.path.dirname(templates[-1])
+    if UNKNOWN.search(parent):
+        return None
+    return str(Path(os.path.expanduser(parent)) / "mktemp.XXXXXX")
+
+
 @functools.lru_cache(maxsize=None)
 def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, str], ...] = ()) -> tuple[
         tuple[tuple[Path, list[str]], ...], tuple[str, ...], tuple[str, ...], tuple[tuple[Path, str, str], ...]]:
@@ -2062,7 +2107,7 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
     try:
         # Python written into the command is no command line: a quote it leaves open turns the words
         # into plain spaces, and a shell line quoted inside it would be read as a send.
-        words = shell_words(shell_heredocs_as_code(command), shell_only=True)
+        words = shell_words(UNQUOTED_MKTEMP.sub(r'\1"\2"', shell_heredocs_as_code(command)), shell_only=True)
     except ValueError:
         return (), (), (), ()
     breaks = outgoing_module().SHELL_BREAK
@@ -2085,6 +2130,12 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
     head = {} if starts_elsewhere else {name: value for name, value in given if not rebinds(command, name)}
     redefined = bool(REDEFINES_TEST.search(command))
     values: dict[str, str] = dict(head)
+    # Folders a variable was set to by `$(mktemp -d)`: a commit there is judged where the folder lies;
+    # a push from one has no remote the command shows, so its destination is not known before it runs.
+    fresh: set[str] = set()
+    # Names once given a value not known: a branch read before may have left it there, so a fresh
+    # folder given later does not stand for it. Nor does it for a name that holds a value already.
+    once_unknown: set[str] = set()
     branches = Branches({} if redefined else head)
     lost: str | None = None            # the word that took the command where it cannot be read
     pushed: list[str | None] = []
@@ -2110,8 +2161,13 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
             # `W=/a/b` alone on its command (or after export / local): later words may spell it $W.
             for word in assigned:
                 name, _, value = word.partition("=")
-                if UNKNOWN.search(value):
+                folder = fresh_folder(value)
+                if folder is not None and name not in once_unknown and name not in values:
+                    values[name] = folder
+                    fresh.update({folder, str(real(folder))})
+                elif UNKNOWN.search(value):
                     values.pop(name, None)
+                    once_unknown.add(name)
                 else:
                     values[name] = value
             return
@@ -2183,9 +2239,12 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
             inner(code)
         if not argv:
             return
-        script = script_files.ran(argv, str(here))
+        for program, code in script_files.ran(argv, str(here)):
+            if SHELL_CODE.fullmatch(program):
+                inner(code)
+        script = script_files.ran_from_disk(argv, str(here))
         if script is not None and SHELL_CODE.fullmatch(script[0]):
-            inner(script[1])
+            pass                        # the words run that file: they are not read as a command of their own
         elif name in SHELLS and "-c" in args[:-1]:
             inner(args[args.index("-c") + 1])
         elif name == "git":
@@ -2211,8 +2270,11 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
                 skipping.append("git commit -n (= --no-verify)")
             if sub == "push" and push_options.skips_hooks(rest):
                 skipping.append("git push --no-verify")
+            in_fresh = any(str(repo) == f or str(repo).startswith(f + "/") for f in fresh)
             if sub in ("commit", "push") and place:
                 unread.append(place)
+            elif sub == "push" and in_fresh:
+                unread.append(str(repo))
             elif sub == "commit":
                 found.append((repo, []))
             elif sub == "push":
@@ -3152,6 +3214,8 @@ def main() -> int:
         deny(HELD)
         return 0
     tool, args = monitor_calls.as_shell(tool, args)
+    if tool == "Bash":
+        script_files.judging(args.get("command", ""), cwd)
     tab = os.environ.get("PWA_SID")
     if areas:
         children.registry.save_session(tab, session)

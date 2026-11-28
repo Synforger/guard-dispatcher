@@ -989,7 +989,19 @@ step earlier, before each tool call, from the same `areas.txt`:
   name (`python3 -m`), a program found on PATH by its bare name, what the code
   imports or starts in turn, a file over 512 KiB and one that is not text. A
   shell script's comment lines are not held to the lines about switching the
-  guards off.
+  guards off. A file the same command writes first is read too: one it writes
+  from text the line holds (a heredoc or here-string given to `cat` or `tee`,
+  the text `echo` and `printf` print, written by `>` or `>>`), or puts there
+  with `cp`, `mv` or `install` from a source the line can name (a file on the
+  disk, or one the command writes). The file is read as the disk holds it and,
+  as a second reading, with what the command writes there added, since a write
+  may fail and the old file then runs; nothing a command adds takes away what
+  the disk's reading is refused for. Code the command line holds or writes is
+  no file the guard has read before it runs, so a file only the operator writes
+  handed to it is refused as before. A shell given its code on standard input (a heredoc, a
+  here-string, or a pipe from `cat`, `echo` or `printf`) is read as that code.
+  A file written another way (a download, `sed -i`, a copy from a source the
+  line cannot name) is read as the disk holds it.
 - **A script asks before it writes where its arguments say.** The guard reads
   the script, not where the words handed to it go, and a relative path handed
   to a script resolves where the script runs, not where the session stands —
