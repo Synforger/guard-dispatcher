@@ -55,7 +55,7 @@ if [ -e "${GH_SHIM}" ] && [ ! -L "${GH_SHIM}" ]; then
 elif [ "$(readlink "${GH_SHIM}" 2>/dev/null || true)" = "${GUARD_ROOT}/gh-shim/gh-guard.sh" ]; then
     log_ok "gh command guard already installed (${GH_SHIM})"
 else
-    ln -sf "${GUARD_ROOT}/gh-shim/gh-guard.sh" "${GH_SHIM}"
+    python3 "${SCRIPT_DIR}/_internal/swap_links.py" "${GUARD_ROOT}/gh-shim/gh-guard.sh" "${GH_SHIM}" || exit 1
     log_ok "gh command guard installed (${GH_SHIM})"
 fi
 
