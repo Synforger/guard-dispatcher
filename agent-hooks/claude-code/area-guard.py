@@ -690,6 +690,18 @@ def split_heredocs(text: str) -> tuple[str, list[tuple[str, str]]]:
     return "".join(line), fed
 
 
+def heredoc_bodies_as_words(command: str) -> str:
+    """The command with the body of each heredoc moved onto its opening line as one quoted word: the
+    body is read as words handed to the program it feeds (`ssh host <<EOF` hands its lines on), and a
+    `)`, `;` or `|` inside it does not end a command of the line. The terminator line stays."""
+    out, pos = [], 0
+    for line_end, body_end, _ in heredocs(command):
+        out.append(command[pos:line_end] + " " + shlex.quote(command[line_end + 1:body_end]) + "\n")
+        pos = body_end
+    out.append(command[pos:])
+    return "".join(out)
+
+
 def shell_heredocs_as_code(command: str) -> str:
     """The command with each heredoc that feeds a shell written as that shell's `-c` string
     (`bash <<'SH' ... SH` is `bash -c '...'`), so what it runs is read where the command stands
@@ -3260,7 +3272,7 @@ def credential_change(command: str, cwd: str, depth: int = 0) -> str | None:
                 if reason := credential_change(line, here, depth + 1):
                     return f"{reason}, in a command the Python code runs"
     try:
-        commands = list(simple_commands(in_run_order(shell_heredocs_as_code(command))))
+        commands = list(simple_commands(in_run_order(heredoc_bodies_as_words(shell_heredocs_as_code(command)))))
     except ValueError:
         commands = []
     for words, _, _ in commands:
