@@ -238,9 +238,11 @@ def _subcommands(program: str, args: list[str]) -> list[str]:
         elif word == "--":
             break
         elif word.startswith("-"):
-            if words:
+            if words and words[-1] != "auth":
                 break
-            skip = word in valued
+            # Before the subcommand, or between `auth` and its verb (`gh auth --hostname h login`), an
+            # option is passed, with its value when it takes one.
+            skip = word in valued or (bool(words) and "=" not in word)
         else:
             words.append(word)
     return words[:SUBCOMMAND_WORDS]
@@ -597,8 +599,11 @@ def holds_credentials(path: Path, home: Path) -> bool:
         return False          # a file is the credential itself or none: its name is no folder of one
     for pattern in HOME_FILES:
         folder = pattern.rsplit("/", 1)[0].split("/") if "/" in pattern else []
+        # A part matched by a pattern (`.claude*`) names a folder of credentials only when it is one:
+        # `~/.claude.json.bak` matches the name, and is no folder.
         if folder and len(parts) <= len(folder) and all(
-                fnmatch.fnmatchcase(part, glob) for part, glob in zip(parts, folder)):
+                part == glob or (fnmatch.fnmatchcase(part, glob) and home.joinpath(*parts[:i + 1]).is_dir())
+                for i, (part, glob) in enumerate(zip(parts, folder))):
             return True
     return not parts
 

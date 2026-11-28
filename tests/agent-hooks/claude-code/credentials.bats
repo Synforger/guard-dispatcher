@@ -76,6 +76,8 @@ CHANGES=(
     "git -C repo config --unset credential.helper"
     "gh auth login --hostname github.com"
     "gh auth refresh -s admin:org"
+    "gh auth --hostname github.com login"
+    "gh auth --hostname=github.com login"
     "gh auth switch"
     "gh auth setup-git"
     "gh secret set API_TOKEN"
@@ -192,6 +194,8 @@ LOOKS=(
     "git remote set-url origin https://github.com/o/r"
     "launchctl setenv PATH /usr/bin"
     "direnv allow"
+    "rm ~/.claude.json.bak"
+    "gh auth --hostname github.com status"
 )
 
 # judged <command>... — the hook's credential_change on each command, in one process: `held` or
