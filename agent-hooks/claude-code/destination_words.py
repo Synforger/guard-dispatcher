@@ -6,7 +6,8 @@ holds. The host of an address urlsplit refuses (a character in its user informat
 takes for itself, a bracket) is read by hand, user information dropped; an address whose host cannot
 be read at all gives None, so that the caller counts it as a destination that is not known and not
 as no destination. The patterns curl expands in an address (`[1-3]`, `{a,b}`) stand for every
-address they expand to.
+address they expand to; the shell's own expansions (`${…}`, `$(…)`) and a lone `{}` after the host
+(the placeholder of `xargs -I{}`, which curl itself refuses) are text and no pattern.
 """
 
 from __future__ import annotations
@@ -137,6 +138,12 @@ def _parse(word: str) -> list[tuple[str, ...]] | None:
         if char == "\\" and word[at + 1:at + 2] and word[at + 1] in ESCAPED:
             text.append(word[at + 1])
             at += 2
+        elif (end := expansion_end(word, at)) is not None:
+            text.append(word[at:end + 1])
+            at = end + 1
+        elif word.startswith("{}", at) and _past_host(word[:at]):
+            text.append("{}")
+            at += 2
         elif char == "[":
             close = word.find("]", at)
             if close < 0:
@@ -165,6 +172,11 @@ def _parse(word: str) -> list[tuple[str, ...]] | None:
             text.append(char)
             at += 1
     return [*parts, ("".join(text),)]
+
+
+def _past_host(head: str) -> bool:
+    """Whether the text of an address up to here has passed its host."""
+    return any(char in AFTER_HOST for char in SCHEME.sub("", head))
 
 
 def _set(word: str, at: int) -> tuple[list[str] | None, int]:

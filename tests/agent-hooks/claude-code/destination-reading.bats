@@ -316,3 +316,17 @@ PY
     [ "${lines[1]}" = "host:?" ]
     [ "${lines[2]}" = "host:?" ]
 }
+
+# --- what the shell or a placeholder fills in -----------------------------------------------------
+
+@test "destination reading: the shell's own expansions and a lone {} after the host are no pattern of curl" {
+    judged passed 'curl -s "http://127.0.0.1:18998/items/${ids[0]}"' \
+        "curl -s \"http://127.0.0.1:18998/items/\$(jq -r '.[0]' f.json)\"" \
+        'seq 3 | xargs -I{} curl -s http://127.0.0.1:18998/api/{}'
+    # an endpoint a line closes stays closed with them in its path
+    judged denied 'seq 3 | xargs -I{} curl -s http://127.0.0.1:18999/api/{}/input' \
+        'curl -s "http://127.0.0.1:18999/api/${ids[0]}/input"'
+    # and the patterns beside them are still read
+    places "curl -s -d x \"http://{fine,blocked}.example/\$(date +%s)\""
+    [ "${lines[0]}" = "host:blocked.example host:fine.example" ]
+}
