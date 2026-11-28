@@ -122,6 +122,14 @@ TICKET_REASON='a ticket is written with `tabs ticket`'
         "echo \"${HARMLESS_CODE}\" >> fix.py; python3 fix.py"
 }
 
+@test "written files: a text added to a file run by its path leaves the file read by the #! line it holds" {
+    script fix.py "#!/usr/bin/env python3${NL}${TICKET_CODE}"
+    chmod +x "${TOOL}/fix.py"
+    judged denied \
+        "echo '# note' >> fix.py && ./fix.py" \
+        "printf '\\nprint(2)\\n' >> fix.py; ./fix.py"
+}
+
 # --- what stays as it was -----------------------------------------------------------------------
 
 @test "written files: a file written with harmless code and run passes, and so does one that is only written" {
@@ -208,6 +216,15 @@ TICKET_REASON='a ticket is written with `tabs ticket`'
         "bash <<'EOF'${NL}echo '* outside' >> ${GUARD_CONFIG_DIR}/destinations.txt${NL}EOF"
     says "$(reason_of "bash <<'EOF'${NL}curl -d x https://chat.example.com/api${NL}EOF")" "chat.example.com"
     says "$(reason_of "bash <<'EOF'${NL}echo '* outside' >> ${GUARD_CONFIG_DIR}/destinations.txt${NL}EOF")" "the guard's settings"
+}
+
+@test "written files: the words after a shell's -s are the fed code's arguments, past its options and --" {
+    local orders="${GUARD_CONFIG_DIR}/orders.txt"
+    : > "${orders}"
+    judged denied \
+        "bash -s -- ${orders} <<'EOF'${NL}rm \"\$1\"${NL}EOF" \
+        "bash -s -x -- ${orders} <<'EOF'${NL}rm \"\$1\"${NL}EOF" \
+        "echo 'rm \"\$1\"' | bash -s -- ${orders}"
 }
 
 @test "written files: a shell fed code that only writes beside the tool passes as before" {

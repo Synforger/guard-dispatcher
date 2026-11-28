@@ -165,8 +165,11 @@ def _after_options(kind: str, args: list[str]) -> tuple[str, str, list[str]] | N
     the command (`-c`, `-e`) or by a module's name (`-m`). The words after the file come with it."""
     valued, given = VALUED[kind], CODE_GIVEN[kind]
     at = 0
+    on_stdin = False                    # a shell's `-s` was given: every operand is an argument of the code
     while at < len(args):
         word = args[at]
+        if on_stdin and word in ("--", STDIN):
+            return kind, STDIN, args[at + 1:]
         if word == "--" or (kind == "php" and word == "-f"):
             return (kind, args[at + 1] if at + 1 < len(args) else STDIN, args[at + 2:])
         if word == STDIN:
@@ -177,11 +180,13 @@ def _after_options(kind: str, args: list[str]) -> tuple[str, str, list[str]] | N
         if kind == "shell" and re.fullmatch(r"[-+][A-Za-z]*c[A-Za-z]*", word):
             return None                 # `-c` among other letters (`-lc`): the code is a word
         if kind == "shell" and re.fullmatch(r"-[A-Za-z]*s[A-Za-z]*", word):
-            return kind, STDIN, args[at + 1:]   # `-s`: the code comes on standard input
+            on_stdin = True             # `-s`: the code comes on standard input, and more options may follow
+            at += 1
+            continue
         if word.startswith("-") or (kind == "shell" and word.startswith("+")):
             at += 2 if option in valued and word == option else 1
             continue
-        return kind, word, args[at + 1:]
+        return (kind, STDIN, args[at:]) if on_stdin else (kind, word, args[at + 1:])
     return kind, STDIN, []
 
 
@@ -232,16 +237,19 @@ def _resolved(name: str, here: str) -> Path:
 
 
 def _head(name: str, here: str) -> bytes | None:
-    """The first line of the file a command runs by its path: the one the command writes there, or
-    the disk's, or None when there is none."""
+    """The first line of the file a command runs by its path: a `#!` line the command writes there,
+    else the disk's (a text added to the file leaves its first line), else the first line of what the
+    command writes. None when there is none."""
     path = _resolved(name, here)
-    if texts := _written_at(os.path.realpath(path), COPY_DEPTH):
-        return texts[0].encode("utf-8", "replace").split(b"\n", 1)[0][:SHEBANG_BYTES]
+    written = [text.encode("utf-8", "replace").split(b"\n", 1)[0][:SHEBANG_BYTES]
+               for text in _written_at(os.path.realpath(path), COPY_DEPTH)]
+    if shebang := next((line for line in written if line.startswith(b"#!")), None):
+        return shebang
     try:
         with open(path, "rb") as file:
             return file.readline(SHEBANG_BYTES)
     except OSError:
-        return None
+        return written[0] if written else None
 
 
 def _text(name: str, here: str) -> str | None:
