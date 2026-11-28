@@ -168,6 +168,9 @@ if not target.is_file() or target.read_text() != rendered:
     target.parent.mkdir(parents=True, exist_ok=True)
     passing = target.with_name(f".{target.name}.new-{os.getpid()}")
     try:
+        if target.is_file():
+            # Closed to others before the settings go in; the file's own mode follows.
+            passing.touch(mode=0o600)
         passing.write_text(rendered)
         if target.is_file():
             shutil.copymode(target, passing)

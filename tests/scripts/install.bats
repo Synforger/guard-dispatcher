@@ -221,6 +221,28 @@ PY_STEP
     [ "${status}" -eq 0 ]
 }
 
+@test "install: a reinstall drops the visible links to nothing and leaves every other entry as it was, doctor clean" {
+    clone_to "${H}/src"
+    bash "${H}/src/scripts/install.sh" > /dev/null
+    local folder="${H}/.git-hooks"
+    # what an operator may have put beside the install's own entries, a hidden link to nothing included
+    mkdir -p "${folder}/mine"
+    printf 'x\n' > "${folder}/notes.txt"
+    printf 'x\n' > "${folder}/scanners/notes.txt"
+    ln -s "${H}/src" "${folder}/my-link"
+    ln -s "${H}/gone" "${folder}/.hidden-link"
+    local before
+    before="$(find "${folder}" -exec ls -di {} + | sort)"
+    ln -s "${H}/gone" "${folder}/gone-link"
+    ln -s "${folder}/notes.txt/part" "${folder}/through-a-file"
+    run bash "${H}/src/scripts/install.sh"
+    [ "${status}" -eq 0 ]
+    diff <(printf '%s\n' "${before}") <(find "${folder}" -exec ls -di {} + | sort)
+    run bash "${folder}/doctor.sh"
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"doctor: clean"* ]]
+}
+
 @test "install: a script run through the installed scripts link finds the clone it belongs to" {
     clone_to "${H}/src"
     run bash "${H}/src/scripts/install.sh"
@@ -583,6 +605,36 @@ dead_pid() {
     before="$(ls -l "${H}/shared/settings.json")"
     bash "${GUARD_ROOT}/scripts/install.sh" --claude-settings "${H}/.claude/settings.json" > /dev/null
     [ "$(ls -l "${H}/shared/settings.json")" = "${before}" ]
+}
+
+@test "install: a settings file closed to others stays closed while it is replaced, and after" {
+    mkdir -p "${H}/.claude" "${H}/watch"
+    printf '{}\n' > "${H}/.claude/settings.json"
+    chmod 600 "${H}/.claude/settings.json"
+    # python imports this at start: it records the mode of the passing file once the settings are in it
+    cat > "${H}/watch/sitecustomize.py" <<'PY'
+import os
+import pathlib
+import stat
+
+original = pathlib.Path.write_text
+
+
+def write_text(self, *arguments, **keywords):
+    result = original(self, *arguments, **keywords)
+    if self.name.startswith(".settings.json.new-"):
+        with open(os.environ["MODES"], "a") as modes:
+            modes.write("%o\n" % stat.S_IMODE(self.stat().st_mode))
+    return result
+
+
+pathlib.Path.write_text = write_text
+PY
+    umask 022
+    MODES="${H}/modes" PYTHONPATH="${H}/watch" \
+        bash "${GUARD_ROOT}/scripts/install.sh" --claude-settings "${H}/.claude/settings.json" > /dev/null
+    [ "$(cat "${H}/modes")" = "600" ]
+    [ "$(ls -l "${H}/.claude/settings.json" | cut -c1-10)" = "-rw-------" ]
 }
 
 @test "bootstrap: the gh link is laid by the step of the hooks' links, kept when it already points at its place" {

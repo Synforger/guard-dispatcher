@@ -11,7 +11,8 @@ or a folder that is to be made, is swapped with a ready one in a single step and
 
 With `--only`, a file or a link standing where that folder goes gives way to it, and every other link
 directly in the folder is removed afterwards, so a scanner the clone no longer has does not stay behind.
-With `--drop-gone`, the links directly in that folder whose target no longer exists are removed.
+With `--drop-gone`, the links directly in that folder whose target no longer exists are removed, but for
+those under a hidden name, which are none of the install's.
 Passing names that an install which has ended left behind are removed too. Those of an install that still
 runs are left to it, so that two installs at once both finish.
 Exit 0 when every link is laid, 1 with the reason otherwise.
@@ -126,13 +127,13 @@ def prune(folder: Path, kept: set[Path]) -> None:
 
 
 def drop_gone(folder: Path, kept: set[Path]) -> None:
-    """Remove the links directly in `folder`, none of `kept`, whose target no longer exists."""
+    """Remove the links directly in `folder`, none of `kept` or hidden, whose target no longer exists."""
     for entry in folder.iterdir():
-        if entry in kept or not entry.is_symlink() or PASSING_NAME.match(entry.name):
+        if entry in kept or entry.name.startswith(".") or not entry.is_symlink():
             continue
         try:
             os.stat(entry)
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             _remove(entry)
         except OSError:
             continue
