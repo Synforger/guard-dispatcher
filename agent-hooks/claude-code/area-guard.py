@@ -2196,8 +2196,8 @@ def send_places(command: str, cwd: str, depth: int = 0, given: tuple[tuple[str, 
                     value, i = (args[i + 1] if i + 1 < len(args) else ""), i + 1
                 elif flag.startswith("-c") and not flag.startswith("--") and len(flag) > 2:
                     flag, value = "-c", args[i][2:]
-                if flag in ("-c", "--config-env") and value.lower().startswith(HOOKS_PATH):
-                    hooks_off = f"git {flag} core.hooksPath"
+                if flag in ("-c", "--config-env") and value.lower().startswith(ONE_CALL_KEYS):
+                    hooks_off = f"git {flag} {value.split('=', 1)[0]}"
                 if flag == "-C" and value:
                     repo, place = real(value, str(repo)), unknown(value, place)
                 elif flag == "--work-tree" and value:
@@ -2614,7 +2614,9 @@ def may_write(target: Path, marks: set[str], areas) -> bool:
 
 BYPASS_ENV = re.compile(r"(?<![\w-])(GH_GUARD_SKIP|GUARD_[A-Z_]+|ANON_WORDS_FILE|HUSKY"
                         r"|GIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+|VALUE_\d+|GLOBAL|SYSTEM|NOSYSTEM))=")
-GUARD_KEYS = re.compile(r"\b(core\.hookspath|guard\.scope|guard\.exemptprefix)\b", re.I)
+# A repository's own hooks run only where the machine trusts them (`guard.localHooks`, `guard.hookOwners`):
+# writing either widens that trust, so it is a guard key as `guard.scope` is.
+GUARD_KEYS = re.compile(r"\b(core\.hookspath|guard\.scope|guard\.exemptprefix|guard\.localhooks|guard\.hookowners)\b", re.I)
 
 
 # `git config` reads with one of these, or with a key alone; it writes with one of the others,
@@ -2628,6 +2630,8 @@ CONFIG_UNSETS = {"--unset", "--unset-all", "unset"}
 # Where a write lands other than the repository's own config: the machine's guard itself lives there.
 CONFIG_ELSEWHERE = {"--global", "--system", "-f", "--file", "--blob"}
 HOOKS_PATH = "core.hookspath"
+#: The keys a `git -c` may not set for one call: the hooks path, and the trust in a repository's own hooks.
+ONE_CALL_KEYS = (HOOKS_PATH, "guard.localhooks", "guard.hookowners")
 
 
 def returns_to_global_hooks(flags: set[str], positional: list[str]) -> bool:

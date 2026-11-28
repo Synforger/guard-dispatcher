@@ -774,7 +774,8 @@ step earlier, before each tool call, from the same `areas.txt`:
 - On every machine, areas or not, a `Bash` command that switches the guards off
   or around is refused: `--no-verify`, `git commit -n`, the skip variables,
   `git -c core.hooksPath=…`, setting `core.hooksPath` / `guard.scope` /
-  `guard.exemptPrefix`, clearing the marks, creating the off switch, removing
+  `guard.exemptPrefix`, widening the trust in a repository's own hooks
+  (`guard.localHooks` / `guard.hookOwners`, set or given to one call with `git -c`), clearing the marks, creating the off switch, removing
   the installed hooks, or sending from a repository the git hooks do not reach. Each passes on
   the operator's yes (see *A change the operator approves* below), but clearing the marks.
   A command line that Python code runs (code written into the command or handed to it in a
