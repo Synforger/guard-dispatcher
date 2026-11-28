@@ -48,7 +48,7 @@ LOGIN_WORDS = {
 }
 #: The verbs after `auth` that only look.
 AUTH_READS = {
-    "status", "token", "list", "whoami", "show", "info", "help", "describe",
+    "status", "token", "list", "whoami", "show", "info", "help", "describe", "can-i",
     "print-access-token", "print-identity-token",
 }
 #: Nouns of what signs in: a following change verb changes it (`gh secret set`, `npm token create`).
@@ -267,7 +267,7 @@ def _service_change(program: str, args: list[str]) -> str | None:
     for i, word in enumerate(pieces):
         if word in LOGIN_WORDS:
             return f"{program} {' '.join(pieces[:i + 1])} signs in or out"
-        if word == "auth" and i + 1 < len(pieces) and pieces[i + 1] not in AUTH_READS:
+        if _is_auth_group(pieces[:i + 1]) and i + 1 < len(pieces) and pieces[i + 1] not in AUTH_READS:
             return f"{program} {' '.join(pieces[:i + 2])} changes a login"
         if word in KEY_NOUNS and i + 1 < len(pieces) and pieces[i + 1] in CHANGE_VERBS:
             return f"{program} {' '.join(pieces[:i + 2])} changes a key, a token or a secret"
