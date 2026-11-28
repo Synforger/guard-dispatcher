@@ -18,6 +18,8 @@ import unicodedata
 from typing import NamedTuple
 from urllib.parse import urlsplit
 
+from shell_commands import Word, expands, globs
+
 # Addresses one word may stand for before they are no longer listed: more is read by what stands
 # before the first pattern.
 MAX_ADDRESSES = 1000
@@ -236,7 +238,10 @@ def literal_values(command: str) -> dict[str, str]:
 
 
 def filled(word: str, values: dict[str, str]) -> str:
-    """The word with each variable `values` holds written out, or the word as it was when it holds
-    another that is only known as the command runs."""
+    """The word with each variable `values` holds written out, a pattern of file names where it was
+    one as typed. The word as it was when the shell fills nothing into it (single quotes), or when it
+    holds another variable or a substitution that is only known as the command runs."""
+    if not expands(word):
+        return word
     text = VARIABLE.sub(lambda m: values.get(m.group(1) or m.group(2), m.group(0)), word)
-    return word if "$" in text or "`" in text else text
+    return word if "$" in text or "`" in text else Word(text, globs=globs(word))

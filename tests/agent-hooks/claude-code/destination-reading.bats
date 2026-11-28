@@ -256,3 +256,11 @@ PY
     bash_call 'scp f.txt "u@$H:/tmp/x"'
     denied
 }
+
+@test "destination reading: only a word the shell fills in is filled, and it keeps the quoting it was typed with" {
+    printf 'x\n' > "${H}/repos/tool/a[1].txt"
+    bash_call "scp 'a[1].txt' u@fine.example:/tmp/x"
+    passed
+    bash_call 'D=.; scp "$D/a[1].txt" u@fine.example:/tmp/x'
+    passed
+}
