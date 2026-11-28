@@ -1625,7 +1625,14 @@ contract:
 - **No push publishes** matching content: every outgoing commit is
   deep-scanned — all blobs (full diffs), the message, and the
   author/committer name+email — and the pushed branch or tag name is
-  scanned as well (`pre-push`). A new-branch push scans exactly the
+  scanned as well (`pre-push`). On a push to
+  `git@github.com:<owner>/<repo>` or `https://github.com/<owner>/<repo>`,
+  what that account already shows of itself passes in the author/committer
+  fields alone: a name that is exactly `<owner>`, and an address that is
+  exactly `<owner>@users.noreply.github.com` or
+  `<digits>+<owner>@users.noreply.github.com` (`--dest <push URL>` of
+  `anon-audit-deep.sh`; pinned in `tests/scanners/words/scanners.bats` and
+  `tests/git-hooks/hooks.bats`). A new-branch push scans exactly the
   commits the remote does not already have, less those another remote holds
   when a push there is checked against the same areas
   (`corpus-scan.py --checked`): they have crossed every boundary this push
