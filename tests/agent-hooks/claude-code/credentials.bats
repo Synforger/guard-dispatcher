@@ -131,6 +131,21 @@ CHANGES=(
     "vercel env add SECRET production"
     "launchctl setenv ANTHROPIC_API_KEY x"
     "printf x > ~/.claude-work/.credentials.json"
+    # A heredoc another than a shell by name runs as shell.
+    $'source /dev/stdin <<\'EOF\'\ngh auth login\nEOF'
+    $'. /dev/stdin <<\'EOF\'\ngh auth login\nEOF'
+    $'command source /dev/fd/0 <<EOF\ngh auth login\nEOF'
+    $'eval "$(cat <<\'EOF\'\necho "it\'s (a)"\ngh auth login\nEOF\n)"'
+    $'source <(cat <<\'EOF\'\ngh auth login\nEOF\n)'
+    $'bash -x -c "$(/bin/cat <<\'EOF\'\ngh auth login\nEOF\n)"'
+    $'xargs -I{} sh -c \'{}\' <<\'EOF\'\ngh auth login\nEOF'
+    $'crontab - <<\'EOF\'\n* * * * * gh auth login\nEOF'
+    $'sudo crontab -u me <<\'EOF\'\nPATH=/bin\n*/5 1-5 1,15 jan mon-fri gh auth login\n@reboot true\nEOF'
+    $'crontab <<\'EOF\'\n@reboot gh auth login\nEOF'
+    $'at now <<\'EOF\'\ngh auth login\nEOF'
+    $'cat > f <<\'A\'\nit\'s (data\nA\nbatch <<\'EOF\'\ngh auth login\nEOF'
+    $'docker exec -i box sh <<\'EOF\'\ngh auth login\nEOF'
+    $'kubectl -n ns exec -i p -- bash -s <<\'EOF\'\ngh auth login\nEOF'
 )
 
 # Each line: a command that only looks, beside the ones above.
@@ -175,6 +190,16 @@ LOOKS=(
     "kubectl get pods"
     "op item get github"
     "pass show github"
+    # A heredoc written as data, and the readers of the same programs.
+    $'cat > f <<\'EOF\'\ngh auth login\nEOF'
+    $'git commit -F - <<\'EOF\'\ndocs: how to sign in\n\ngh auth login\nEOF'
+    $'git commit -m "$(cat <<\'EOF\'\ngh auth login\nEOF\n)"'
+    $'bash run.sh "$(cat <<\'EOF\'\ngh auth login\nEOF\n)"'
+    $'docker exec -i box cat <<\'EOF\'\ngh auth login\nEOF'
+    $'grep xargs <<\'EOF\'\ngh auth login\nEOF'
+    "source ./env.sh"
+    "at -l"
+    "crontab -l"
     "echo login"
     "grep -rn 'gh auth login' docs"
     "cargo build"
