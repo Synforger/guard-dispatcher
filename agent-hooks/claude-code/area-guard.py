@@ -116,6 +116,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "git-hooks" / "_int
 import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
+import credentials  # noqa: E402
 import commit_options  # noqa: E402
 import commit_scope  # noqa: E402
 import word_table  # noqa: E402
@@ -2887,6 +2888,52 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
     return None
 
 
+def credential_change(command: str, cwd: str, depth: int = 0) -> str | None:
+    """What a Bash command changes of how the operator signs in (credentials.change: a password,
+    a key, a token, a login), or None. Every simple command is read past what runs it, inside
+    command substitutions, `-c` strings, `eval` and `trap`; a shell script it runs from a file and
+    the command lines Python code runs are held to the same lines, as `bypass` holds them, and so are
+    the command lines a command hands on as text (`su -c`, `ssh <host> …`, `tmux send-keys`, `expect`,
+    `do shell script`: credentials.handed_lines). A file it writes, takes away, moves away or opens up
+    that keeps a password, a key or a token changes one too, and so does a folder that holds one."""
+    for program, code, here in ran_scripts(command, cwd) if depth < NESTED else []:
+        lines = "\n".join(line for line in code.splitlines() if not line.lstrip().startswith("#"))
+        if SHELL_CODE.fullmatch(program) and (reason := credential_change(lines, here, depth + 1)):
+            return reason
+    for program, code, here in handed_code(command, cwd) if depth < NESTED else []:
+        if script_files.kind_of(program) == "python":
+            for line in code_writes.python.commands_run(code):
+                if reason := credential_change(line, here, depth + 1):
+                    return f"{reason}, in a command the Python code runs"
+    try:
+        commands = list(simple_commands(in_run_order(shell_heredocs_as_code(command))))
+    except ValueError:
+        commands = []
+    for words, _, _ in commands:
+        rest, lines, nested = program_words(words)
+        for found in (credentials.change(rest), *(credentials.change(program_words(inner)[0]) for inner in nested)):
+            if found:
+                return found
+        ran = credentials.past_runners(rest)
+        tool = os.path.basename(ran[0]) if ran else ""
+        if SHELL_CODE.fullmatch(tool):
+            flagged = [i for i, w in enumerate(ran[1:], 1) if re.fullmatch(r"-[A-Za-z]*c", w)]
+            lines = [*lines, *(ran[flagged[0] + 1:flagged[0] + 2] if flagged else [])]
+        lines = [*lines, *credentials.handed_lines(ran)]
+        for line in lines if depth < NESTED else []:
+            if reason := credential_change(line, cwd, depth + 1):
+                return reason
+        home = real(str(Path.home()))
+        for word in credentials.changed_paths(ran):
+            if credentials.holds_credentials(real(os.path.expanduser(word), cwd), home):
+                return f"{tool} {word} takes away, moves or opens up what keeps a password, a key or a token"
+    home = real(str(Path.home()))
+    for target in write_targets(command, cwd):
+        if credentials.credential_file(real(target), home):
+            return f"writes {target}, which keeps a password, a key or a token"
+    return None
+
+
 def forced_push_needs_order(url: str) -> bool:
     """Whether the repository a push goes to is one whose forced pushes wait for the operator
     (`repo:` line ending `order`, corpus-scan.py --force-order). A scan that cannot answer holds
@@ -3187,6 +3234,16 @@ def main() -> int:
                  f"(code written into a command counts as writing every path it names)"
                  + (f": {why}" if why else ""))
             return 0
+
+    # A password, a key, a token or a login is the operator's to change (after the settings and the
+    # transcripts, whose own reasons come first): an agent's call that changes
+    # one passes on the operator's yes to that very call, as a change of the guards does.
+    changed = credential_change(args.get("command", ""), cwd) if tool == "Bash" else \
+        f"writes {written}, which keeps a password, a key or a token" \
+        if tool in WRITES and credentials.credential_file(Path(written), real(str(Path.home()))) else None
+    if changed and (why := approval(tool, shown, event, [real(cwd)], areas)):
+        deny(f"area-guard: an agent does not change how the operator signs in ({changed}): {why}")
+        return 0
 
     if areas and (why := area_words_refusal(tool, args, cwd, areas)):
         deny(why)
