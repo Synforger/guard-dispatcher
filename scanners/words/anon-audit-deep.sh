@@ -35,8 +35,8 @@
 #   bash scanners/words/anon-audit-deep.sh
 #   bash scanners/words/anon-audit-deep.sh --range origin/main..HEAD
 #   bash scanners/words/anon-audit-deep.sh --range origin/main..HEAD --dest <push URL>
-#                                          (source 6: a name that is exactly the handle of the GitHub
-#                                           account the URL sends to passes; _internal/owner_names.py)
+#                                          (source 6: the handle and the noreply address of the GitHub
+#                                           account the URL sends to pass; _internal/owner_identity.py)
 #   bash scanners/words/anon-audit-deep.sh --record-known FILE   (= 今の検出を既知として記録)
 #   bash scanners/words/anon-audit-deep.sh --record-known FILE --as-of 2026-10-19T15:00:00Z
 #                                                                  (= その時刻より前に出た分を既知として記録)
@@ -424,9 +424,9 @@ printf '\n=== source 6/11: author + committer email / name ===\n' >&2
 if [ -n "${RANGE}" ]; then
     if ! sent="$("${DEST_KNOWN[@]}" authors "${GUARD_DEST_KNOWN:-}" "${RANGE_REVS[@]}")"; then
         hits="$(dest_known_failed authors)"
-    elif ! judged="$(printf '%s\n' "${sent}" | python3 "${SCRIPT_DIR}/_internal/owner_names.py" "${DEST_URL}")"; then
+    elif ! judged="$(printf '%s\n' "${sent}" | python3 "${SCRIPT_DIR}/_internal/owner_identity.py" "${DEST_URL}")"; then
         # an empty output of a script that died is not a clean source
-        hits="owner_names.py failed: nothing was judged"
+        hits="owner_identity.py failed: nothing was judged"
     else
         hits=$(printf '%s\n' "${judged}" | scan_perl)
     fi

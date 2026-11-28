@@ -587,7 +587,7 @@ leak_in_history() {
     [ "$status" -eq 2 ]
 }
 
-# --- anon-audit-deep.sh: the destination account's own handle -------------------
+# --- anon-audit-deep.sh: the destination account's own identity -----------------
 
 # A made-up account whose handle the fixture word list flags.
 HANDLE="${SENTINEL}"
@@ -636,8 +636,36 @@ commit_as() {
     done
 }
 
-@test "deep audit: the handle in an address stops even on the way to its own repository" {
-    commit_as "${HANDLE}" "${HANDLE}" "${HANDLE}@users.noreply.github.com"
+@test "deep audit: the account's noreply address passes to its own repository, and nowhere else" {
+    local address
+    for address in "${HANDLE}@users.noreply.github.com" "12345+${HANDLE}@users.noreply.github.com"; do
+        commit_as "${HANDLE}" "${HANDLE}" "${address}"
+        audit --range "${base}..HEAD" --dest "git@github.com:${HANDLE}/notes.git"
+        [ "$status" -eq 0 ]
+        audit --range "${base}..HEAD" --dest "git@github.com:someone-else/notes.git"
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"author/committer: 1 hit(s)"* ]]
+    done
+}
+
+@test "deep audit: any other address that holds the handle stops on the way to its own repository" {
+    local address
+    for address in "${HANDLE}@example.com" "12345+${HANDLE}@users.noreply.github.com.example.com" \
+        "x${HANDLE}@users.noreply.github.com" "x+${HANDLE}@users.noreply.github.com" \
+        "${HANDLE}+x@users.noreply.github.com"; do
+        commit_as "Fixture" "Fixture" "${address}"
+        audit --range "${base}..HEAD" --dest "git@github.com:${HANDLE}/notes.git"
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"author/committer: 1 hit(s)"* ]]
+    done
+}
+
+@test "deep audit: each address is judged on its own beside the account's noreply address" {
+    mk_repo synforger
+    base="$(git rev-parse HEAD)"
+    echo "clean" > clean.txt && git add clean.txt
+    GIT_AUTHOR_EMAIL="${HANDLE}@users.noreply.github.com" GIT_COMMITTER_EMAIL="${HANDLE}@example.com" \
+        commit_bypassing_hooks "feat: clean"
     audit --range "${base}..HEAD" --dest "git@github.com:${HANDLE}/notes.git"
     [ "$status" -eq 1 ]
     [[ "$output" == *"author/committer: 1 hit(s)"* ]]
