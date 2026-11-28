@@ -1849,6 +1849,119 @@ area_words() {
     passed
 }
 
+@test "area-guard: a folder the line goes to is put where it writes, as pwd writes it" {
+    area_words
+    mkdir -p "${H}/tmp/agents-handlename"
+    local command
+    for command in "cd ${H}/tmp/agents-handlename && pwd > ${COMPANY_REPO}/where.txt" \
+                   "cd ${H}/tmp/agents-handlename && env > ${COMPANY_REPO}/where.txt"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    bash_in "${H}" "cd ${H}/tmp && pwd > ${COMPANY_REPO}/where.txt"
+    passed
+}
+
+@test "area-guard: the commands after the last write into the area, a copy's folders and the files a program writes the content of are not read for its words" {
+    area_words
+    mkdir -p "${H}/tmp/agents-handlename"
+    printf 'clean\n' > "${H}/tmp/agents-handlename/x.md"
+    local command
+    for command in "cd ${COMPANY_REPO} && sed -n 1,10p ${H}/tmp/agents-handlename/x.md > memo.md" \
+                   "cat ${H}/tmp/agents-handlename/x.md | sed s/a/b/ > ${COMPANY_REPO}/m.toml" \
+                   "head -n 3 ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/m.toml" \
+                   "sed -i '' 's/internal/inside/' ${COMPANY_REPO}/notes.md && handlename-build --out ${H}/tmp/agents-handlename/y.pptx" \
+                   "printf 'clean\n' > ${COMPANY_REPO}/m.toml; echo handlename" \
+                   "cp ${H}/tmp/agents-handlename/y.toml ${COMPANY_REPO}/m.toml" \
+                   $'python3 - <<\'PY\'\nopen("'"${COMPANY_REPO}"$'/m.toml", "w").write("clean")\nPY\nhandlename-build'; do
+        bash_in "${H}" "${command}"
+        [ "${status}" -eq 0 ] && [[ "${output}" != *"word list"* && "${output}" != *"readers must not"* ]] \
+            || { echo "held: ${command} -> ${output}"; return 1; }
+    done
+}
+
+@test "area-guard: a word the writing command itself puts into the area is refused, a path-like one too" {
+    area_words
+    mkdir -p "${H}/tmp/agents-handlename"
+    printf 'clean\n' > "${H}/tmp/agents-handlename/x.md"
+    printf 'clean\n' > "${H}/tmp/agents-handlename/y.md"
+    local command
+    for command in "head -n 3 ${H}/tmp/agents-handlename/x.md ${H}/tmp/agents-handlename/y.md > ${COMPANY_REPO}/f" \
+                   "tail -v ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/f" \
+                   "wc -l ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/f" \
+                   "handlename-build --out ${H}/tmp/y.pptx && sed -i '' 's/internal/handlename/' ${COMPANY_REPO}/notes.md" \
+                   "cd ${COMPANY_REPO} && printf 'handlename\n' > m.toml" \
+                   $'echo ok; python3 - <<\'PY\'\nopen("'"${COMPANY_REPO}"$'/m.toml", "w").write("handlename")\nPY' \
+                   "echo /handlename > ${COMPANY_REPO}/f" \
+                   "echo ~/handlename > ${COMPANY_REPO}/f" \
+                   "printf '%s' ./handlename > ${COMPANY_REPO}/f" \
+                   "echo --x=/handlename/y > ${COMPANY_REPO}/f"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: the file a program reads is read for the area's words where its name can reach the area" {
+    area_words
+    mkdir -p "${H}/tmp/agents-handlename"
+    printf 'clean\n' > "${H}/tmp/agents-handlename/x.md"
+    local command
+    for command in "cat ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/f 2>&1" \
+                   "cat ${H}/tmp/agents-handlename/x.md 2> ${COMPANY_REPO}/err" \
+                   "sed -n F ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/f"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: a word that reaches the area through an earlier command of the line is refused" {
+    area_words
+    local command
+    for command in "X=handlename; echo \$X > ${COMPANY_REPO}/f" \
+                   "export X=handlename && echo \"\$X\" >> ${COMPANY_REPO}/f" \
+                   "printf handlename | tee ${COMPANY_REPO}/f" \
+                   "echo handlename | cat > ${COMPANY_REPO}/f" \
+                   "echo handlename > ${H}/tmp/t; mv ${H}/tmp/t ${COMPANY_REPO}/f" \
+                   "echo handlename > ${H}/tmp/t && cp ${H}/tmp/t ${COMPANY_REPO}/" \
+                   $'cat > '"${H}"$'/tmp/t <<EOF\nhandlename\nEOF\nmv '"${H}/tmp/t ${COMPANY_REPO}"$'/f' \
+                   "cp ${H}/tmp/handlename.txt ${COMPANY_REPO}/"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: a word fed to a loop that writes into the area, or written after a command that acts later, is refused" {
+    area_words
+    local command
+    for command in "while read l; do echo \"\$l\" >> ${COMPANY_REPO}/f; done <<< handlename" \
+                   $'while read l; do echo "$l" >> '"${COMPANY_REPO}"$'/f; done <<EOF\nhandlename\nEOF' \
+                   "tail -f ${H}/tmp/t >> ${COMPANY_REPO}/f & echo handlename >> ${H}/tmp/t" \
+                   "( cat ${H}/tmp/t > ${COMPANY_REPO}/f ) & echo handlename > ${H}/tmp/t" \
+                   "(cat ${H}/tmp/t > ${COMPANY_REPO}/f)& echo handlename > ${H}/tmp/t" \
+                   "exec 3>> ${COMPANY_REPO}/f; echo handlename >&3" \
+                   "f() { cp ${H}/tmp/t ${COMPANY_REPO}/f; }; echo handlename > ${H}/tmp/t; f" \
+                   "trap 'cp ${H}/tmp/t ${COMPANY_REPO}/f' EXIT; echo handlename > ${H}/tmp/t"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: a word written after code the line hands on starts something that acts later is refused" {
+    area_words
+    mkdir -p "${H}/tmp"
+    printf 'tail -f %s/tmp/t >> %s/f &\n' "${H}" "${COMPANY_REPO}" > "${H}/tmp/bg.sh"
+    local command
+    for command in "bash -c 'tail -f ${H}/tmp/t >> ${COMPANY_REPO}/f &'; echo handlename > ${H}/tmp/t" \
+                   "eval 'tail -f ${H}/tmp/t >> ${COMPANY_REPO}/f &'; echo handlename > ${H}/tmp/t" \
+                   "eval 'exec 3>> ${COMPANY_REPO}/f'; echo handlename >&3" \
+                   "bash ${H}/tmp/bg.sh; echo handlename > ${H}/tmp/t" \
+                   $'bash <<\'SH\'\ntail -f '"${H}/tmp/t >> ${COMPANY_REPO}"$'/f &\nSH\necho handlename > '"${H}"'/tmp/t' \
+                   "python3 -c \"import subprocess; subprocess.Popen(['cp', '${H}/tmp/t', '${COMPANY_REPO}/f'])\"; echo handlename > ${H}/tmp/t"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
 @test "area-guard: a session that read inside an area runs Python that only looks a tool up outside, not one that writes there" {
     read_case
     mkdir -p "${PERSONAL}/bin"
