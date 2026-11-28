@@ -1636,6 +1636,11 @@ contract:
   annotations, author/committer fields, GitHub PR + Issue title/body +
   comment threads, repo description/topics/homepage, releases, and
   Actions run titles.
+  A push range given with `--dest <push URL>` lets one thing pass in the
+  author/committer source: a name that is exactly the owner of a
+  `git@github.com:<owner>/<repo>` or `https://github.com/<owner>/<repo>`
+  URL. Addresses, every other destination and every other source are judged
+  as before. Pinned in `tests/scanners/words/scanners.bats`.
   The weekly audit runs it scoped to the week's activity.
   Findings that will not be rewritten (history, PR text) can be accepted as
   known: `scripts/weekly-audit.sh --accept <repo>...` records each

@@ -34,6 +34,9 @@
 # 使い方:
 #   bash scanners/words/anon-audit-deep.sh
 #   bash scanners/words/anon-audit-deep.sh --range origin/main..HEAD
+#   bash scanners/words/anon-audit-deep.sh --range origin/main..HEAD --dest <push URL>
+#                                          (source 6: a name that is exactly the handle of the GitHub
+#                                           account the URL sends to passes; _internal/owner_names.py)
 #   bash scanners/words/anon-audit-deep.sh --record-known FILE   (= 今の検出を既知として記録)
 #   bash scanners/words/anon-audit-deep.sh --record-known FILE --as-of 2026-10-19T15:00:00Z
 #                                                                  (= その時刻より前に出た分を既知として記録)
@@ -51,6 +54,7 @@
 set -uo pipefail
 
 RANGE=""
+DEST_URL=""
 GITHUB_SINCE=""
 KNOWN=""
 RECORD=""
@@ -85,6 +89,10 @@ while [ $# -gt 0 ]; do
         --range=*)
             RANGE="${1#--range=}"
             ;;
+        --dest)
+            shift
+            DEST_URL="${1:-}"
+            ;;
         --github-since)
             shift
             GITHUB_SINCE="${1:-}"
@@ -93,7 +101,7 @@ while [ $# -gt 0 ]; do
             GITHUB_SINCE="${1#--github-since=}"
             ;;
         -h|--help)
-            sed -n '1,50p' "$0"
+            sed -n '1,53p' "$0"
             exit 0
             ;;
         *)
@@ -115,6 +123,10 @@ if [ -n "${AS_OF}" ] && { [ -z "${RECORD}" ] || ! [[ "${AS_OF}" =~ ^[0-9]{4}-[0-
 fi
 if [ -n "${RANGE}" ] && { [ -n "${KNOWN}" ] || [ -n "${RECORD}" ] || [ -n "${NEXT}" ]; }; then
     echo "error: --known / --record-known / --next-known audit the whole repository; --range is a push range" >&2
+    exit 2
+fi
+if [ -n "${DEST_URL}" ] && [ -z "${RANGE}" ]; then
+    echo "error: --dest goes with --range (it names where the range is pushed)" >&2
     exit 2
 fi
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -410,10 +422,13 @@ fi
 # --- source 6: author + committer ---
 printf '\n=== source 6/11: author + committer email / name ===\n' >&2
 if [ -n "${RANGE}" ]; then
-    if sent="$("${DEST_KNOWN[@]}" authors "${GUARD_DEST_KNOWN:-}" "${RANGE_REVS[@]}")"; then
-        hits=$(printf '%s\n' "${sent}" | scan_perl)
-    else
+    if ! sent="$("${DEST_KNOWN[@]}" authors "${GUARD_DEST_KNOWN:-}" "${RANGE_REVS[@]}")"; then
         hits="$(dest_known_failed authors)"
+    elif ! judged="$(printf '%s\n' "${sent}" | python3 "${SCRIPT_DIR}/_internal/owner_names.py" "${DEST_URL}")"; then
+        # an empty output of a script that died is not a clean source
+        hits="owner_names.py failed: nothing was judged"
+    else
+        hits=$(printf '%s\n' "${judged}" | scan_perl)
     fi
 else
     hits=$(git log "${HISTORY_REVS[@]}" --pretty='format:%an <%ae> / %cn <%ce>' 2>/dev/null | scan_perl)
