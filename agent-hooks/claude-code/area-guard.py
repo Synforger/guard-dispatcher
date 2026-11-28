@@ -116,6 +116,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "git-hooks" / "_int
 import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
+import credentials  # noqa: E402
 import commit_options  # noqa: E402
 import commit_scope  # noqa: E402
 import force_push  # noqa: E402
@@ -2883,6 +2884,44 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
     return None
 
 
+def credential_change(command: str, cwd: str, depth: int = 0) -> str | None:
+    """What a Bash command changes of how the operator signs in (credentials.change: a password,
+    a key, a token, a login), or None. Every simple command is read past what runs it, inside
+    command substitutions, `-c` strings, `eval` and `trap`; a shell script it runs from a file and
+    the command lines Python code runs are held to the same lines, as `bypass` holds them. A file
+    it writes that keeps a password, a key or a token changes one too."""
+    for program, code, here in ran_scripts(command, cwd) if depth < NESTED else []:
+        lines = "\n".join(line for line in code.splitlines() if not line.lstrip().startswith("#"))
+        if SHELL_CODE.fullmatch(program) and (reason := credential_change(lines, here, depth + 1)):
+            return reason
+    for program, code, here in handed_code(command, cwd) if depth < NESTED else []:
+        if script_files.kind_of(program) == "python":
+            for line in code_writes.python.commands_run(code):
+                if reason := credential_change(line, here, depth + 1):
+                    return f"{reason}, in a command the Python code runs"
+    try:
+        commands = list(simple_commands(in_run_order(shell_heredocs_as_code(command))))
+    except ValueError:
+        commands = []
+    for words, _, _ in commands:
+        rest, lines, nested = program_words(words)
+        for found in (credentials.change(rest), *(credentials.change(program_words(inner)[0]) for inner in nested)):
+            if found:
+                return found
+        tool = os.path.basename(rest[0]) if rest else ""
+        if SHELL_CODE.fullmatch(tool):
+            flagged = [i for i, w in enumerate(rest[1:], 1) if re.fullmatch(r"-[A-Za-z]*c", w)]
+            lines = [*lines, *(rest[flagged[0] + 1:flagged[0] + 2] if flagged else [])]
+        for line in lines if depth < NESTED else []:
+            if reason := credential_change(line, cwd, depth + 1):
+                return reason
+    home = real(str(Path.home()))
+    for target in write_targets(command, cwd):
+        if credentials.credential_file(real(target), home):
+            return f"writes {target}, which keeps a password, a key or a token"
+    return None
+
+
 def forced_push_needs_order(url: str) -> bool:
     """Whether the repository a push goes to is one whose forced pushes wait for the operator
     (`repo:` line ending `order`, corpus-scan.py --force-order). A scan that cannot answer holds
@@ -3104,6 +3143,14 @@ def main() -> int:
         deny("area-guard: an agent does not register a child: the client does, once it has opened the child's tab")
         return 0
     written = str(real(args.get("file_path") or args.get("notebook_path") or "", cwd)) if tool in WRITES else ""
+    # A password, a key, a token or a login is the operator's to change: an agent's call that changes
+    # one passes on the operator's yes to that very call, as a change of the guards does.
+    changed = credential_change(args.get("command", ""), cwd) if tool == "Bash" else \
+        f"writes {written}, which keeps a password, a key or a token" \
+        if tool in WRITES and credentials.credential_file(Path(written), real(str(Path.home()))) else None
+    if changed and (why := approval(tool, shown, event, [real(cwd)], areas)):
+        deny(f"area-guard: an agent does not change how the operator signs in ({changed}): {why}")
+        return 0
     if written.endswith("/agent-off") and (why := approval(tool, args, event, [Path(written)], areas)):
         deny(f"area-guard: an agent does not switch the entry guard off: {why}")
         return 0
