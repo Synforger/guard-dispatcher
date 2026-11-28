@@ -92,6 +92,8 @@ OUTSIDE = "outside"
 BLOCK = "block"
 UNDECLARED = "undeclared"
 ORDER = "order"
+#: The line a word-list refusal shows under its hits: the command that prints which words may go where.
+WORDS_HINT = "which words may go where: python3 ~/.git-hooks/agent-hooks/claude-code/area-guard.py words"
 # How many word-list hits a refusal shows; the rest are counted.
 SHOWN_HITS = 5
 # The seconds the private-document scan is given: corpus-scan.py waits for a walk only in what is
@@ -292,6 +294,7 @@ def judge(name: str, payload: Path, reading: bool = False, handles: Path | None 
             # agent that wrote it rewrites that word, not a guess at it.
             for line in word_hits(r.stdout, payload, handles):
                 print(f"    {line}", file=sys.stderr)
+            print(f"    {WORDS_HINT}", file=sys.stderr)
             return 1, f"not sent to {name} ({place}): it carries a flagged identifier (word list)"
     if (held and not reading) or name.lower().startswith(FILE):
         # 人に届く前に operator が中身を見る (= 指示の枠に出した呼び、 operator が送る下書き、 operator が

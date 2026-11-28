@@ -243,6 +243,7 @@ fi
 if [ "${found}" -ne 0 ]; then
     echo ""
     echo "Personal identifiers detected. Remove or move to gitignored config."
+    echo "Which words may go where: python3 ~/.git-hooks/agent-hooks/claude-code/area-guard.py words"
     exit 1
 fi
 
