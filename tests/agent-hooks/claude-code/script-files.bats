@@ -420,6 +420,40 @@ functools.reduce(open, [sys.argv[1], "w"])'
     done
 }
 
+@test "script files: an exception class a module names is a value: a script that only reads the transcripts passes" {
+    keep_files
+    script count.py 'import json, subprocess
+from pathlib import Path
+RECORDS = Path.home() / ".claude" / "projects"
+for path in RECORDS.glob("*/*.jsonl"):
+    with path.open(encoding="utf-8") as lines:
+        for line in lines:
+            try:
+                json.loads(line)
+            except json.JSONDecodeError as error:
+                if isinstance(error, (json.JSONDecodeError, subprocess.CalledProcessError)):
+                    continue'
+    bash_call "python3 count.py 14 w"
+    passed || { echo "${output}"; return 1; }
+    script fill.py 'import json
+from pathlib import Path
+RECORDS = Path.home() / ".claude" / "projects"
+try:
+    (RECORDS / "-w" / "abc.jsonl").write_text("{}")
+except json.JSONDecodeError:
+    pass'
+    bash_call "python3 fill.py"
+    denied
+    says "${TRANSCRIPT_REASON}"
+    script handed.py 'import os, functools
+from pathlib import Path
+RECORDS = Path.home() / ".claude" / "projects"
+functools.reduce(lambda run, line: run(line), ["true"], os.system)
+print(RECORDS)'
+    bash_call "python3 handed.py"
+    denied
+}
+
 @test "script files: a relative argument names the file where the command stands" {
     keep_files
     script put.py 'import sys
