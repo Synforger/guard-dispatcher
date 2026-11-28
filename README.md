@@ -1176,6 +1176,12 @@ session read (`scanners/destinations/send-scan.py`, which any other entry point 
   and one inside an area gets that area's own word list when the machine keeps
   one beside the master (`company.txt` next to `master.txt`: the company takes
   real names but not the operator's handles).
+- **Which words may go where**: `area-guard.py words` prints, from the word lists and
+  `destinations.txt`, each list with the destinations it is held to, and each word with the lists
+  that stop it and the places it passes. A send into an area takes that area's own list; a write
+  into its folders takes the lists of the areas around it too. A session is shown only the areas
+  it may read (`GUARD_WORK_FOLDER`): the lists, destination lines and names of the others are left
+  out. A word-list refusal (a send, a write into an area, a commit's scan) ends with the command.
 - **Where a destination sits** is declared per machine in
   `$GUARD_CONFIG_DIR/destinations.txt`, first match winning:
 
@@ -1827,6 +1833,11 @@ The tests run in parallel, one per core (`--jobs` needs GNU parallel);
 Every test builds a throwaway git repo and a sentinel-only word list
 under the test tmpdir — no operator data is read and nothing outside
 the tmpdir is touched.
+
+`tests/contracts.txt` says in one row what each test file keeps (the code it
+guards and the promise); `tests/contracts.bats` fails when a test file has no
+row or a row names what is gone. A new test file comes with its row. The
+suite ends with its ten slowest tests.
 
 ## License
 

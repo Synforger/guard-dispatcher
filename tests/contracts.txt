@@ -1,0 +1,73 @@
+# The promises the tests keep: one row is one thing the guard promises, and the test file that guards it.
+#
+# Format = <what keeps the promise> | <the test file> | <the promise, in one sentence>   (paths from the repository root)
+# Checked by tests/contracts.bats (run with the suite, so by CI too): every test file under tests/ is in a row,
+# and every row names a target and a test file that exist.
+#
+# A new test file comes with its row. A promise is said in what can be seen from outside: what is refused, what
+# passes, what a command prints or writes. The guard is a guard: a test is removed only when no red it has seen
+# is on record (the history of the test and of the code it guards), and a test that stopped a real defect keeps
+# its row.
+#
+# Slow tests: the suite prints its ten slowest tests at the end (tests/setup_suite.bash). In Actions
+# (run 46166091177, the whole suite 322 s on 4 cores) every slow one is a table of forms, each form a call of the hook:
+#   6.0 s  area-guard.bats    an area path that stands by itself in code, or in what a command is fed, still marks
+#   6.0 s  outgoing.bats      a send in arithmetic, a default, a function, a coprocess, a trap or a local ssh command
+#   5.6 s  area-guard.bats    find, tar, unzip, -t and rsync on the transcripts' and the settings' folders
+#   5.5 s  force-push.bats    a push that forces nothing goes as before
+#   5.2 s  area-guard.bats    a path Python code only reads or turns into text is not a place it writes
+#   5.1 s  ticket-places.bats peers.py is asked about the calling session only where it prints what that session read
+#   4.9 s  outgoing.bats      a send inside a loop, a substitution, after a keyword or behind a program that runs it
+#   4.8 s  area-guard.bats    inline code naming a relative path writes it where the command runs
+#   4.7 s  script-files.bats  a script that writes where its argument says, naming the settings or a transcript
+#   4.6 s  scanners.bats      a weekly-audit finding is reported until it is accepted
+# Each form is a way round the guard someone found; they are kept whole, not cut to save the time.
+
+# --- shared readers ---
+_common/guard_places.py                     | tests/_common/places.bats                                   | The guard finds its settings, marks and caches in the platform's folders, or in the standard places when there is no platform.
+_common/shell_commands.py                   | tests/_common/shell_commands.bats                           | A command line is read as the shell runs it: each simple command, past what runs it, with the quotes the shell takes away.
+
+# --- the agent's entry guard ---
+agent-hooks/claude-code/area-guard.py       | tests/agent-hooks/claude-code/area-guard.bats               | A session that read inside an area writes, commits, pushes and sends only where that area may go, and no session switches the guards off or around.
+agent-hooks/claude-code/order.py            | tests/agent-hooks/claude-code/approval.bats                 | A change the guard keeps for the operator passes once, on the operator's yes to the very call shown, from a session that may read where it acts.
+agent-hooks/claude-code/area_roles.py       | tests/agent-hooks/claude-code/area-roles.bats               | A refused read names the role of the area that may read it and how to ask it, and a client is shown only the roles of the areas it reads.
+agent-hooks/claude-code/area-guard.py       | tests/agent-hooks/claude-code/area-settings.bats            | An area's own settings work inside that area only; a line reaching outside is not read and is named.
+agent-hooks/claude-code/children            | tests/agent-hooks/claude-code/children.bats                 | A child a session hands work to writes only where its parent said, and is held to its parent's marks.
+_common/shell_commands.py                   | tests/agent-hooks/claude-code/command-reading.bats          | A command line inside a command line is judged where it runs, as the shell reads the quotes around it.
+agent-hooks/claude-code/push_options.py     | tests/agent-hooks/claude-code/force-push.bats               | A forced push to a repository whose line ends with `order` waits for the operator's yes; every other push goes as before.
+agent-hooks/claude-code/handed.py           | tests/agent-hooks/claude-code/handed.bats                   | A file left for the operator to hand to people takes its destination's word list, before a file tool writes it and after any other call.
+agent-hooks/claude-code/order.py            | tests/agent-hooks/claude-code/hold.bats                     | A message relayed from another machine holds the session to reading until the operator types a message of their own.
+agent-hooks/claude-code/area-guard.py       | tests/agent-hooks/claude-code/marks-carry.bats              | A conversation written out under a new session id is held to the areas the earlier session read, from its first call.
+agent-hooks/claude-code/monitor_calls.py    | tests/agent-hooks/claude-code/monitor-calls.bats            | A watch the Monitor tool starts is judged as the command it runs, or the socket it listens to.
+agent-hooks/claude-code/order.py            | tests/agent-hooks/claude-code/openings.bats                 | The openings of relayed messages may sit in openings.txt and the files it includes, and only take words out of what counts as the operator's.
+agent-hooks/claude-code/orders_edit.py      | tests/agent-hooks/claude-code/orders-edit.bats              | orders.txt is the operator's, but for a call from a session that read inside no area which only adds openings of relayed messages.
+agent-hooks/claude-code/outgoing.py         | tests/agent-hooks/claude-code/outgoing.bats                 | What a tool or a network command sends out is judged like a push: its payload against the areas its destination lies outside of.
+agent-hooks/claude-code/peers.py            | tests/agent-hooks/claude-code/peers.bats                    | A message to another session is judged by where that session has read; a local endpoint or a tmux session is reached only through a line that names it.
+agent-hooks/claude-code/area-guard.py       | tests/agent-hooks/claude-code/reach.bats                    | `area-guard.py reach` prints the areas a session of a work folder may read inside, one per line.
+agent-hooks/claude-code/script_files.py     | tests/agent-hooks/claude-code/script-files.bats             | A file of code a command hands to a program is read as that code written into the command, by every reader.
+agent-hooks/claude-code/area-guard.py       | tests/agent-hooks/claude-code/send-places.bats              | A send from a folder spelled with a variable is judged where the variable points when the command line says, and refused with a reason when only the run knows.
+agent-hooks/claude-code/service_reads       | tests/agent-hooks/claude-code/service-reads.bats            | A reading call to a service an area places inside it is a read inside that area: refused for a session that may not read there, a mark for one that may.
+agent-hooks/claude-code/ticket_places.py    | tests/agent-hooks/claude-code/ticket-places.bats            | The client alone writes its tickets folders: an agent's writes there are refused, its reads pass.
+agent-hooks/claude-code/apple_events.py     | tests/agent-hooks/claude-code/apple-events.bats             | A script for osascript is judged as a send to each application it names.
+agent-hooks/claude-code/word_table.py       | tests/agent-hooks/claude-code/word-table.bats               | `area-guard.py words` prints which words may go where, naming only the areas the session may read, and a word-list refusal names it.
+
+# --- the gh command guard ---
+gh-shim/gh-guard.sh                         | tests/gh-shim/gh-guard.bats                                 | A gh call that carries text (arguments, a body file, stdin, an api payload, a gist) is scanned before it runs and refused when flagged; a call that only reads passes.
+
+# --- the git hooks ---
+git-hooks/_internal/dispatcher-common.sh    | tests/git-hooks/_internal/dispatcher-common.bats            | The dispatchers' shared helpers tell a repository's kind from its remote, which branches are protected, and which identities a commit may carry.
+git-hooks/_internal/staged_places.py        | tests/git-hooks/_internal/staged-places.bats                | A commit an agent's session makes takes no path another tab left in its own work folder.
+git-hooks                                   | tests/git-hooks/hooks.bats                                  | pre-commit, commit-msg and pre-push stop a commit or a push whose content, message, identity or branch name carries a flagged word or a private document's text.
+
+# --- the scanners ---
+scanners/corpus/corpus-scan.py              | tests/scanners/corpus/_internal/sqlite-text.bats            | Text copied out of a table of an area's SQLite database does not leave the area, whatever the database file is called.
+scanners/corpus/corpus-scan.py              | tests/scanners/corpus/corpus-scan.bats                      | Text copied out of a private document does not leave the area the document lives in.
+scanners/words                              | tests/scanners/words/scanners.bats                          | The word-list scan and the deep audit find a flagged word however it is written, in files, history and GitHub's metadata.
+
+# --- the scripts ---
+scripts/client-checks.sh                    | tests/scripts/client-checks.bats                            | Each judgement of the guard missing from the client's configuration is printed on a line of its own.
+scripts/doctor.sh                           | tests/scripts/doctor.bats                                   | `doctor.sh --machine` names every repository the guard does not check, to a session only for the areas it reads.
+scripts/install.sh                          | tests/scripts/install.bats                                  | install.sh and bootstrap-machine.sh lay the guard's links and folders on a machine, and doctor.sh finds them in place.
+
+# --- this table ---
+tests/contracts.txt                         | tests/contracts.bats                                        | Every test file has a row here, and every row names a target and a test file that exist.
