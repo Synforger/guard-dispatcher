@@ -50,6 +50,7 @@ agent-hooks/claude-code/service_reads       | tests/agent-hooks/claude-code/serv
 agent-hooks/claude-code/ticket_places.py    | tests/agent-hooks/claude-code/ticket-places.bats            | The client alone writes its tickets folders: an agent's writes there are refused, its reads pass.
 agent-hooks/claude-code/apple_events.py     | tests/agent-hooks/claude-code/apple-events.bats             | A script for osascript is judged as a send to each application it names.
 agent-hooks/claude-code/word_table.py       | tests/agent-hooks/claude-code/word-table.bats               | `area-guard.py words` prints which words may go where, naming only the areas the session may read, and a word-list refusal names it.
+agent-hooks/claude-code/written_files.py    | tests/agent-hooks/claude-code/written-files.bats            | A file a command writes or copies and then runs, and code a shell is fed on standard input, is judged as the code that runs.
 
 # --- the gh command guard ---
 gh-shim/gh-guard.sh                         | tests/gh-shim/gh-guard.bats                                 | A gh call that carries text (arguments, a body file, stdin, an api payload, a gist) is scanned before it runs and refused when flagged; a call that only reads passes.
