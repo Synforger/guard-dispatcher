@@ -716,7 +716,7 @@ def remote_paths(command: str, cwd: str, send_scan: Path) -> list[tuple[str, str
     except ValueError:
         return []
     found = []
-    values = destination_words.literal_values(command)
+    values = destination_words.known_values(command)
     for words, stdin in commands:
         tool, args = os.path.basename(words[0]), words[1:]
         if tool in ("scp", "rsync"):
@@ -766,7 +766,7 @@ def stdin_payload(stdin, cwd: str, send_scan: Path) -> tuple[str, list[tuple[Pat
 
 def copy_sends(tool: str, words: list[str], cwd: str, send_scan: Path, values: dict[str, str]) -> list[Send]:
     """scp / rsync: local sources copied to a remote destination (the last path). `values` are the
-    variables the command line set to a literal: they are written out in the paths."""
+    variables whose value the command line leaves in no doubt: they are written out in the paths."""
     options, paths = split_options(words, VALUED[tool], RSYNC_VALUED if tool == "rsync" else frozenset())
     paths = [destination_words.filled(path, values) for path in paths]
     if len(paths) < 2:
@@ -791,7 +791,7 @@ def copy_sends(tool: str, words: list[str], cwd: str, send_scan: Path, values: d
 
 def shell_sends(tool: str, words: list[str], stdin, cwd: str, send_scan: Path, values: dict[str, str]) -> list[Send]:
     """ssh host [command] / nc host port: the command's words and standard input. `values` are the
-    variables the command line set to a literal: the host is written out."""
+    variables whose value the command line leaves in no doubt: the host is written out."""
     options, positional = split_options(words, VALUED["ssh" if tool == "ssh" else "nc"])
     flags = {o for o, _ in options}
     if not positional or (tool != "ssh" and ("-l" in flags)):
@@ -1134,7 +1134,7 @@ def other_sends(command: str, cwd: str, send_scan: Path) -> list[Send]:
     except ValueError:
         return []
     out = []
-    values = destination_words.literal_values(command)
+    values = destination_words.known_values(command)
     for words, stdin in commands:
         tool = os.path.basename(words[0])
         args = words[1:]

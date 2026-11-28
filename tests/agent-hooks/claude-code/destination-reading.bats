@@ -264,3 +264,21 @@ PY
     bash_call 'D=.; scp "$D/a[1].txt" u@fine.example:/tmp/x'
     passed
 }
+
+@test "destination reading: a file named from \$HOME or \$PWD is read where it is" {
+    printf 'x\n' > "${H}/clean.txt"
+    printf '%s\n' "${SENTINEL}" > "${H}/marked.txt"
+    printf 'x\n' > "${H}/repos/tool/f.txt"
+    bash_call 'scp "$HOME/clean.txt" u@fine.example:/tmp/x'
+    passed
+    bash_call 'rsync -a "$PWD/f.txt" u@fine.example:/tmp/x'
+    passed
+    bash_call 'scp "${HOME}/marked.txt" u@fine.example:/tmp/x'
+    denied
+    [[ "${output}" == *"flagged identifier"* ]]
+    # a folder the line moved to, and a name the line sets another way, stay unknown
+    bash_call 'cd .. && scp "$PWD/f.txt" u@fine.example:/tmp/x'
+    denied
+    bash_call 'HOME=$(pwd); scp "$HOME/clean.txt" u@fine.example:/tmp/x'
+    denied
+}

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import os
 import re
 import unicodedata
 from typing import NamedTuple
@@ -209,32 +210,48 @@ def _range(body: str) -> tuple[str, ...] | None:
     return tuple(chr(code) for code in range(ord(from_letter), ord(to_letter) + 1, step))
 
 
-# --- variables a command line sets to a literal ----------------------------------------------------
+# --- the variables whose value a command line leaves in no doubt ------------------------------------
 
 VARIABLE = re.compile(r"\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)")
 # What a value may be written with to be put in a word as it stands: no space, glob, `~` or quote.
 PLAIN_VALUE = re.compile(r"[\w@%+=,./:-]+")
+CHANGES_FOLDER = re.compile(r"\b(?:cd|pushd|popd)\b")
 LITERAL_ASSIGNMENT = re.compile(
     r"(?:^|(?<=[;&|(\n]))[ \t]*(?:(?:export|local|readonly)[ \t]+)?([A-Za-z_]\w*)="
     r"('[^'\n]*'|\"[^\"$`\\\n]*\"|[^\s;&|<>()$`\"'\\]*)(?=[ \t]*(?:[;&|)\n]|$))")
 
 
-def literal_values(command: str) -> dict[str, str]:
-    """The variables a command line sets to a literal and nowhere else: each is written once as
-    `NAME=value` on a command of its own (or twice with the same value). A name that is set another
-    way too (`NAME+=`, `read NAME`, a loop, a substitution, ahead of one command) is left out, as the
-    value it has at a word cannot be told."""
+def known_values(command: str) -> dict[str, str]:
+    """The variables whose value a command line leaves in no doubt: those it sets to a literal and
+    nowhere else (each written once as `NAME=value` on a command of its own, or twice with the same
+    value), and, where it does not set them itself, HOME and PWD (`.`, unless the line changes
+    folder). A name that is set another way too (`NAME+=`, `read NAME`, a loop, a substitution,
+    ahead of one command) is left out, as the value it has at a word cannot be told."""
     found: dict[str, list[str]] = {}
     for name, written in LITERAL_ASSIGNMENT.findall(command):
         found.setdefault(name, []).append(written[1:-1] if written[:1] in "'\"" else written)
     values = {}
     for name, written in found.items():
-        sites = len(re.findall(rf"(?<![\w$.-]){name}\+?=", command))
-        rebound = re.search(rf"\b(?:read|for|select|unset|getopts|mapfile|readarray)\b[^\n;&|]*\b{name}\b|-v\s+{name}\b",
-                            command)
-        if sites == len(written) and not rebound and len(set(written)) == 1 and PLAIN_VALUE.fullmatch(written[0]):
+        if _set_at(command, name) == len(written) and not _rebound(command, name) \
+                and len(set(written)) == 1 and PLAIN_VALUE.fullmatch(written[0]):
             values[name] = written[0]
+    given = {"HOME": os.path.expanduser("~")}
+    if not CHANGES_FOLDER.search(command):
+        given["PWD"] = "."
+    values.update({name: value for name, value in given.items()
+                   if not _set_at(command, name) and not _rebound(command, name) and PLAIN_VALUE.fullmatch(value)})
     return values
+
+
+def _set_at(command: str, name: str) -> int:
+    """How many places of the line write `name=` or `name+=`."""
+    return len(re.findall(rf"(?<![\w$.-]){name}\+?=", command))
+
+
+def _rebound(command: str, name: str) -> bool:
+    """Whether the line gives `name` a value by a command that takes names (`read`, a loop, `-v`)."""
+    return bool(re.search(rf"\b(?:read|for|select|unset|getopts|mapfile|readarray)\b[^\n;&|]*\b{name}\b|-v\s+{name}\b",
+                          command))
 
 
 def filled(word: str, values: dict[str, str]) -> str:
