@@ -1734,6 +1734,10 @@ def script_argument_orders(command: str, cwd: str, transcript: str | None, marks
                 resolved, written = spelled(name, here)
                 paths.append(resolved)
                 orders.append(FolderOrder(resolved, written, RECORDS))
+            for line in code_writes.python.commands_run(code_writes.python.with_arguments(code, words)):
+                written, removed, folders = named_with_folders(line, here)
+                paths += [*written, *removed]
+                orders += folders
         elif script_arguments.writes_where_told(program, code):
             writes_all(words, here)
     return paths, orders

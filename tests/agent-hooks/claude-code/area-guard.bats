@@ -1417,6 +1417,10 @@ session_files() {
         passed || { echo "refused: ${c}"; return 1; }
     done
     for c in "python3 -c \"import subprocess; subprocess.run(['wc', '-l', '${TRANSCRIPT}'])\"" \
+             "python3 -c \"import subprocess; subprocess.run(['tee', '-a', '${TRANSCRIPT}'])\"" \
+             "python3 -c \"import subprocess; subprocess.run(['some-tool', '${g}/orders.txt'])\"" \
+             "python3 -c \"import subprocess; subprocess.run(['curl', '-o', '${g}/orders.txt', 'https://example.com'])\"" \
+             "python3 -c \"import subprocess; subprocess.run(['sh', '-c', 'echo x >> ${g}/orders.txt'])\"" \
              "python3 -c \"import gzip; print(gzip.open('${TRANSCRIPT}').read())\"" \
              "python3 -c \"import os; print(os.read(os.open('${g}/orders.txt', os.O_RDONLY), 9))\""; do
         bash_in "${H}" "${c}"
@@ -1822,6 +1826,30 @@ area_words() {
     rm "${H}/.config/anon-words/company.txt"
     call Write "$(jq -n --arg f "${COMPANY_REPO}/m.toml" '{file_path: $f, content: "handlename\n"}')"
     passed
+}
+
+@test "area-guard: a session that read inside an area runs Python that only looks a tool up outside, not one that writes there" {
+    read_case
+    mkdir -p "${PERSONAL}/bin"
+    printf '%s\n' 'import subprocess' \
+        "print(subprocess.run(['${PERSONAL}/bin/brew', '--prefix', 'llvm'], capture_output=True, text=True).stdout)" \
+        > "${H}/look.py"
+    printf '%s\n' 'import os, subprocess' \
+        "env = dict(os.environ, PATH='${PERSONAL}/bin:' + os.environ['PATH'])" \
+        "print(subprocess.run(['clang-format', '--version'], env=env, capture_output=True, text=True).returncode)" \
+        > "${H}/path.py"
+    local script
+    for script in look path; do
+        bash_in "${H}" "python3 ${H}/${script}.py"
+        passed || { echo "held: ${script}: ${output}"; return 1; }
+    done
+    printf '%s\n' 'import subprocess' "subprocess.run(['touch', '${PERSONAL}/x'])" > "${H}/w1.py"
+    printf '%s\n' 'import subprocess' "subprocess.run(['touch', 'x'], cwd='${PERSONAL}')" > "${H}/w2.py"
+    printf '%s\n' 'import os' "os.system('touch ${PERSONAL}/x')" > "${H}/w3.py"
+    for script in w1 w2 w3; do
+        bash_in "${H}" "python3 ${H}/${script}.py"
+        denied || { echo "not refused: ${script}"; return 1; }
+    done
 }
 
 @test "area-guard: a session that read inside an area runs no script that writes outside it where its arguments say" {
