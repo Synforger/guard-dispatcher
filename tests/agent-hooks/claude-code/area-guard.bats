@@ -1824,6 +1824,19 @@ area_words() {
     passed
 }
 
+@test "area-guard: a folder the line goes to is put where it writes, as pwd writes it" {
+    area_words
+    mkdir -p "${H}/tmp/agents-handlename"
+    local command
+    for command in "cd ${H}/tmp/agents-handlename && pwd > ${COMPANY_REPO}/where.txt" \
+                   "cd ${H}/tmp/agents-handlename && env > ${COMPANY_REPO}/where.txt"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    bash_in "${H}" "cd ${H}/tmp && pwd > ${COMPANY_REPO}/where.txt"
+    passed
+}
+
 @test "area-guard: the commands after the last write into the area, a copy's folders and the files a program writes the content of are not read for its words" {
     area_words
     mkdir -p "${H}/tmp/agents-handlename"

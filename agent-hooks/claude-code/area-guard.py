@@ -2569,7 +2569,7 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
     line up to the last one that writes there, and up to the close of the loop or group around it.
     What is written comes in through those commands: a variable set before, an earlier stage of a
     pipe, a file written first and then moved. Of each, its words (a copy's paths by their last name,
-    the files a program that writes what they hold reads not at all, a `cd` not at all), the heredocs and here-strings fed to it and the code of the scripts it runs.
+    the files a program that writes what they hold reads not at all, a `cd` by the folder it goes to, which `pwd` writes), the heredocs and here-strings fed to it and the code of the scripts it runs.
     The commands after are not what is written. The whole line and the code it runs are read when the
     line cannot be split, when nothing in it is seen to write there command by command, when its
     loops and groups do not close, and when a command within that stretch acts later in the line
@@ -2597,7 +2597,8 @@ def writing_parts(command: str, cwd: str, holds) -> list[str]:
         put: list[str] = []
         writing = False
         if head and standing.move(os.path.basename(head[0]), head[1:]):
-            pass
+            # Where the line stands can be written from there on (`pwd`, `env`, `ls ..`): the folder is put.
+            put = list(words)
         elif words or redirects or mine or here_string is not None:
             step = " ".join(shlex.quote(word) for word in words) + "".join(
                 f" {operator} {shlex.quote(target)}" for operator, target in redirects if operator not in ("<<", "<<-"))
