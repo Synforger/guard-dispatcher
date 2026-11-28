@@ -703,6 +703,27 @@ AREAS
     bash_in "${H}" "ls ~/.git-hooks/agent-hooks"; passed
 }
 
+@test "area-guard: the switch and the hooks are judged one command at a time, a heredoc's text being none" {
+    local c
+    for c in $'cat > '"${H}"$'/note.md <<\'EOF\'\nwe copy it with cp\nand name agent-off here\nEOF' \
+             $'cat > '"${H}"$'/note.md <<\'EOF\'\nrm the old copy\nthe ~/.git-hooks folder stays\nEOF' \
+             "printf '%s\n' tee; echo agent-off"; do
+        bash_in "${H}" "${c}"
+        passed || { echo "refused: ${c}: ${output}"; return 1; }
+    done
+    for c in $'bash <<\'SH\'\ntouch '"${GUARD_CONFIG_DIR}"$'/agent-off\nSH' \
+             "eval 'touch ${GUARD_CONFIG_DIR}/agent-off'" \
+             "echo x > ${GUARD_CONFIG_DIR}/agent-off" \
+             "rm -rf ~/.git-hooks" \
+             $'cat <<\'SH\' | bash\ntouch '"${GUARD_CONFIG_DIR}"$'/agent-off\nSH' \
+             $'cat > '"${H}"$'/s.sh <<\'SH\'\ntouch '"${GUARD_CONFIG_DIR}"$'/agent-off\nSH\nbash '"${H}"'/s.sh' \
+             "xargs touch <<< ${GUARD_CONFIG_DIR}/agent-off" \
+             $'python3 - <<\'PY\'\nimport os\nos.system("touch '"${GUARD_CONFIG_DIR}"$'/agent-off")\nPY'; do
+        bash_in "${H}" "${c}"
+        denied || { echo "not refused: ${c}"; return 1; }
+    done
+}
+
 # --- how a session is marked ------------------------------------------------
 
 @test "area-guard: a Bash command naming an area with ~ marks the session" {

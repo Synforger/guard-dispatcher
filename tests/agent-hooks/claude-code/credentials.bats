@@ -76,6 +76,9 @@ CHANGES=(
     "git -C repo config --unset credential.helper"
     "gh auth login --hostname github.com"
     "gh auth refresh -s admin:org"
+    "gh auth --hostname github.com login"
+    "gh auth --hostname=github.com login"
+    "gcloud beta auth --quiet login"
     "gh auth switch"
     "gh auth setup-git"
     "gh secret set API_TOKEN"
@@ -163,6 +166,9 @@ LOOKS=(
     "npm config get registry"
     "npm install"
     "gcloud auth list"
+    "docker run auth -p 80:80 img"
+    "kubectl exec auth -it -- sh"
+    "docker compose logs auth --tail 100 web"
     "aws configure list"
     "aws s3 ls"
     "docker ps"
@@ -192,6 +198,8 @@ LOOKS=(
     "git remote set-url origin https://github.com/o/r"
     "launchctl setenv PATH /usr/bin"
     "direnv allow"
+    "rm ~/.claude.json.bak"
+    "gh auth --hostname github.com status"
 )
 
 # judged <command>... — the hook's credential_change on each command, in one process: `held` or
