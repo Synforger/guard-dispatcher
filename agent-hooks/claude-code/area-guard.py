@@ -1543,10 +1543,12 @@ def read_or_run_paths(command: str, cwd: str, depth: int = 0) -> tuple[str, ...]
             tool, here = os.path.basename(rest[0]), standing.here
             found.append(rest[0])
             fed = fed_files(redirects, steps[index - 1] if index else None)
-            if (script := script_files.ran_with_arguments(rest, here, fed)) is not None:
-                at = len(rest) - len(script[2]) - 1
+            if readings := script_files.ran_with_arguments(rest, here, fed):
+                # Each reading takes the same words of the line as its arguments: they are counted once.
+                arguments = readings[0][2]
+                at = len(rest) - len(arguments) - 1
                 handed = [rest[at]] if at > 0 else []
-                found += [word for word in [*handed, *script[2]] if os.path.isfile(os.path.join(here, word))]
+                found += [word for word in [*handed, *arguments] if os.path.isfile(os.path.join(here, word))]
             elif depth < NESTED and SHELL_CODE.fullmatch(tool):
                 codes = [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
                 for code in codes:
