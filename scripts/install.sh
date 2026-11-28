@@ -120,7 +120,9 @@ cat <<MSG
 Next steps for repos that had a local core.hooksPath override:
   git -C <repo> config --unset core.hooksPath
 
-The dispatcher will still delegate to any repo-local .githooks/<name>.
+The dispatcher runs a repo's own .githooks/<name> only for a trusted
+repository (README, "Repository hooks"): the Synforger org, an owner named
+in guard.hookOwners, or a repository with guard.localHooks = true.
 MSG
 
 # The agent hook is called through ~/.git-hooks, so the settings entry stays
