@@ -113,6 +113,7 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_common"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "git-hooks" / "_internal"))
+import agent_roots  # noqa: E402
 import area_roles  # noqa: E402
 import children  # noqa: E402
 import code_writes  # noqa: E402
@@ -1513,6 +1514,55 @@ def ran_scripts_with_arguments(command: str, cwd: str, depth: int = 0, *,
     return distinct(found)
 
 
+#: Programs that copy what files hold and print none of their names: the files `cat` is given, and
+#: all but the last that `cp` and `mv` are given, are read.
+COPIERS = {"cat", "cp", "mv"}
+
+
+@functools.lru_cache(maxsize=None)
+def read_or_run_paths(command: str, cwd: str, depth: int = 0) -> tuple[str, ...]:
+    """The words of a command that stand where a path is only read or run, following where the
+    command stands and the command lines it hands on, as ran_scripts does: each program, the file of
+    code it runs and the files that code is handed, the file of a `<` redirection, and the files
+    `cat`, `cp` and `mv` copy. The folder of a `cd` is not one: whatever the command runs there can
+    print where it stands (`pwd`, `env`, `ls ..`). A program or a script that prints its own path or
+    the names of the files it is handed is not told apart from one that does not."""
+    line, _ = split_heredocs(spell_home(in_run_order(command)))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return ()
+    found: list[str] = []
+    standing = Standing(cwd)
+    for index, (words, redirects, _, ended_by) in enumerate(steps):
+        rest, lines, nested = program_words(words)
+        for code in [*lines, *map(shlex.join, nested)] if depth < NESTED else []:
+            found += read_or_run_paths(code, standing.here, depth + 1)
+        found += [target for operator, target in redirects if operator == "<"]
+        if rest and not standing.move(os.path.basename(rest[0]), rest[1:]):
+            tool, here = os.path.basename(rest[0]), standing.here
+            found.append(rest[0])
+            fed = fed_files(redirects, steps[index - 1] if index else None)
+            if readings := script_files.ran_with_arguments(rest, here, fed):
+                # Each reading takes the same words of the line as its arguments: they are counted once.
+                arguments = readings[0][2]
+                at = len(rest) - len(arguments) - 1
+                handed = [rest[at]] if at > 0 else []
+                found += [word for word in [*handed, *arguments] if os.path.isfile(os.path.join(here, word))]
+            elif depth < NESTED and SHELL_CODE.fullmatch(tool):
+                codes = [rest[at + 1] for at, word in enumerate(rest[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
+                for code in codes:
+                    found += read_or_run_paths(code, here, depth + 1)
+            elif tool in COPIERS:
+                files = [word for word in rest[1:] if not word.startswith("-")]
+                found += files if tool == "cat" else files[:-1]
+        if ended_by == "(":
+            standing.open()
+        elif ended_by == ")":
+            standing.close()
+    return tuple(found)
+
+
 def write_targets(command: str, cwd: str) -> list[Path]:
     """Paths a Bash command names as a place it writes (see named)."""
     return named(command, cwd)[0]
@@ -1734,6 +1784,10 @@ def script_argument_orders(command: str, cwd: str, transcript: str | None, marks
                 resolved, written = spelled(name, here)
                 paths.append(resolved)
                 orders.append(FolderOrder(resolved, written, RECORDS))
+            for line in code_writes.python.commands_run(code_writes.python.with_arguments(code, words)):
+                written, removed, folders = named_with_folders(line, here)
+                paths += [*written, *removed]
+                orders += folders
         elif script_arguments.writes_where_told(program, code):
             writes_all(words, here)
     return paths, orders
@@ -2521,19 +2575,206 @@ def area_word_lists(targets: list[Path], areas) -> dict[str, tuple[Path, Path]]:
     return found
 
 
+# Words at the head of a command that open and close a compound command. What feeds a loop or a group
+# is written after its close (`done <<< x`, `} < f`), so a write inside one is read up to the close.
+COMPOUND_OPENS = {"if", "while", "until", "for", "select", "case", "{"}
+COMPOUND_CLOSES = {"fi", "done", "esac", "}"}
+# Commands whose effect comes later in the line than where they stand: a trap runs when the shell
+# ends, a coprocess reads what is written to it afterwards, and the others leave what they run behind
+# them (detached, scheduled, handed to a service).
+DEFERRED = {"trap", "coproc", "disown", "setsid", "screen", "tmux", "at", "batch", "launchctl"}
+# What in the code of another language starts a process that may outlive the line's next commands.
+SPAWNS = re.compile(r"\b(?:subprocess|Popen|os\.(?:system|popen|fork\w*|spawn\w*|exec\w*|posix_spawn\w*)"
+                    r"|multiprocessing|threading|child_process|setTimeout|setInterval|daemon|nohup)\b")
+
+
+def compound_nesting(words: list[str]) -> int:
+    """How many compound commands the head of a command opens (> 0) or closes (< 0)."""
+    change = 0
+    for word in words:
+        if word in COMPOUND_OPENS:
+            change += 1
+        elif word in COMPOUND_CLOSES:
+            change -= 1
+        elif word not in KEYWORDS:
+            break
+        if word in ("for", "select", "case"):
+            break
+    return change
+
+
+def step_acts_later(steps: list, at: int) -> bool:
+    """Whether a command of a line (a step as stepped_commands gives it) acts later in the line than
+    where it stands: sent to the background, a function defined, an `exec` that only opens a file, a
+    trap, a coprocess, or a program that leaves what it runs behind it (DEFERRED)."""
+    words, redirects, _, ended_by = steps[at]
+    head = program_words(words)[0]
+    defines = bool(words) and ended_by == "(" and at + 1 < len(steps) \
+        and not steps[at + 1][0] and steps[at + 1][3] == ")"
+    opens_only = not head and bool(redirects) and any(os.path.basename(word) == "exec" for word in words)
+    return ended_by == "&" or defines or opens_only or "function" in words[:1] \
+        or any(os.path.basename(word) in DEFERRED for word in words[:len(words) - len(head) + 1])
+
+
+def acts_later(command: str, cwd: str, depth: int = 0) -> bool:
+    """Whether a command line holds a command that acts later (step_acts_later), at any depth of what
+    it runs (code_acts_later). A line that cannot be split is taken to."""
+    line, _ = split_heredocs(spell_home(in_run_order(command)))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return True
+    return any(step_acts_later(steps, at) for at in range(len(steps))) or code_acts_later(command, cwd, depth)
+
+
+def code_acts_later(command: str, cwd: str, depth: int = 0) -> bool:
+    """Whether what a command line hands on to run acts later: a command line it hands on (`eval`,
+    `trap`, `env -S`, `watch`, `find -exec`), a shell's `-c` string, a heredoc or a here-string fed to a
+    shell, or a shell script it runs, that holds a command that acts later (acts_later); or the code
+    of another language it runs, that starts a process (SPAWNS). Deeper than NESTED it is taken to."""
+    if depth >= NESTED:
+        return True
+    line, fed = split_heredocs(spell_home(in_run_order(command)))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return True
+    shells = [body for program, body in fed if SHELL_CODE.fullmatch(program)]
+    for words, _, here_string, _ in steps:
+        head, lines, nested = program_words(words)
+        shells += [*lines, *map(shlex.join, nested)]
+        if head and SHELL_CODE.fullmatch(os.path.basename(head[0])):
+            shells += [head[i + 1] for i, word in enumerate(head[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
+            shells += [here_string] if here_string is not None else []
+    shells += [code for program, code, _ in ran_scripts(command, cwd) if SHELL_CODE.fullmatch(os.path.basename(program))]
+    others = [code for _, code, _ in handed_code(command, cwd)]
+    return any(SPAWNS.search(code) for code in others) or any(acts_later(code, cwd, depth + 1) for code in shells)
+
+
+# Programs that write what the files they are handed hold, and never their names (GNU sed's `F` writes
+# a name, so gsed is not one). head and tail name each file when handed several or told to (`-v`), so
+# only one file, unnamed, is theirs.
+WRITES_CONTENT = {"cat", "tac", "sed", "sort", "uniq", "cut", "rev", "fold", "iconv", "base64"}
+WRITES_CONTENT_OF_ONE = {"head", "tail"}
+NAMES_FILES = re.compile(r"--verbose|-[A-Za-z0-9]*v[A-Za-z0-9]*")
+# A redirection of the standard error (`2>`, `2>&1`, `&>`, `|&`): a program's error names the file it
+# could not read, so the files it is handed may then be written as names.
+ERRORS_REDIRECTED = re.compile(r"(?<![\w$])2>|&>|>&|\|&")
+
+
+def put_words(words: list[str], head: list[str], here: str, *, errors_redirected: bool = False) -> list[str]:
+    """The words of a command that can be put where it writes. A copy (cp, mv, install, ln) puts the
+    last name of each path it is handed, not the folders above it. A program that writes what a file
+    holds (WRITES_CONTENT) puts none of the files it is handed that are there now: what it writes of
+    them is not seen, as what any program reads is not -- unless the line redirects the standard error
+    (`errors_redirected`), where an error names the file, or a sed script holds an `F` (GNU sed writes
+    the file's name). Any other command puts its words whole (an `echo /x` writes `/x`)."""
+    tool = os.path.basename(head[0]) if head else ""
+    lead = words[:len(words) - len(head)]
+    if tool in COPIES:
+        return lead + [head[0]] + [word if word.startswith("-") else os.path.basename(word.rstrip("/"))
+                                   for word in head[1:]]
+    if tool in WRITES_CONTENT | WRITES_CONTENT_OF_ONE and not errors_redirected:
+        files = [word for word in head[1:] if not word.startswith("-") and Path(real(word, here)).is_file()]
+        names = tool == "sed" and any("F" in word for word in head[1:] if word not in files)
+        if not names and (tool in WRITES_CONTENT
+                          or (len(files) == 1 and not any(NAMES_FILES.fullmatch(word) for word in head[1:]))):
+            return lead + [word for word in head if word not in files]
+    return list(words)
+
+
+def writing_parts(command: str, cwd: str, holds, *, mask: Callable[[str], str] | None = None) -> list[str]:
+    """What a command line puts where `holds` says yes, read command by command as the shell runs
+    them (a `cd` moves the rest, a subshell gives the place back): every command from the head of the
+    line up to the last one that writes there, and up to the close of the loop or group around it.
+    What is written comes in through those commands: a variable set before, an earlier stage of a
+    pipe, a file written first and then moved. Of each, its words (a copy's paths by their last name,
+    the files a program that writes what they hold reads not at all, a `cd` by the folder it goes to, which `pwd` writes), the heredocs and here-strings fed to it and the code of the scripts it runs.
+    The commands after are not what is written. The whole line and the code it runs are read when the
+    line cannot be split, when nothing in it is seen to write there command by command, when its
+    loops and groups do not close, and when a command within that stretch acts later in the line
+    (one sent to the background, a trap, a function defined, an `exec` that only opens a file), or
+    hands on to run what does, at any depth (code_acts_later). `mask` is put over what comes from the
+    line itself (its words, heredocs and here-strings), not over the code of the scripts it runs."""
+    mask = mask or (lambda line: line)
+    whole = [mask(command), *(code for _, code, _ in ran_scripts(command, cwd))]
+    line, fed = split_heredocs(spell_home(in_run_order(command)))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return whole
+    standing = Standing(cwd)
+    bodies = list(fed)
+    errors_redirected = bool(ERRORS_REDIRECTED.search(line))
+    puts: list[list[str]] = []
+    writes: list[bool] = []
+    acts_later_at: list[bool] = []
+    depths: list[int] = []
+    depth = 0
+    for at, (words, redirects, here_string, ended_by) in enumerate(steps):
+        count = sum(1 for operator, _ in redirects if operator in ("<<", "<<-"))
+        mine, bodies = bodies[:count], bodies[count:]
+        head = program_words(words)[0]
+        later = step_acts_later(steps, at)
+        put: list[str] = []
+        writing = False
+        if head and standing.move(os.path.basename(head[0]), head[1:]):
+            # Where the line stands can be written from there on (`pwd`, `env`, `ls ..`): the folder is put.
+            put = [mask(word) for word in words]
+        elif words or redirects or mine or here_string is not None:
+            step = " ".join(shlex.quote(word) for word in words) + "".join(
+                f" {operator} {shlex.quote(target)}" for operator, target in redirects if operator not in ("<<", "<<-"))
+            step += "".join(f" <<'GUARD_BODY_{n}'\n{body}\nGUARD_BODY_{n}" for n, (_, body) in enumerate(mine))
+            if here_string is not None:
+                step += f" <<< {shlex.quote(here_string)}"
+            writing = any(holds(target) for target in write_targets(step, standing.here))
+            later = later or code_acts_later(step, standing.here)
+            put = [mask(part) for part in put_words(words, head, standing.here, errors_redirected=errors_redirected)] \
+                + [mask(body) for _, body in mine] \
+                + ([mask(here_string)] if here_string is not None else []) \
+                + [code for _, code, _ in ran_scripts(step, standing.here)]
+        puts.append(put)
+        writes.append(writing)
+        acts_later_at.append(later)
+        depth += compound_nesting(words) + (ended_by == "(") - (ended_by == ")")
+        depths.append(depth)
+        if ended_by == "(":
+            standing.open()
+        elif ended_by == ")":
+            standing.close()
+    last = max((at for at, writing in enumerate(writes) if writing), default=None)
+    end = None if last is None else next((at for at in range(last, len(steps)) if depths[at] == 0), None)
+    # What ends a subshell stands after its `)` with no words of its own (`( … ) &`, `( … ) > f`).
+    while end is not None and end + 1 < len(steps) and not steps[end + 1][0]:
+        end += 1
+    if end is None or min(depths) < 0 or any(acts_later_at[:end + 1]):
+        return whole
+    return [part for put in puts[:end + 1] for part in put]
+
+
 def area_words_refusal(tool: str, args: dict, cwd: str, areas) -> str | None:
     """Why what a call writes into an area's folders may not go there, or None: it holds a word of
     that area's own list (area_word_lists), as a send to that area would. What is read is what the
-    call puts there: the text an Edit or a Write writes, and for a command its line and the code of
-    the scripts it runs (a heredoc, a `sed` expression, a program's strings). What a program reads
-    from elsewhere and writes is not seen."""
+    call puts there: the text an Edit or a Write writes, and for a command its line up to the last
+    command that writes there (writing_parts: their words, what is fed to them, the code of the
+    scripts they run). What a program reads from elsewhere and writes is not seen."""
     if tool in WRITES:
         targets = [real(args.get("file_path") or args.get("notebook_path") or "", cwd)]
         text = written_text(tool, args)
     elif tool == "Bash":
         command = args.get("command", "")
         targets = write_targets(command, cwd)
-        text = "\n".join([command, *(code for _, code, _ in ran_scripts(command, cwd))])
+        held = area_word_lists(targets, areas)
+        held_targets = {target for _, target in held.values()}
+        # A path into an agent's folder that the command only reads or runs names the folder, not
+        # what is written: the folder's name is left out of the line there (agent_roots).
+        spellings = agent_roots.pattern(guard_places.agents_folder())
+        read_or_run = agent_roots.inside(spellings, read_or_run_paths(command, cwd))
+        masks = agent_roots.masked(command, spellings, read_or_run) != command
+        text = "\n".join(writing_parts(
+            command, cwd, lambda path: bool(area_word_lists([path], areas)),
+            mask=(lambda line: spellings.sub(agent_roots.PLACEHOLDER, line)) if masks else None)) \
+            if held_targets else ""
     else:
         return None
     lists = area_word_lists(targets, areas) if text.strip() else {}
@@ -2898,6 +3139,52 @@ def handed_code(command: str, cwd: str) -> list[tuple[str, str, str]]:
     return found
 
 
+# Programs that may turn text they are fed into commands or their words: what is piped or written
+# into them, or handed to them later in the line, can run.
+RUNS_TEXT = frozenset({"xargs", "parallel", "source", ".", "eval", "watch"})
+
+
+def runs_text(words: list[str], head: list[str]) -> bool:
+    """Whether a command may run text: a shell, an interpreter, a file run by its path (`./s.sh`, one a
+    heredoc may have just written), or a program of RUNS_TEXT among the words that lead to it."""
+    leading = [os.path.basename(word) for word in words[:len(words) - len(head) + 1]]
+    tool = os.path.basename(head[0]) if head else ""
+    return any(word in RUNS_TEXT for word in leading) or bool(SHELL_CODE.fullmatch(tool)) \
+        or script_files.kind_of(tool) is not None or (bool(head) and "/" in head[0])
+
+
+def command_texts(command: str, depth: int = 0) -> list[str]:
+    """Each simple command of a line as one text, home written out: its words and its redirections
+    (`> file`), so a check matched on text reads one command at a time. A heredoc's body or a
+    here-string is no command of its own unless it is fed to a shell; that, a shell's `-c` string and
+    a command line handed on (`eval`, `trap`, `find -exec`) are read as commands of their own. A line
+    that feeds text and holds a command that may run text (runs_text: a shell it is piped to, a file
+    it wrote and runs, `xargs`) is also read whole, as one text. A line that cannot be split is one
+    text."""
+    line, fed = split_heredocs(spell_home(in_run_order(command)))
+    try:
+        steps = list(stepped_commands(line))
+    except ValueError:
+        return [spell_home(command)]
+    texts: list[str] = []
+    inner = [body for program, body in fed if SHELL_CODE.fullmatch(program)]
+    feeds = bool(fed) or any(here_string is not None for _, _, here_string, _ in steps)
+    runs = False
+    for words, redirects, here_string, _ in steps:
+        texts.append(" ".join([*words, *(f"{operator} {target}" for operator, target in redirects)]))
+        head, lines, nested = program_words(words)
+        inner += [*lines, *map(shlex.join, nested)]
+        runs = runs or runs_text(words, head)
+        if head and SHELL_CODE.fullmatch(os.path.basename(head[0])):
+            inner += [head[at + 1] for at, word in enumerate(head[1:-1], 1) if re.fullmatch(r"-[A-Za-z]*c", word)][:1]
+            inner += [here_string] if here_string is not None else []
+    if feeds and runs:
+        texts.append(spell_home(command))
+    for code in inner if depth < NESTED else []:
+        texts += command_texts(code, depth + 1)
+    return texts
+
+
 # Any interpreter's code that names git together with a way to switch its hooks off. Only Python is
 # read for the command lines it runs; another language's code is held by these words alone.
 CODE_GIT_BYPASS = re.compile(r"--no-ver(?:i|if|ify)?\b|core\.hookspath|GIT_CONFIG_(?:PARAMETERS|COUNT|GLOBAL|SYSTEM)"
@@ -2923,13 +3210,14 @@ def bypass(command: str, cwd: str, areas, depth: int = 0) -> str | None:
                 return f"Python code that runs git with {found}"
         elif re.search(r"\bgit\b", code) and (m := CODE_GIT_BYPASS.search(code)):
             return f"{program} code that runs git with {m.group(0)} (only Python's commands are read)"
-    expanded = spell_home(command)
+    texts = command_texts(command)
     marks = "|".join(re.escape(name) for name in sorted(marks_names()))
-    if re.search(rf"\b(rm|mv|cp|truncate|tee|touch|ln)\b[^|;&]*(?:{marks})|>\s*\S*(?:{marks})", expanded):
+    if any(re.search(rf"\b(rm|mv|cp|truncate|tee|touch|ln)\b[^|;&]*(?:{marks})|>\s*\S*(?:{marks})", text)
+           for text in texts):
         return MARKS_REWRITE
-    if re.search(r"\b(mv|cp|tee|touch|ln|install)\b[^|;&]*agent-off|>\s*\S*agent-off", expanded):
+    if any(re.search(r"\b(mv|cp|tee|touch|ln|install)\b[^|;&]*agent-off|>\s*\S*agent-off", text) for text in texts):
         return "switches the entry guard off"
-    if re.search(r"\b(rm|mv|unlink|ln)\b[^|;&]*\.git-hooks(/agent-hooks)?/?(\s|$|[;&|])", expanded):
+    if any(re.search(r"\b(rm|mv|unlink|ln)\b[^|;&]*\.git-hooks(/agent-hooks)?/?(\s|$|[;&|])", text) for text in texts):
         return "removes the guards' installed hooks"
     ordered_line = in_run_order(command)
     if config_writes_guard_key(ordered_line) and not writes_derived_scope(ordered_line, cwd):

@@ -706,6 +706,27 @@ AREAS
     bash_in "${H}" "ls ~/.git-hooks/agent-hooks"; passed
 }
 
+@test "area-guard: the switch and the hooks are judged one command at a time, a heredoc's text being none" {
+    local c
+    for c in $'cat > '"${H}"$'/note.md <<\'EOF\'\nwe copy it with cp\nand name agent-off here\nEOF' \
+             $'cat > '"${H}"$'/note.md <<\'EOF\'\nrm the old copy\nthe ~/.git-hooks folder stays\nEOF' \
+             "printf '%s\n' tee; echo agent-off"; do
+        bash_in "${H}" "${c}"
+        passed || { echo "refused: ${c}: ${output}"; return 1; }
+    done
+    for c in $'bash <<\'SH\'\ntouch '"${GUARD_CONFIG_DIR}"$'/agent-off\nSH' \
+             "eval 'touch ${GUARD_CONFIG_DIR}/agent-off'" \
+             "echo x > ${GUARD_CONFIG_DIR}/agent-off" \
+             "rm -rf ~/.git-hooks" \
+             $'cat <<\'SH\' | bash\ntouch '"${GUARD_CONFIG_DIR}"$'/agent-off\nSH' \
+             $'cat > '"${H}"$'/s.sh <<\'SH\'\ntouch '"${GUARD_CONFIG_DIR}"$'/agent-off\nSH\nbash '"${H}"'/s.sh' \
+             "xargs touch <<< ${GUARD_CONFIG_DIR}/agent-off" \
+             $'python3 - <<\'PY\'\nimport os\nos.system("touch '"${GUARD_CONFIG_DIR}"$'/agent-off")\nPY'; do
+        bash_in "${H}" "${c}"
+        denied || { echo "not refused: ${c}"; return 1; }
+    done
+}
+
 # --- how a session is marked ------------------------------------------------
 
 @test "area-guard: a Bash command naming an area with ~ marks the session" {
@@ -1420,6 +1441,10 @@ session_files() {
         passed || { echo "refused: ${c}"; return 1; }
     done
     for c in "python3 -c \"import subprocess; subprocess.run(['wc', '-l', '${TRANSCRIPT}'])\"" \
+             "python3 -c \"import subprocess; subprocess.run(['tee', '-a', '${TRANSCRIPT}'])\"" \
+             "python3 -c \"import subprocess; subprocess.run(['some-tool', '${g}/orders.txt'])\"" \
+             "python3 -c \"import subprocess; subprocess.run(['curl', '-o', '${g}/orders.txt', 'https://example.com'])\"" \
+             "python3 -c \"import subprocess; subprocess.run(['sh', '-c', 'echo x >> ${g}/orders.txt'])\"" \
              "python3 -c \"import gzip; print(gzip.open('${TRANSCRIPT}').read())\"" \
              "python3 -c \"import os; print(os.read(os.open('${g}/orders.txt', os.O_RDONLY), 9))\""; do
         bash_in "${H}" "${c}"
@@ -1827,6 +1852,143 @@ area_words() {
     passed
 }
 
+@test "area-guard: a folder the line goes to is put where it writes, as pwd writes it" {
+    area_words
+    mkdir -p "${H}/tmp/agents-handlename"
+    local command
+    for command in "cd ${H}/tmp/agents-handlename && pwd > ${COMPANY_REPO}/where.txt" \
+                   "cd ${H}/tmp/agents-handlename && env > ${COMPANY_REPO}/where.txt"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+    bash_in "${H}" "cd ${H}/tmp && pwd > ${COMPANY_REPO}/where.txt"
+    passed
+}
+
+@test "area-guard: the commands after the last write into the area, a copy's folders and the files a program writes the content of are not read for its words" {
+    area_words
+    mkdir -p "${H}/tmp/agents-handlename"
+    printf 'clean\n' > "${H}/tmp/agents-handlename/x.md"
+    local command
+    for command in "cd ${COMPANY_REPO} && sed -n 1,10p ${H}/tmp/agents-handlename/x.md > memo.md" \
+                   "cat ${H}/tmp/agents-handlename/x.md | sed s/a/b/ > ${COMPANY_REPO}/m.toml" \
+                   "head -n 3 ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/m.toml" \
+                   "sed -i '' 's/internal/inside/' ${COMPANY_REPO}/notes.md && handlename-build --out ${H}/tmp/agents-handlename/y.pptx" \
+                   "printf 'clean\n' > ${COMPANY_REPO}/m.toml; echo handlename" \
+                   "cp ${H}/tmp/agents-handlename/y.toml ${COMPANY_REPO}/m.toml" \
+                   $'python3 - <<\'PY\'\nopen("'"${COMPANY_REPO}"$'/m.toml", "w").write("clean")\nPY\nhandlename-build'; do
+        bash_in "${H}" "${command}"
+        [ "${status}" -eq 0 ] && [[ "${output}" != *"word list"* && "${output}" != *"readers must not"* ]] \
+            || { echo "held: ${command} -> ${output}"; return 1; }
+    done
+}
+
+@test "area-guard: a word the writing command itself puts into the area is refused, a path-like one too" {
+    area_words
+    mkdir -p "${H}/tmp/agents-handlename"
+    printf 'clean\n' > "${H}/tmp/agents-handlename/x.md"
+    printf 'clean\n' > "${H}/tmp/agents-handlename/y.md"
+    local command
+    for command in "head -n 3 ${H}/tmp/agents-handlename/x.md ${H}/tmp/agents-handlename/y.md > ${COMPANY_REPO}/f" \
+                   "tail -v ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/f" \
+                   "wc -l ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/f" \
+                   "handlename-build --out ${H}/tmp/y.pptx && sed -i '' 's/internal/handlename/' ${COMPANY_REPO}/notes.md" \
+                   "cd ${COMPANY_REPO} && printf 'handlename\n' > m.toml" \
+                   $'echo ok; python3 - <<\'PY\'\nopen("'"${COMPANY_REPO}"$'/m.toml", "w").write("handlename")\nPY' \
+                   "echo /handlename > ${COMPANY_REPO}/f" \
+                   "echo ~/handlename > ${COMPANY_REPO}/f" \
+                   "printf '%s' ./handlename > ${COMPANY_REPO}/f" \
+                   "echo --x=/handlename/y > ${COMPANY_REPO}/f"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: the file a program reads is read for the area's words where its name can reach the area" {
+    area_words
+    mkdir -p "${H}/tmp/agents-handlename"
+    printf 'clean\n' > "${H}/tmp/agents-handlename/x.md"
+    local command
+    for command in "cat ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/f 2>&1" \
+                   "cat ${H}/tmp/agents-handlename/x.md 2> ${COMPANY_REPO}/err" \
+                   "sed -n F ${H}/tmp/agents-handlename/x.md > ${COMPANY_REPO}/f"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: a word that reaches the area through an earlier command of the line is refused" {
+    area_words
+    local command
+    for command in "X=handlename; echo \$X > ${COMPANY_REPO}/f" \
+                   "export X=handlename && echo \"\$X\" >> ${COMPANY_REPO}/f" \
+                   "printf handlename | tee ${COMPANY_REPO}/f" \
+                   "echo handlename | cat > ${COMPANY_REPO}/f" \
+                   "echo handlename > ${H}/tmp/t; mv ${H}/tmp/t ${COMPANY_REPO}/f" \
+                   "echo handlename > ${H}/tmp/t && cp ${H}/tmp/t ${COMPANY_REPO}/" \
+                   $'cat > '"${H}"$'/tmp/t <<EOF\nhandlename\nEOF\nmv '"${H}/tmp/t ${COMPANY_REPO}"$'/f' \
+                   "cp ${H}/tmp/handlename.txt ${COMPANY_REPO}/"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: a word fed to a loop that writes into the area, or written after a command that acts later, is refused" {
+    area_words
+    local command
+    for command in "while read l; do echo \"\$l\" >> ${COMPANY_REPO}/f; done <<< handlename" \
+                   $'while read l; do echo "$l" >> '"${COMPANY_REPO}"$'/f; done <<EOF\nhandlename\nEOF' \
+                   "tail -f ${H}/tmp/t >> ${COMPANY_REPO}/f & echo handlename >> ${H}/tmp/t" \
+                   "( cat ${H}/tmp/t > ${COMPANY_REPO}/f ) & echo handlename > ${H}/tmp/t" \
+                   "(cat ${H}/tmp/t > ${COMPANY_REPO}/f)& echo handlename > ${H}/tmp/t" \
+                   "exec 3>> ${COMPANY_REPO}/f; echo handlename >&3" \
+                   "f() { cp ${H}/tmp/t ${COMPANY_REPO}/f; }; echo handlename > ${H}/tmp/t; f" \
+                   "trap 'cp ${H}/tmp/t ${COMPANY_REPO}/f' EXIT; echo handlename > ${H}/tmp/t"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: a word written after code the line hands on starts something that acts later is refused" {
+    area_words
+    mkdir -p "${H}/tmp"
+    printf 'tail -f %s/tmp/t >> %s/f &\n' "${H}" "${COMPANY_REPO}" > "${H}/tmp/bg.sh"
+    local command
+    for command in "bash -c 'tail -f ${H}/tmp/t >> ${COMPANY_REPO}/f &'; echo handlename > ${H}/tmp/t" \
+                   "eval 'tail -f ${H}/tmp/t >> ${COMPANY_REPO}/f &'; echo handlename > ${H}/tmp/t" \
+                   "eval 'exec 3>> ${COMPANY_REPO}/f'; echo handlename >&3" \
+                   "bash ${H}/tmp/bg.sh; echo handlename > ${H}/tmp/t" \
+                   $'bash <<\'SH\'\ntail -f '"${H}/tmp/t >> ${COMPANY_REPO}"$'/f &\nSH\necho handlename > '"${H}"'/tmp/t' \
+                   "python3 -c \"import subprocess; subprocess.Popen(['cp', '${H}/tmp/t', '${COMPANY_REPO}/f'])\"; echo handlename > ${H}/tmp/t"; do
+        bash_in "${H}" "${command}"
+        denied || { echo "not refused: ${command}"; return 1; }
+    done
+}
+
+@test "area-guard: a session that read inside an area runs Python that only looks a tool up outside, not one that writes there" {
+    read_case
+    mkdir -p "${PERSONAL}/bin"
+    printf '%s\n' 'import subprocess' \
+        "print(subprocess.run(['${PERSONAL}/bin/brew', '--prefix', 'llvm'], capture_output=True, text=True).stdout)" \
+        > "${H}/look.py"
+    printf '%s\n' 'import os, subprocess' \
+        "env = dict(os.environ, PATH='${PERSONAL}/bin:' + os.environ['PATH'])" \
+        "print(subprocess.run(['clang-format', '--version'], env=env, capture_output=True, text=True).returncode)" \
+        > "${H}/path.py"
+    local script
+    for script in look path; do
+        bash_in "${H}" "python3 ${H}/${script}.py"
+        passed || { echo "held: ${script}: ${output}"; return 1; }
+    done
+    printf '%s\n' 'import subprocess' "subprocess.run(['touch', '${PERSONAL}/x'])" > "${H}/w1.py"
+    printf '%s\n' 'import subprocess' "subprocess.run(['touch', 'x'], cwd='${PERSONAL}')" > "${H}/w2.py"
+    printf '%s\n' 'import os' "os.system('touch ${PERSONAL}/x')" > "${H}/w3.py"
+    for script in w1 w2 w3; do
+        bash_in "${H}" "python3 ${H}/${script}.py"
+        denied || { echo "not refused: ${script}"; return 1; }
+    done
+}
+
 @test "area-guard: a session that read inside an area runs no script that writes outside it where its arguments say" {
     read_case
     printf '%s\n' 'import subprocess, sys' "subprocess.run(['touch', sys.argv[1]])" > "${H}/touch.py"
@@ -1852,4 +2014,52 @@ area_words() {
     passed
     call Write "$(jq -n --arg f "${COMPANY_REPO}/m.toml" '{file_path: $f, content: "handlename\n"}')"
     denied
+}
+
+@test "area-guard: a path into an agent's folder that a command only reads or runs does not write the agent's name" {
+    area_words
+    export AGENT_PLATFORM_ROOT="${H}/platform"
+    local S="${H}/platform/agents/handlename/_scratch"
+    mkdir -p "${S}"
+    printf "print('ok')\n" > "${S}/gen.py"
+    printf 'echo ok\n' > "${S}/run.sh"
+    printf '#!/bin/sh\necho ok\n' > "${S}/tool.sh"
+    chmod +x "${S}/tool.sh"
+    printf 'plain\n' > "${S}/a.txt"
+    printf 'import os\nprint(os.getcwd())\n' > "${S}/where.py"
+    local scratch c
+    scratch="/tmp/claude-$(id -u)/$(printf '%s' "${H}/platform/agents/handlename" | sed 's/[^A-Za-z0-9]/-/g')-projects-x/s1/scratchpad"
+    for c in "python3 ${S}/gen.py > ${COMPANY_REPO}/out.txt" \
+             "python3 ${S}/gen.py ${S}/a.txt > ${COMPANY_REPO}/out.txt" \
+             "cd ${COMPANY_REPO} && bash ${S}/run.sh > out.txt" \
+             "cat ${S}/a.txt > ${COMPANY_REPO}/a.txt" \
+             "cp ${S}/a.txt ${COMPANY_REPO}/a.txt" \
+             "${S}/tool.sh > ${COMPANY_REPO}/o.txt" \
+             "sort < ${S}/a.txt > ${COMPANY_REPO}/o.txt" \
+             "python3 ~/platform/agents/handlename/_scratch/gen.py > ${COMPANY_REPO}/o.txt" \
+             "sort < ${scratch}/a.txt > ${COMPANY_REPO}/o.txt"; do
+        bash_in "${H}" "${c}"
+        passed || { echo "refused: ${c}: ${output}"; return 1; }
+    done
+    # the folder's name where the command may write it: printed, beside a path read, in a heredoc, as a word,
+    # copied as the folder itself, or as the folder a command stands in (it can print where it stands)
+    for c in "echo ${S}/a.txt > ${COMPANY_REPO}/o.txt" \
+             "python3 ${S}/gen.py > ${COMPANY_REPO}/o.txt; echo ${S} >> ${COMPANY_REPO}/o.txt" \
+             "wc -l ${S}/a.txt > ${COMPANY_REPO}/o.txt" \
+             "grep -H plain ${S}/a.txt > ${COMPANY_REPO}/o.txt" \
+             $'cat > '"${COMPANY_REPO}"$'/o.txt <<\'EOF\'\n'"${S}"$'/a.txt\nEOF' \
+             "python3 ${S}/gen.py handlename > ${COMPANY_REPO}/o.txt" \
+             "printf handlename > ${COMPANY_REPO}/o.txt" \
+             "cp -r ${H}/platform/agents/handlename ${COMPANY_REPO}/" \
+             "cp -r ${H}/platform/agents/handlename/ ${COMPANY_REPO}/x" \
+             "cd ${H}/platform/agents/handlename && pwd > ${COMPANY_REPO}/f" \
+             "cd ${S} && echo \$PWD > ${COMPANY_REPO}/f" \
+             "cd ${S} && python3 where.py > ${COMPANY_REPO}/f" \
+             "cd ${S} && git rev-parse --show-toplevel > ${COMPANY_REPO}/f" \
+             "cd ${S} && python3 gen.py > ${COMPANY_REPO}/o.txt" \
+             "cd ${S} && env > ${COMPANY_REPO}/f" \
+             "cd ${S} && ls ../../.. > ${COMPANY_REPO}/f"; do
+        bash_in "${H}" "${c}"
+        denied || { echo "not refused: ${c}"; return 1; }
+    done
 }
