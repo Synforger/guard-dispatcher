@@ -1027,45 +1027,65 @@ def code_sends(command: str, cwd: str, send_scan: Path, depth: int = 0) -> list[
         if tool == "cd" and len(words) > 1 and not UNREAD_FOLDER.search(words[1]):
             here = str(resolved(Path(os.path.join(here, os.path.expanduser(words[1])))))
             continue
-        script = script_files.ran(list(words), here, fed_files(stdin, commands[index - 1] if index else None)) \
-            if depth < NESTED else None
-        if script is not None:
-            program, text = script
-            if program in SHELLS:
-                out += sends("Bash", {"command": text}, here, send_scan, depth=depth + 1)
-                continue
-            if program == "osascript":
-                out += [Send(f"app:{name}", text, []) for name in apple_events.applications(text)]
-                continue
-            tool, words = program, [program, "-c", text]
-        codes = [words[i + 1] for i, w in enumerate(words[:-1]) if w in CODE_FLAGS]
-        if tool in SHELLS and depth < NESTED:
-            for code in codes:
-                out += sends("Bash", {"command": code}, cwd, send_scan, depth=depth + 1)
-            continue
-        if tool in ("ssh", "scp", "sftp", "rsync") and depth < NESTED:
-            for code in local_commands(tool, words[1:]):
-                out += sends("Bash", {"command": code}, cwd, send_scan, depth=depth + 1)
-            continue
-        if tool not in INTERPRETERS and not tool.startswith("python"):
-            continue
-        if stdin and stdin[0] == "text":
-            codes.append(stdin[1])
-        elif stdin and stdin[1] == "a heredoc":
-            codes += bodies
+        forms: list[tuple[str, str] | None] = [None]
+        if depth < NESTED:
+            fed = fed_files(stdin, commands[index - 1] if index else None)
+            forms = list(script_files.ran(list(words), here, fed))
+            # The words are read as they are typed unless the disk holds the file they run.
+            if script_files.ran_from_disk(list(words), here, fed) is None:
+                forms.append(None)
+        heard: list[Send] = []
+        for script in forms:
+            # A send two readings of one file both find is one send.
+            heard += [send for send in _code_form_sends(words, stdin, script, bodies, cwd, here, send_scan, depth)
+                      if send not in heard]
+        out += heard
+    return out
+
+
+def _code_form_sends(words: list[str], stdin, script: tuple[str, str] | None, bodies: list[str], cwd: str,
+                     here: str, send_scan: Path, depth: int) -> list[Send]:
+    """The sends of one command of code_sends read one way: as the file of code `script` (the program,
+    its text) read in the folder `here`, or, with no script, as its words are typed."""
+    tool = os.path.basename(words[0])
+    out: list[Send] = []
+    if script is not None:
+        program, text = script
+        if program in SHELLS:
+            out += sends("Bash", {"command": text}, here, send_scan, depth=depth + 1)
+            return out
+        if program == "osascript":
+            out += [Send(f"app:{name}", text, []) for name in apple_events.applications(text)]
+            return out
+        tool, words = program, [program, "-c", text]
+    codes = [words[i + 1] for i, w in enumerate(words[:-1]) if w in CODE_FLAGS]
+    if tool in SHELLS and depth < NESTED:
         for code in codes:
-            if tool.startswith("python"):
-                why = code_writes.python.reaches_out(code)
-                if why is None:
-                    continue
-                because = f"the Python code counts as sending to each URL it names, because {why}"
-            else:
-                because = f"{tool}'s code counts as sending to each URL it names: only Python is read"
-            found = [place_of(u, send_scan) for u in URL.findall(code)]
-            # An address URL cuts short or does not match counts only where a line blocks what it reaches.
-            found += [blocked_here(u, send_scan) for u in local_names.in_code(code)]
-            for place in dict.fromkeys(p for p in found if p):
-                out.append(Send(place, code, [], because=because))
+            out += sends("Bash", {"command": code}, cwd, send_scan, depth=depth + 1)
+        return out
+    if tool in ("ssh", "scp", "sftp", "rsync") and depth < NESTED:
+        for code in local_commands(tool, words[1:]):
+            out += sends("Bash", {"command": code}, cwd, send_scan, depth=depth + 1)
+        return out
+    if tool not in INTERPRETERS and not tool.startswith("python"):
+        return out
+    if stdin and stdin[0] == "text":
+        codes.append(stdin[1])
+    elif stdin and stdin[1] == "a heredoc":
+        codes += bodies
+    for code in codes:
+        if tool.startswith("python"):
+            why = code_writes.python.reaches_out(code)
+            if why is None:
+                continue
+            because = f"the Python code counts as sending to each URL it names, because {why}"
+        else:
+            because = f"{tool}'s code counts as sending to each URL it names: only Python is read"
+        found = [place_of(u, send_scan) for u in URL.findall(code)]
+        # An address URL cuts short or does not match counts only where a line blocks what it reaches.
+        found += [blocked_here(u, send_scan) for u in local_names.in_code(code)]
+        for place in dict.fromkeys(p for p in found if p):
+            out.append(Send(place, code, [], because=because))
     return out
 
 

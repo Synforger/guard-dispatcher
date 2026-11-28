@@ -587,6 +587,101 @@ leak_in_history() {
     [ "$status" -eq 2 ]
 }
 
+# --- anon-audit-deep.sh: the destination account's own identity -----------------
+
+# A made-up account whose handle the fixture word list flags.
+HANDLE="${SENTINEL}"
+
+# commit_as <author name> <committer name> [<address>] — one clean commit under these names, on top
+# of a fresh synforger repo; sets base to the commit under it.
+commit_as() {
+    mk_repo synforger
+    base="$(git rev-parse HEAD)"
+    local address="${3:-${ALLOWED_EMAIL}}"
+    echo "clean" > clean.txt && git add clean.txt
+    GIT_AUTHOR_NAME="$1" GIT_COMMITTER_NAME="$2" GIT_AUTHOR_EMAIL="${address}" \
+        GIT_COMMITTER_EMAIL="${address}" commit_bypassing_hooks "feat: clean"
+}
+
+@test "deep audit: the handle of the account a range is pushed to passes as author and committer name" {
+    commit_as "${HANDLE}" "${HANDLE}"
+    for url in "git@github.com:${HANDLE}/notes.git" "git@github.com:${HANDLE}/notes" \
+        "https://github.com/${HANDLE}/notes.git" "https://github.com/${HANDLE}/notes"; do
+        audit --range "${base}..HEAD" --dest "${url}"
+        [ "$status" -eq 0 ]
+    done
+}
+
+@test "deep audit: the same handle stops on the way anywhere else, or when the owner cannot be told" {
+    commit_as "${HANDLE}" "${HANDLE}"
+    for url in "" "git@github.com:someone-else/notes.git" "https://github.com/some-org/${HANDLE}.git" \
+        "git@github.com:${HANDLE}-org/notes.git" "git@github-alias:${HANDLE}/notes.git" \
+        "https://example.com/${HANDLE}/notes.git" "https://example.com/github.com/${HANDLE}/notes" \
+        "${HANDLE}/notes"; do
+        audit --range "${base}..HEAD" --dest "${url}"
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"author/committer: 1 hit(s)"* ]]
+    done
+    audit --range "${base}..HEAD"
+    [ "$status" -eq 1 ]
+}
+
+@test "deep audit: only a name that is exactly the handle passes, in either name field" {
+    local names
+    for names in "${HANDLE} Doe|Fixture" "Fixture|the ${HANDLE}" "${HANDLE} / Doe|Fixture"; do
+        commit_as "${names%|*}" "${names#*|}"
+        audit --range "${base}..HEAD" --dest "git@github.com:${HANDLE}/notes.git"
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"author/committer: 1 hit(s)"* ]]
+    done
+}
+
+@test "deep audit: the account's noreply address passes to its own repository, and nowhere else" {
+    local address
+    for address in "${HANDLE}@users.noreply.github.com" "12345+${HANDLE}@users.noreply.github.com"; do
+        commit_as "${HANDLE}" "${HANDLE}" "${address}"
+        audit --range "${base}..HEAD" --dest "git@github.com:${HANDLE}/notes.git"
+        [ "$status" -eq 0 ]
+        audit --range "${base}..HEAD" --dest "git@github.com:someone-else/notes.git"
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"author/committer: 1 hit(s)"* ]]
+    done
+}
+
+@test "deep audit: any other address that holds the handle stops on the way to its own repository" {
+    local address
+    for address in "${HANDLE}@example.com" "12345+${HANDLE}@users.noreply.github.com.example.com" \
+        "x${HANDLE}@users.noreply.github.com" "x+${HANDLE}@users.noreply.github.com" \
+        "${HANDLE}+x@users.noreply.github.com"; do
+        commit_as "Fixture" "Fixture" "${address}"
+        audit --range "${base}..HEAD" --dest "git@github.com:${HANDLE}/notes.git"
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"author/committer: 1 hit(s)"* ]]
+    done
+}
+
+@test "deep audit: each address is judged on its own beside the account's noreply address" {
+    mk_repo synforger
+    base="$(git rev-parse HEAD)"
+    echo "clean" > clean.txt && git add clean.txt
+    GIT_AUTHOR_EMAIL="${HANDLE}@users.noreply.github.com" GIT_COMMITTER_EMAIL="${HANDLE}@example.com" \
+        commit_bypassing_hooks "feat: clean"
+    audit --range "${base}..HEAD" --dest "git@github.com:${HANDLE}/notes.git"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"author/committer: 1 hit(s)"* ]]
+}
+
+@test "deep audit: --dest changes no other source, and goes only with a range" {
+    commit_as "${HANDLE}" "${HANDLE}"
+    echo "text" > more.txt && git add more.txt && commit_bypassing_hooks "feat: ${HANDLE}"
+    audit --range "${base}..HEAD" --dest "git@github.com:${HANDLE}/notes.git"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"commit messages: 1 hit(s)"* ]]
+    [[ "$output" == *"author/committer: clean"* ]]
+    audit --dest "git@github.com:${HANDLE}/notes.git"
+    [ "$status" -eq 2 ]
+}
+
 @test "weekly audit: --accept records a repository, and the next run reports only what is new" {
     mk_repo synforger
     export STUB_SENTINEL=""
