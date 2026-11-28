@@ -347,11 +347,100 @@ def repo_root(path: Path) -> Path | None:
     return real(r.stdout.strip()) if r.returncode == 0 else None
 
 
+#: A variable set to a folder mktemp makes, at the head of a command: `T="$(mktemp -d)"`.
+FRESH_VARIABLE = re.compile(r"""(?:^|(?<=[;&|\n]))\s*(?:export\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(["']?)\$\(\s*(mktemp\b[^()`$"';&|]*)\)\2(?=[\s;&|]|$)""")
+#: `HOME` set from such a folder: `export HOME="$(mktemp -d)/home"`, `export HOME="${T}/home"`.
+FRESH_HOME = re.compile(r"""(?:^|(?<=[;&|\n]))\s*(?:export\s+)?HOME=(["']?)(?:\$\(\s*(mktemp\b[^()`$"';&|]*)\)|\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?)([^\s"';&|$`]*)\1(?=[\s;&|]|$)""")
+#: A command that runs what it reads, or starts a program with a home of its own choosing: after one
+#: of these anywhere in the command, HOME may be back on the real home without the word HOME written.
+HOME_RESETS = re.compile(
+    r"(?:^|[;&|\n(){`!]|\b(?:then|do|else|elif|time)\b)\s*"
+    r"(?:\.|source|eval|sudo|su|doas|runuser|login|exec\s+-[a-z]*c)(?=\s|$)"
+    r"|\benv\b(?:\s+(?:-[a-zA-Z]*[iu]|-|--ignore-environment|--unset)(?=[\s=]|$))", re.M)
+#: A name built from a variable where a builtin sets one: `export "${a}${b}=…"`, `read "$v"`.
+BUILT_NAME = re.compile(r"\b(?:export|declare|typeset|readonly|local|read|printf\s+-v|mapfile|readarray)\b[^;&|\n]*?\s[\"']?[$`]")
+
+
 def spell_home(command: str) -> str:
-    """The command with ~/, $HOME and ${HOME} written out as the home folder."""
+    """The command with ~/, $HOME and ${HOME} written out as the home folder. Where the command, at
+    its top level, sets HOME to a folder `mktemp -d` makes (a test's throwaway home), what follows the
+    setting is spelled with that folder instead, but only while nothing in the command can put HOME
+    back without saying so (`_holds_fresh_home`): otherwise the real home is read throughout."""
     home = str(Path.home())
-    text = command.replace("${HOME}", home).replace("$HOME", home)
-    return re.sub(r"(?<![\w/])~(?=/)", home, text)
+
+    def spelled(text: str, folder: str) -> str:
+        text = text.replace("${HOME}", folder).replace("$HOME", folder)
+        return re.sub(r"(?<![\w/])~(?=/)", folder, text)
+
+    m = FRESH_HOME.search(command)
+    if m is None or _nesting(command[:m.start()]) != 0 or not _holds_fresh_home(command, m):
+        return spelled(command, home)
+    if m.group(2) is not None:
+        folder = fresh_folder(f"$({m.group(2)})")
+    else:
+        # A variable that holds a fresh folder, set so once at the top level before.
+        sets = [v for v in FRESH_VARIABLE.finditer(command[:m.start()]) if v.group(1) == m.group(3)]
+        fresh = sets[0] if len(sets) == 1 and _nesting(command[:sets[0].start()]) == 0 else None
+        folder = fresh_folder(f"$({fresh.group(3)})") if fresh else None
+    if folder is None:
+        return spelled(command, home)
+    return spelled(command[:m.end()], home) + spelled(command[m.end():], folder + m.group(4))
+
+
+def _holds_fresh_home(command: str, setting: re.Match) -> bool:
+    """Whether HOME, once the command sets it to a fresh folder, stays that folder to the end. Read over
+    the whole command with its comments left out and its quotes and backslashes taken away (so `H\\OME`
+    is HOME): the bare word HOME is written at the setting only (no `unset HOME`, `read HOME`,
+    `env -u HOME`, or a function that sets it); no command runs what it reads or picks a home
+    (`HOME_RESETS`); no builtin sets a name it builds from a variable; the path added after the
+    folder has no `..`; and a variable the setting reads is written as a name at its own setting
+    only (no `T+=…`, `read T`)."""
+    if ".." in setting.group(4):
+        return False
+    code = _without_comments(command)
+    if HOME_RESETS.search(code) or BUILT_NAME.search(code):
+        return False
+    plain = re.sub(r"[\\'\"]", "", code)
+    names = ["HOME"] + ([setting.group(3)] if setting.group(3) else [])
+    return all(len(re.findall(rf"(?<![$\w{{]){re.escape(name)}\b", plain)) == 1 for name in names)
+
+
+def _without_comments(text: str) -> str:
+    """`text` with each shell comment (a `#` that starts a word outside quotes, to the end of its
+    line) left out."""
+    out, quote, i = [], None, 0
+    while i < len(text):
+        char = text[i]
+        if char == "\\" and quote != "'":
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        if quote:
+            quote = None if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char == "#" and (i == 0 or text[i - 1] in " \t\n;&|()"):
+            end = text.find("\n", i)
+            i = len(text) if end < 0 else end
+            continue
+        out.append(char)
+        i += 1
+    return "".join(out)
+
+
+def _nesting(text: str) -> int:
+    """How many subshells, substitutions and groups are open at the end of `text`, quotes left out."""
+    depth, quote = 0, None
+    for char in text:
+        if quote:
+            quote = None if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char in "({":
+            depth += 1
+        elif char in ")}":
+            depth = max(0, depth - 1)
+    return depth
 
 
 GLOB = re.compile(r"[*?\[]")
