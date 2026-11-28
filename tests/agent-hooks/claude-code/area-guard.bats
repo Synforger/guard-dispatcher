@@ -1341,6 +1341,7 @@ session_files() {
     bash_in "${g}" "echo x >> orders.txt"; denied
     bash_in "${g}" $'python3 - <<\'EOF\'\nopen("orders.txt", "a").write("send it")\nEOF'; denied
     bash_in "$(dirname "${TRANSCRIPT}")" "python3 -c \"open('s1.jsonl','a').write('{}')\""; denied
+    bash_in "${H}" "env - bash -c 'printf x > ${TRANSCRIPT}'"; denied
 }
 
 @test "area-guard: the agent does not replace the folder of transcripts either, whole or in part" {
