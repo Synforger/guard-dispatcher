@@ -48,7 +48,7 @@ LOGIN_WORDS = {
 }
 #: The verbs after `auth` that only look.
 AUTH_READS = {
-    "status", "token", "list", "whoami", "show", "info", "help", "describe",
+    "status", "token", "list", "whoami", "show", "info", "help", "describe", "can-i",
     "print-access-token", "print-identity-token",
 }
 #: Nouns of what signs in: a following change verb changes it (`gh secret set`, `npm token create`).
@@ -222,6 +222,8 @@ GLOBAL_VALUED = {
     "claude": {"-p", "--print", "--model", "--append-system-prompt", "-r", "--resume"},
     "aws": {"--profile", "--region"}, "az": {"--subscription"}, "op": {"--account"},
 }
+#: Subcommand groups a tool puts before its own (`gcloud beta auth login`).
+RELEASE_TRACKS = {"alpha", "beta"}
 #: Subcommands that only look, so nothing after them changes a login.
 LOOKING = {"search", "view", "status", "list", "ls", "show", "get", "describe", "help"}
 
@@ -233,17 +235,26 @@ def _subcommands(program: str, args: list[str]) -> list[str]:
     words: list[str] = []
     skip = False
     for word in args:
-        if skip:
-            skip = False
-        elif word == "--":
+        if word == "--":
             break
+        elif skip:
+            skip = False
         elif word.startswith("-"):
-            if words:
+            if words and not _is_auth_group(words):
                 break
+            # Before the subcommand, or between the `auth` group and its verb (`gh auth --hostname h
+            # login`), an option is passed, with its value when it is known to take one: an option
+            # not known leaves the next word read, so a verb after it is not taken for its value.
             skip = word in valued
         else:
             words.append(word)
     return words[:SUBCOMMAND_WORDS]
+
+
+def _is_auth_group(words: list[str]) -> bool:
+    """Whether the words so far are the `auth` group of the tool's subcommands (`auth`, `beta auth`),
+    not a name that happens to be `auth` (`docker run auth`)."""
+    return words[-1] == "auth" and (len(words) == 1 or (len(words) == 2 and words[0] in RELEASE_TRACKS))
 
 
 def _service_change(program: str, args: list[str]) -> str | None:
@@ -256,7 +267,7 @@ def _service_change(program: str, args: list[str]) -> str | None:
     for i, word in enumerate(pieces):
         if word in LOGIN_WORDS:
             return f"{program} {' '.join(pieces[:i + 1])} signs in or out"
-        if word == "auth" and i + 1 < len(pieces) and pieces[i + 1] not in AUTH_READS:
+        if _is_auth_group(pieces[:i + 1]) and i + 1 < len(pieces) and pieces[i + 1] not in AUTH_READS:
             return f"{program} {' '.join(pieces[:i + 2])} changes a login"
         if word in KEY_NOUNS and i + 1 < len(pieces) and pieces[i + 1] in CHANGE_VERBS:
             return f"{program} {' '.join(pieces[:i + 2])} changes a key, a token or a secret"
@@ -597,8 +608,11 @@ def holds_credentials(path: Path, home: Path) -> bool:
         return False          # a file is the credential itself or none: its name is no folder of one
     for pattern in HOME_FILES:
         folder = pattern.rsplit("/", 1)[0].split("/") if "/" in pattern else []
+        # A part matched by a pattern (`.claude*`) names a folder of credentials only when it is one:
+        # `~/.claude.json.bak` matches the name, and is no folder.
         if folder and len(parts) <= len(folder) and all(
-                fnmatch.fnmatchcase(part, glob) for part, glob in zip(parts, folder)):
+                part == glob or (fnmatch.fnmatchcase(part, glob) and home.joinpath(*parts[:i + 1]).is_dir())
+                for i, (part, glob) in enumerate(zip(parts, folder))):
             return True
     return not parts
 
